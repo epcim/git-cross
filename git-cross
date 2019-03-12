@@ -1,0 +1,135 @@
+#!/bin/bash
+shopt -s expand_aliases
+
+## Prototype, git workflow to crips git repositories
+
+W=./ # git worktree
+declare -a FETCHED=('')
+FETCH_DEPENDENCIES=${CROSS_FETCH_DEPENDENCIES:-false}
+
+# git setup
+setup() {
+  # require git >=2.20
+  git config extensions.worktreeConfig true
+
+  export MAGENTA='\033[0;95m'
+  export YELLOW='\033[1;33m'
+  export NC='\033[0m' # No Color'
+}
+
+# use, is virtual function for DSL like syntax to configure sources
+# it add upstream as remote to tracking branch
+use() {
+  [[ -n "$1" ]] || say "USE called without an argument: remote name"
+  [[ -n "$2" ]] || say "USE called without an argument: repo url"
+  name=$1
+  [[ $(git remote show | grep $name) ]] ||
+    git remote add $@
+}
+
+# section, track 'origin/path' as branch and checkout it to your git worktree
+section() {
+  # origin/path [origin_branch]
+  # TODO, origin/path [-b origin_branch] [-s folders_to_strip] [ -d local_placement ]
+  [[ -n "$1" ]] || say "CUT called without mandatory argument: origin/path"
+
+  orig=$(cut -d/ -f1  <<< "$1") # origin
+  path=$(cut -d/ -f2- <<< "$1") # path in upstream repo
+  name=$(basename $1)
+  branch=${2:-master}
+  dest=
+  strp=
+
+  # skip already processed dependencies
+  [[ "${FETCHED[*]}" =~ $name ]] && return 0
+
+  if [[ -e $W/$path ]]; then
+  # update if present
+    pushd $W/$path
+      if repo_is_clean; then
+        say "$orig/$path"
+        git fetch --prune --depth=1 $orig $branch
+        git rebase
+      else
+        say "$orig/$path skipped (uncommitted changes)"
+      fi
+    popd
+  else
+  # track and fetch new
+    say "Tracking $orig/$path (branch:$branch) as $orig/$path"
+    git fetch --prune --depth=1 $orig $branch:$orig/$path
+    git worktree add --no-checkout -B "$orig/$path" $W/$path --track $orig/$branch
+    pushd $W/$path
+      sparse_checkout=$(git rev-parse --git-path info/sparse-checkout)
+      # first time configure $name into info/sparse-checkout
+      if ! [[ $(cat $sparse_checkout 2>/dev/null) =~ ^/$path/ ]]; then
+        git config --worktree --bool core.sparseCheckout true
+        git config --worktree --path core.worktree $PWD/..
+        [[ -e $sparse_checkout ]] ||
+          mkdir -p $(dirname $sparse_checkout)
+        echo "/$path/" | tee -a $sparse_checkout >/dev/null
+      fi
+      git checkout
+    popd
+    git --git-dir=.git --work-tree=. add $path/*
+  fi
+
+  FETCHED+=($name)
+
+  # dependencies
+  if ${FETCH_DEPENDENCIES}; then
+    for p in $(cross_dependencies $path); do section $p; done
+  fi
+}
+
+
+# STAFF AROUND
+repo_is_clean() {
+  git diff-index --quiet HEAD --
+}
+pushd() {
+  export OLDPW=$PWD
+  cd "$@" >/dev/null
+}
+popd() {
+  cd - >/dev/null
+}
+say() {
+  (echo >&2 -e "\n${MAGENTA}$1${NC}")
+  [[ -z ${2:-''} ]] || exit $2
+}
+ask() {
+  local prompt default reply
+  while true; do
+    if [[ "${2:-}" =~ ^Y ]]; then
+      prompt="Y/n"
+      default=Y
+    elif [[ "${2:-}" =~ ^N ]]; then
+      prompt="y/N"
+      default=N
+    fi
+    say "\n$1 [$prompt]"
+    read reply
+    reply=${reply:-$default}
+    case "$reply" in
+    Y* | y*) return 0 ;;
+    N* | n*) return 1 ;;
+    *) return 1 ;;
+    esac
+  done
+}
+
+# allow to be sourced or used individually
+if [[ "$BASH_SOURCE" == "$0" ]]; then
+  set -eu -o pipefail
+  setup
+  if [[ $# -gt 0 ]]; then
+    # exec individual action
+    fn=$1
+    shift
+    $fn $@
+  else
+    [ -e *.cross ] && source *.cross
+    [ -e .*.cross ] && source .*.cross
+  fi
+fi
