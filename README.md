@@ -19,10 +19,10 @@ Configure your mixins in *.cross:
   use ncerny https://github.com/ncerny/habitat-plans
 
   # example: upstream/path [branch]
-  section core/consul
-  section core/cacerts
-  section core/etcd
-  section ncerny/cfssl
+  patch core/consul
+  patch core/cacerts
+  patch core/etcd
+  patch ncerny/cfssl
 ```
 
 Track and checkout plans with:

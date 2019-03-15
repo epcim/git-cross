@@ -11,6 +11,7 @@ FETCH_DEPENDENCIES=${CROSS_FETCH_DEPENDENCIES:-false}
 setup() {
   # require git >=2.20
   git config extensions.worktreeConfig true
+  git worktree prune
 
   export MAGENTA='\033[0;95m'
   export YELLOW='\033[1;33m'
@@ -27,49 +28,48 @@ use() {
     git remote add $@
 }
 
-# section, track 'origin/path' as branch and checkout it to your git worktree
-section() {
-  # origin/path [origin_branch]
-  # TODO, origin/path [-b origin_branch] [-s folders_to_strip] [ -d local_placement ]
-  [[ -n "$1" ]] || say "CUT called without mandatory argument: origin/path"
+# patch, track 'origin/path' as branch and checkout it to your git worktree
+patch() {
+  # origin:path/to/folder [path/in/my/repo] [-b branch]
+  # core:habitat/corends coredns -b master
 
-  orig=$(cut -d/ -f1  <<< "$1") # origin
-  path=$(cut -d/ -f2- <<< "$1") # path in upstream repo
-  name=$(basename $1)
-  branch=${2:-master}
-  dest=
-  strp=
+  from=$1
+  orig=$(cut -d: -f1 <<<"$from") # origin
+  opth=$(cut -d: -f2 <<<"$from") # origin path
+  path=${2:-$opth}
+  branch=${4:-master}
 
   # skip already processed dependencies
-  [[ "${FETCHED[*]}" =~ $name ]] && return 0
+  [[ "${FETCHED[*]}" =~ $path ]] && return 0
 
   if [[ -e $W/$path ]]; then
-  # update if present
+    # update if present
     pushd $W/$path
-      if repo_is_clean; then
-        say "$orig/$path"
-        git fetch --prune --depth=1 $orig $branch
-        git rebase
-      else
-        say "$orig/$path skipped (uncommitted changes)"
-      fi
+    git --git-dir=$(sed 's/gitdir: //g' .git) stash
+    if repo_is_clean; then
+      say "$orig/$path"
+      git fetch --prune --depth=1 $orig $branch
+      git rebase
+    else
+      say "$orig/$path skipped (uncommitted changes)"
+    fi
     popd
   else
-  # track and fetch new
-    say "Tracking $orig/$path (branch:$branch) as $orig/$path"
+    # track and fetch new
+    say "Tracking $orig:$opth (branch:$branch) at /$path"
     git fetch --prune --depth=1 $orig $branch:$orig/$path
     git worktree add --no-checkout -B "$orig/$path" $W/$path --track $orig/$branch
     pushd $W/$path
-      sparse_checkout=$(git rev-parse --git-path info/sparse-checkout)
-      # first time configure $name into info/sparse-checkout
-      if ! [[ $(cat $sparse_checkout 2>/dev/null) =~ ^/$path/ ]]; then
-        git config --worktree --bool core.sparseCheckout true
-        git config --worktree --path core.worktree $PWD/..
-        [[ -e $sparse_checkout ]] ||
-          mkdir -p $(dirname $sparse_checkout)
-        echo "/$path/" | tee -a $sparse_checkout >/dev/null
-      fi
-      git checkout
+    sparse_checkout=$(git rev-parse --git-path info/sparse-checkout)
+    # first time configure $name into info/sparse-checkout
+    if ! [[ $(cat $sparse_checkout 2>/dev/null) =~ ^/$opth/ ]]; then
+      git config --worktree --bool core.sparseCheckout true
+      git config --worktree --path core.worktree $PWD/..
+      [[ -e $sparse_checkout ]] ||
+        mkdir -p $(dirname $sparse_checkout)
+      echo "/$opth/" | tee -a $sparse_checkout >/dev/null
+    fi
+    git checkout
     popd
     git --git-dir=.git --work-tree=. add $path/*
   fi
@@ -78,10 +78,9 @@ section() {
 
   # dependencies
   if ${FETCH_DEPENDENCIES}; then
-    for p in $(cross_dependencies $path); do section $p; done
+    for p in $(cross_dependencies $path); do patch $p; done
   fi
 }
-
 
 # STAFF AROUND
 repo_is_clean() {
@@ -129,6 +128,7 @@ if [[ "$BASH_SOURCE" == "$0" ]]; then
     shift
     $fn $@
   else
+    repo_is_clean || ask "There are uncommitted changes in the repository. Continue?" Y
     [ -e *.cross ] && source *.cross
     [ -e .*.cross ] && source .*.cross
   fi
