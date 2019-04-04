@@ -3,6 +3,10 @@ shopt -s expand_aliases
 
 ## Prototype, git workflow to crips git repositories
 
+## NOTES:
+## to share features to upstream, commit on upstream branch with `cd patch; git cherry-pick ##### -Xtheirs`
+## --untracked-files=no
+
 W=./ # git worktree
 declare -a FETCHED=('')
 FETCH_DEPENDENCIES=${CROSS_FETCH_DEPENDENCIES:-false}
@@ -33,45 +37,53 @@ patch() {
   # origin:path/to/folder [path/in/my/repo] [-b branch]
   # core:habitat/corends coredns -b master
 
-  from=$1
-  orig=$(cut -d: -f1 <<<"$from") # origin
-  opth=$(cut -d: -f2 <<<"$from") # origin path
-  path=${2:-$opth}
-  branch=${4:-master}
+  local from=$1
+  local orig=$(cut -d: -f1 <<<"$from") # origin
+  local opth=$(cut -d: -f2 <<<"$from") # origin path
+  local path=${2:-$opth}
+  local branch=${4:-master}
 
   # skip already processed dependencies
   [[ "${FETCHED[*]}" =~ $path ]] && return 0
 
-  if [[ -e $W/$path ]]; then
-    # update if present
-    pushd $W/$path
-    git --git-dir=$(sed 's/gitdir: //g' .git) stash
-    if repo_is_clean; then
-      say "$orig/$path"
-      git fetch --prune --depth=1 $orig $branch
-      git rebase
-    else
-      say "$orig/$path skipped (uncommitted changes)"
-    fi
-    popd
-  else
-    # track and fetch new
+  # check existence of local branch tracking upstream
+  _branch_exist() {
+    git rev-parse --verify "$orig/$path" &>/dev/null; [[ $? -eq 0 ]]
+  }
+
+  if ! _branch_exist ; then
+  # first time only, track and fetch new remote/branch
     say "Tracking $orig:$opth (branch:$branch) at /$path"
     git fetch --prune --depth=1 $orig $branch:$orig/$path
+    [[ -e $W/$path ]] && mv $W/$path $W/$path.crossed
     git worktree add --no-checkout -B "$orig/$path" $W/$path --track $orig/$branch
     pushd $W/$path
-    sparse_checkout=$(git rev-parse --git-path info/sparse-checkout)
-    # first time configure $name into info/sparse-checkout
-    if ! [[ $(cat $sparse_checkout 2>/dev/null) =~ ^/$opth/ ]]; then
-      git config --worktree --bool core.sparseCheckout true
-      git config --worktree --path core.worktree $PWD/..
-      [[ -e $sparse_checkout ]] ||
-        mkdir -p $(dirname $sparse_checkout)
-      echo "/$opth/" | tee -a $sparse_checkout >/dev/null
-    fi
-    git checkout
+      sparse_checkout=$(git rev-parse --git-path info/sparse-checkout)
+      # first time configure $name into info/sparse-checkout
+      if ! [[ $(cat $sparse_checkout 2>/dev/null) =~ ^/$opth/ ]]; then
+        git config --worktree --bool core.sparseCheckout true
+        git config --worktree --path core.worktree $PWD/..
+        [[ -e $sparse_checkout ]] ||
+          mkdir -p $(dirname $sparse_checkout)
+        echo "/$opth/" | tee -a $sparse_checkout >/dev/null
+      fi
+      git checkout
     popd
-    git --git-dir=.git --work-tree=. add $path/*
+    [[ -e $W/$path.crossed ]] && {
+      cp -af $W/$path.crossed/* $W/$path
+    } || {
+      git --git-dir=.git --work-tree=. add $path/*
+    }
+  elif [[ -e $W/$path && _branch_exist ]]; then
+  # sync with upstream
+    pushd $W/$path
+    say "$orig/$path"
+    git reset $orig/$branch
+    git --git-dir=$(sed 's/gitdir: //g' .git) stash -q
+    git fetch --prune --depth=1 $orig $branch
+    git rebase
+    git --git-dir=$(sed 's/gitdir: //g' .git) stash pop -q
+    popd
   fi
 
   FETCHED+=($name)
@@ -129,7 +141,6 @@ if [[ "$BASH_SOURCE" == "$0" ]]; then
     $fn $@
   else
     repo_is_clean || ask "There are uncommitted changes in the repository. Continue?" Y
-    [ -e *.cross ] && source *.cross
-    [ -e .*.cross ] && source .*.cross
+    [ -e Cross* ] && source Cross*
   fi
 fi
