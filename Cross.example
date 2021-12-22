@@ -1,0 +1,34 @@
+
+# upstream
+use khue	https://github.com/khuedoan/homelab
+use bill	https://github.com/billimek/k8s-gitops
+
+git remote -v | grep fetch | column -t
+
+# stash?
+# repo_is_clean || say "There are uncommitted changes in the repository. Stash them first." 1
+
+# cross patches
+# ex: origin:path/remote/dir [local/path/to/dir] [branch]
+patch khue:/metal deploy/metal
+patch bill:/logs  deploy/logs
+
+export CROSS_FETCH_DEPENDENCIES=${CROSS_FETCH_DEPENDENCIES:-false}
+
+# hooks, are custom fn for triggers run in git-cross
+# 
+# dependencies_hook, allows to take any action for dependencies
+# dependencies_hook() {
+#   [[ -n "$1" ]] || say "DEPENDENCIES_HOOK: called without an positonal argument, path, to crossed repository"
+#   scripts/parse-deps.sh $1/xyz
+# }
+#
+# cross_post_hook() {
+#  # process dependencies
+#  for p in $(cross_dependencies_hoook $path); do ${CROSS_DEPENDENCY_ACTION:-patch} $p; done
+#  # update origin
+#  git push upstream
+#  gh pr xyz
+# }
+
+
