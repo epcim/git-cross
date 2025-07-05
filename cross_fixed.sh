@@ -460,7 +460,10 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         
         # Check repository cleanliness
         if ! repo_is_clean; then
-            if ! ask "There are uncommitted changes in the repository. Continue?" Y; then
+            if [[ "${CROSS_NON_INTERACTIVE:-false}" == "true" ]]; then
+                # In non-interactive mode (CI), continue with uncommitted changes
+                say "WARNING: Uncommitted changes detected in non-interactive mode. Continuing..."
+            elif ! ask "There are uncommitted changes in the repository. Continue?" Y; then
                 say "Aborting due to uncommitted changes"
                 exit 1
             fi

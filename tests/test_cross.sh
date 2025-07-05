@@ -10,7 +10,7 @@ TEST_DIR="/tmp/cross_test_$$"
 REMOTE_REPO1="$TEST_DIR/remote1"
 REMOTE_REPO2="$TEST_DIR/remote2"
 LOCAL_REPO="$TEST_DIR/local"
-CROSS_SCRIPT="$(realpath ./cross)"
+CROSS_SCRIPT="$(realpath ../cross_fixed.sh)"
 
 # Colors for output
 RED='\033[0;31m'

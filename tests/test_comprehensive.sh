@@ -11,7 +11,7 @@ UPSTREAM_REPO1="$TEST_DIR/upstream1"
 UPSTREAM_REPO2="$TEST_DIR/upstream2"
 UPSTREAM_REPO3="$TEST_DIR/upstream3"
 LOCAL_REPO="$TEST_DIR/local"
-CROSS_SCRIPT="$(realpath ./cross_fixed.sh)"
+CROSS_SCRIPT="$(realpath ../cross_fixed.sh)"
 
 # Colors for output
 RED='\033[0;31m'
@@ -793,7 +793,7 @@ test_complex_integration() {
     cd "$LOCAL_REPO"
     
     # Create a complex Cross file with hooks
-    cat > Cross.complex << 'EOF'
+    cat > "$LOCAL_REPO/Cross.complex" << 'EOF'
 # Complex integration scenario
 
 use app $UPSTREAM_REPO1
@@ -825,12 +825,12 @@ cross_post_hook() {
 EOF
     
     # Substitute variables
-    sed -i "s|\$UPSTREAM_REPO1|$UPSTREAM_REPO1|g" Cross.complex
-    sed -i "s|\$UPSTREAM_REPO2|$UPSTREAM_REPO2|g" Cross.complex
-    sed -i "s|\$UPSTREAM_REPO3|$UPSTREAM_REPO3|g" Cross.complex
+    sed -i "s|\$UPSTREAM_REPO1|$UPSTREAM_REPO1|g" "$LOCAL_REPO/Cross.complex"
+    sed -i "s|\$UPSTREAM_REPO2|$UPSTREAM_REPO2|g" "$LOCAL_REPO/Cross.complex"
+    sed -i "s|\$UPSTREAM_REPO3|$UPSTREAM_REPO3|g" "$LOCAL_REPO/Cross.complex"
     
-    # Execute complex scenario
-    if "$CROSS_SCRIPT" < Cross.complex; then
+    # Execute complex scenario (need to be in the right directory)
+    if (cd "$LOCAL_REPO" && "$CROSS_SCRIPT"); then
         test_pass "Complex integration scenario successful"
     else
         test_fail "Complex integration scenario failed"
