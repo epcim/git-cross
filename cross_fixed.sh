@@ -18,7 +18,7 @@ declare -a FETCHED=('')       # Array to track already processed patches
 export _gitpth=$(which git)   # Git executable path
 
 # DEFAULT ENVIRONMENT VARIABLES
-export CROSS_DEFAULT_BRANCH=${CROSS_DEFAULT_BRANCH:-master}  # Default branch to checkout
+export CROSS_DEFAULT_BRANCH=${CROSS_DEFAULT_BRANCH:-main}  # Default branch to checkout
 export CROSS_REBASE_ORIGIN=${CROSS_REBASE_ORIGIN:-false}     # Whether to auto-rebase on updates
 export CROSS_FETCH_DEPTH=${CROSS_FETCH_DEPTH:-20}           # Shallow fetch depth for performance
 
@@ -149,7 +149,7 @@ patch() {
     local orig=$(cut -d: -f1 <<<"$from")        # Extract remote name (e.g., "core")
     local opth=$(cut -d: -f2 <<<"$from")        # Extract remote path (e.g., "consul/config")
     local path="${2:-$opth}"                    # Local path (defaults to remote path)
-    local branch="${3:-$CROSS_DEFAULT_BRANCH}"  # Branch name (defaults to master) - FIXED: was $4
+    local branch="${3:-$CROSS_DEFAULT_BRANCH}"  # Branch name (defaults to main) - FIXED: was $4
     local fdepth=${CROSS_FETCH_DEPTH}           # Fetch depth for shallow clones
     
     # Validate input parameters

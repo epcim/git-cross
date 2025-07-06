@@ -12,8 +12,8 @@ jobs:
     
     env:
       CROSS_NON_INTERACTIVE: true
-      # Set branch precedence for PR context
-      CROSS_DEFAULT_BRANCH: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name || 'main' }}
+      # Use main as default branch (GitHub standard)
+      CROSS_DEFAULT_BRANCH: main
     
     steps:
     - name: Checkout code
