@@ -435,7 +435,7 @@ ask() {
 
 ## Main execution block
 ## This block only runs when the script is executed directly (not sourced)
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]] && [[ "$0" != *"bash"* ]]; then
     # Enable strict error handling
     set -euo pipefail
     
