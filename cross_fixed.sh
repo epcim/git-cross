@@ -1,4 +1,4 @@
-THIS SHOULD BE A LINTER ERROR#!/bin/bash
+#!/bin/bash
 shopt -s expand_aliases
 
 ## git-cross: Tool for mixing git repositories using worktrees and sparse checkout
@@ -186,8 +186,8 @@ patch() {
     }
     
     _worktree_branch_name() {
-        # Generate a unique branch name for this worktree
-        echo "$orig/$branch/$opth" | sed 's|/|_|g'
+        # Generate a unique branch name for this worktree using path as well
+        echo "$orig/$branch/$opth/$path" | sed 's|/|_|g'
     }
     
     local worktree_branch=$(_worktree_branch_name)
@@ -197,12 +197,12 @@ patch() {
         say "Tracking $orig:$opth (branch:$branch) at $path"
         
         # Fetch the remote branch with shallow history
-        _git fetch --prune --depth="$fdepth" "$orig" "$branch:$orig/$branch" || {
+        _git fetch --prune --depth="$fdepth" "$orig" "$branch" || {
             say "ERROR: Failed to fetch $orig/$branch. Check remote URL and branch name." 1
         }
         
-        # Backup existing local directory if it exists
-        if [[ -e "$W/$path" ]]; then
+        # Backup existing local directory if it exists and is not a git worktree
+        if [[ -e "$W/$path" && ! -f "$W/$path/.git" ]]; then
             say "Backing up existing directory: $path -> $path.crossed"
             mv "$W/$path" "$W/$path.crossed"
         fi
@@ -230,9 +230,13 @@ patch() {
             # Create sparse checkout file
             mkdir -p "$(dirname "$sparse_checkout")"
             echo "/$opth/" > "$sparse_checkout"
+            
+            # First, reset to remove any existing files
+            _git reset --hard HEAD || true
         fi
         
-        # Checkout the files
+        # Apply sparse checkout and then checkout the files
+        _git sparse-checkout reapply || true  # Force sparse checkout to apply
         _git checkout || say "ERROR: Failed to checkout files in $path" 1
         
         popd
@@ -242,7 +246,51 @@ patch() {
         
     # SUBSEQUENT RUNS: Update existing worktree
     elif [[ -e "$W/$path" ]]; then
-        say "Updating existing patch: $path"
+        # Check if this is actually a worktree or just a regular directory
+        if [[ ! -f "$W/$path/.git" ]]; then
+            # This is a regular directory, back it up and create worktree
+            say "Backing up existing directory: $path -> $path.crossed"
+            mv "$W/$path" "$W/$path.crossed"
+            
+            # Create worktree with tracking branch
+            _git worktree add --no-checkout -B "$worktree_branch" "$W/$path" --track "$orig/$branch" || {
+                say "ERROR: Failed to create worktree for $path" 1
+            }
+            
+            # Configure sparse checkout within the worktree
+            pushd "$W/$path" || say "ERROR: Could not enter directory $W/$path" 1
+            
+            # Set up sparse checkout configuration
+            local sparse_checkout=$(git rev-parse --git-path info/sparse-checkout)
+            
+            # Configure sparse checkout if not already configured
+            if ! [[ -f "$sparse_checkout" && $(cat "$sparse_checkout" 2>/dev/null) =~ ^/$opth/?$ ]]; then
+                say "Configuring sparse checkout for /$opth/"
+                
+                # Enable sparse checkout
+                _git config --worktree --bool core.sparseCheckout true
+                _git config --worktree --path core.worktree "$PWD/.."
+                _git config --worktree status.showUntrackedFiles no
+                
+                # Create sparse checkout file
+                mkdir -p "$(dirname "$sparse_checkout")"
+                echo "/$opth/" > "$sparse_checkout"
+                
+                # First, reset to remove any existing files
+                _git reset --hard HEAD || true
+            fi
+            
+            # Apply sparse checkout and then checkout the files
+            _git sparse-checkout reapply || true  # Force sparse checkout to apply
+            _git checkout || say "ERROR: Failed to checkout files in $path" 1
+            
+            popd
+            
+            # Add the new worktree to the main repository's index
+            _git --git-dir=.git --work-tree=. add "$W/$path"
+        else
+            say "Updating existing patch: $path"
+        fi
         
         pushd "$W/$path" || say "ERROR: Could not enter directory $W/$path" 1
         

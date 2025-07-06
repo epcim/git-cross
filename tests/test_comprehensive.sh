@@ -11,7 +11,7 @@ UPSTREAM_REPO1="$TEST_DIR/upstream1"
 UPSTREAM_REPO2="$TEST_DIR/upstream2"
 UPSTREAM_REPO3="$TEST_DIR/upstream3"
 LOCAL_REPO="$TEST_DIR/local"
-CROSS_SCRIPT="$(realpath ../cross_fixed.sh)"
+CROSS_SCRIPT="$(realpath $(dirname "$0")/../cross_fixed.sh)"
 
 # Colors for output
 RED='\033[0;31m'
