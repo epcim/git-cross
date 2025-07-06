@@ -1,4 +1,4 @@
-THIS SHOULD BE A LINTER ERRORname: CI
+THIS SHOULD BE A LINTER ERRORTHIS SHOULD BE A LINTER ERRORname: CI
 
 on:
   pull_request:
@@ -12,8 +12,8 @@ jobs:
     
     env:
       CROSS_NON_INTERACTIVE: true
-      # Use main as default branch (GitHub standard)
-      CROSS_DEFAULT_BRANCH: main
+      # For PRs use the PR branch, for pushes use the pushed branch, fallback to repo default
+      CROSS_DEFAULT_BRANCH: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name || github.event.repository.default_branch }}
     
     steps:
     - name: Checkout code
