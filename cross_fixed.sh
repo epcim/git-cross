@@ -18,7 +18,7 @@ declare -a FETCHED=('')       # Array to track already processed patches
 export _gitpth=$(which git)   # Git executable path
 
 # DEFAULT ENVIRONMENT VARIABLES
-export CROSS_DEFAULT_BRANCH=${CROSS_DEFAULT_BRANCH:-master}  # Default branch to checkout
+export CROSS_DEFAULT_BRANCH=${CROSS_DEFAULT_BRANCH:-master}  # Will be overridden by CI
 export CROSS_REBASE_ORIGIN=${CROSS_REBASE_ORIGIN:-false}     # Whether to auto-rebase on updates
 export CROSS_FETCH_DEPTH=${CROSS_FETCH_DEPTH:-20}           # Shallow fetch depth for performance
 
