@@ -12,8 +12,8 @@ jobs:
     
     env:
       CROSS_NON_INTERACTIVE: true
-      # Use documented GitHub variable for PR branch, fallback to master
-      CROSS_DEFAULT_BRANCH: ${{ github.head_ref || 'master' }}
+      # For PR: use PR branch, for push: use pushed branch, fallback to master
+      CROSS_DEFAULT_BRANCH: ${{ github.head_ref || github.ref_name || 'master' }}
     
     steps:
     - name: Checkout code
