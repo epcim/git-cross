@@ -12,8 +12,8 @@ jobs:
     
     env:
       CROSS_NON_INTERACTIVE: true
-      # For PRs use the PR branch, for pushes use the pushed branch, fallback to repo default
-      CROSS_DEFAULT_BRANCH: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name || github.event.repository.default_branch }}
+      # Use documented GitHub variable for PR branch, fallback to master
+      CROSS_DEFAULT_BRANCH: ${{ github.head_ref || 'master' }}
     
     steps:
     - name: Checkout code
