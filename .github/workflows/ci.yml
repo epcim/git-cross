@@ -1,4 +1,4 @@
-THIS SHOULD BE A LINTER ERRORTHIS SHOULD BE A LINTER ERRORname: CI
+THIS SHOULD BE A LINTER ERRORname: CI
 
 on:
   pull_request:
@@ -28,8 +28,9 @@ jobs:
         # Debug: Show current branch context
         echo "=== Branch Detection ==="
         echo "Event name: ${{ github.event_name }}"
-        echo "Head ref: ${{ github.head_ref }}"
-        echo "Ref name: ${{ github.ref_name }}"
+        echo "Head ref (PR branch): ${{ github.head_ref }}"
+        echo "Ref name (push branch): ${{ github.ref_name }}"
+        echo "Repository default: ${{ github.event.repository.default_branch }}"
         echo "Current branch: $(git branch --show-current 2>/dev/null || echo 'detached')"
         echo "CROSS_DEFAULT_BRANCH: ${CROSS_DEFAULT_BRANCH}"
         echo "========================"
