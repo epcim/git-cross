@@ -1,4 +1,4 @@
-#!/bin/bash
+THIS SHOULD BE A LINTER ERROR#!/bin/bash
 shopt -s expand_aliases
 
 ## git-cross: Tool for mixing git repositories using worktrees and sparse checkout
