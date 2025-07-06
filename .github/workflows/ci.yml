@@ -1,4 +1,4 @@
-name: CI
+THIS SHOULD BE A LINTER ERRORname: CI
 
 on:
   pull_request:
