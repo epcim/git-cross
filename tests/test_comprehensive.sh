@@ -153,7 +153,8 @@ EOF
     git add "configs/nginx/nginx.conf"
     git commit -m "Optimize nginx configuration"
     
-    git push origin master
+    # Use the current branch name instead of hardcoded master
+    git push origin $(git branch --show-current)
     
     # Clean up working copy
     cd ../..
@@ -253,6 +254,9 @@ EOF
     git add .
     git commit -m "Initial infrastructure setup"
     
+    # Store the main branch name before creating feature branch
+    MAIN_BRANCH=$(git branch --show-current)
+    
     # Create feature branch for testing
     git checkout -b feature/new-monitoring
     echo "  - job_name: 'database'" >> "monitoring/prometheus/config.yml"
@@ -261,8 +265,9 @@ EOF
     git add "monitoring/prometheus/config.yml"
     git commit -m "Add database monitoring"
     
-    git checkout master
-    git push origin master
+    # Use dynamic branch name instead of hardcoded master
+    git checkout $MAIN_BRANCH
+    git push origin $MAIN_BRANCH
     git push origin feature/new-monitoring
     
     # Clean up working copy
@@ -371,7 +376,8 @@ EOF
     git add "src/utils/logger.js"
     git commit -m "Add convenience methods to Logger"
     
-    git push origin master
+    # Use the current branch name instead of hardcoded master
+    git push origin $(git branch --show-current)
     
     # Clean up working copy
     cd ../..
@@ -547,7 +553,8 @@ test_upstream_updates() {
     echo "gzip on;" >> configs/nginx/nginx.conf
     git add configs/nginx/nginx.conf
     git commit -m "Enable gzip compression"
-    git push origin master
+    # Use the current branch name instead of hardcoded master
+    git push origin $(git branch --show-current)
     
     # Clean up
     cd "$LOCAL_REPO"
@@ -593,7 +600,8 @@ test_rebase_functionality() {
     echo "# Upstream modification" >> configs/nginx/nginx.conf
     git add configs/nginx/nginx.conf
     git commit -m "Upstream modification"
-    git push origin master
+    # Use the current branch name instead of hardcoded master
+    git push origin $(git branch --show-current)
     
     cd "$LOCAL_REPO"
     rm -rf "$work_dir"
@@ -645,7 +653,16 @@ EOF
     
     # Create a commit to represent the accepted PR
     cd "library/utils"
-    git checkout master
+    # Use dynamic branch name instead of hardcoded master
+    MAIN_BRANCH=$(git rev-parse --abbrev-ref HEAD | sed 's/feature.*//' | head -1)
+    if [[ -z "$MAIN_BRANCH" ]] || git show-ref --verify --quiet "refs/heads/main"; then
+        MAIN_BRANCH="main"
+    elif git show-ref --verify --quiet "refs/heads/master"; then
+        MAIN_BRANCH="master"
+    else
+        MAIN_BRANCH=$(git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@' 2>/dev/null || echo "main")
+    fi
+    git checkout $MAIN_BRANCH
     
     # This simulates the upstream accepting the PR
     git cherry-pick feature/add-debug-method

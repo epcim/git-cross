@@ -104,7 +104,8 @@ create_remote_repo() {
     
     git add .
     git commit -m "Initial structure for $name"
-    git push origin master
+    # Use the current branch name instead of hardcoded master
+    git push origin $(git branch --show-current)
     
     # Clean up working copy
     cd ..

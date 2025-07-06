@@ -12,16 +12,30 @@ jobs:
     
     env:
       CROSS_NON_INTERACTIVE: true
+      # Set branch precedence for PR context
+      CROSS_DEFAULT_BRANCH: ${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name || 'main' }}
     
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Setup Git
+    - name: Setup Git and branch detection
       run: |
         git config --global user.name "GitHub Actions"
         git config --global user.email "actions@github.com"
         git config --global init.defaultBranch main
+        
+        # Debug: Show current branch context
+        echo "=== Branch Detection ==="
+        echo "Event name: ${{ github.event_name }}"
+        echo "Head ref: ${{ github.head_ref }}"
+        echo "Ref name: ${{ github.ref_name }}"
+        echo "Current branch: $(git branch --show-current 2>/dev/null || echo 'detached')"
+        echo "CROSS_DEFAULT_BRANCH: ${CROSS_DEFAULT_BRANCH}"
+        echo "========================"
+        
+        # Export branch environment for tests
+        export CROSS_DEFAULT_BRANCH="${CROSS_DEFAULT_BRANCH}"
         
     - name: Install dependencies
       run: |
@@ -125,7 +139,8 @@ jobs:
         
         git add .
         git commit -m "Initial upstream structure"
-        git push origin master
+        # Use the same default branch as configured
+        git push origin $(git branch --show-current)
         
         # Test integration
         cd /tmp/scenario_test
@@ -177,7 +192,8 @@ jobs:
           echo "Module $i content" > "module_$i/file.txt"
           git add .
           git commit -m "Module $i initial commit"
-          git push origin master
+          # Use the same default branch as configured
+          git push origin $(git branch --show-current)
           
           cd ..
         done
