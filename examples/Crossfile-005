@@ -1,0 +1,10 @@
+# Crossfile-005 - Testing exec post-hooks
+
+# This example demonstrates how to use `exec` to run arbitrary commands
+# specifically for post-hooks or setup steps.
+
+# Define a post-hook that runs a recipe from the user's Justfile
+cross exec just posthook
+
+# Another example: simple shell command
+cross exec echo "Crossfile-005 post-hook executed"

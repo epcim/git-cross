@@ -1,0 +1,16 @@
+# Default state for all rules
+default: true
+
+# Path to configuration file to extend
+extends: null
+
+# Customize specific rules
+MD003: # Heading style
+  style: "atx"
+MD007: # Unordered list indentation
+  indent: 2
+MD013: # Line length
+  line_length: 200
+  code_blocks: false # Do not check line length in code blocks
+MD025: # Multiple top-level headings
+  level: 1 # Only one H1 heading allowed

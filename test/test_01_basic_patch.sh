@@ -20,6 +20,9 @@ echo "---------------------------------------------------"
 just use demo "$DEMO_URL"
 just patch demo:docs vendor/docs
 
+assert_file_contains "Crossfile" "cross use demo $DEMO_URL"
+assert_file_contains "Crossfile" "cross patch demo:docs vendor/docs"
+
 if [ -f "vendor/docs/file.txt" ]; then
     echo "PASS: vendor/docs/file.txt exists"
 else

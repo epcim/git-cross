@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Detect and add Homebrew to PATH
+if [ -d "/opt/homebrew/bin" ]; then
+    export PATH="/opt/homebrew/bin:$PATH"
+elif [ -d "/usr/local/bin" ]; then
+    export PATH="/usr/local/bin:$PATH"
+elif [ -d "/home/linuxbrew/.linuxbrew/bin" ]; then
+    export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
+elif [ -n "$HOMEBREW_PREFIX" ]; then
+    export PATH="$HOMEBREW_PREFIX/bin:$PATH"
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
 TEST_DIR="${ROOT_DIR}/test"
 RESULT_DIR="${TEST_DIR}/results"
@@ -12,9 +23,11 @@ source "${LIB_DIR}/git.sh"
 source "${LIB_DIR}/report.sh"
 source "${LIB_DIR}/artifact_hash.sh"
 
-declare -A BASH_HASH
-
-declare -A RUST_HASH
+# declare -A BASH_HASH
+# declare -A RUST_HASH
+# Using file-based storage for hashes to support bash 3.2
+HASH_DIR="${RESULT_DIR}/hashes"
+mkdir -p "${HASH_DIR}"
 
 show_usage() {
     cat <<'EOF'
@@ -79,7 +92,8 @@ run_bash_example() {
         local hash_file
         hash_file=$(printf '%s\n' "${output}" | awk -F= '/artifact_hash_file=/{print $2}' | tail -1)
         if [[ -n "${hash_file}" ]]; then
-            BASH_HASH["${script_id}"]="${hash_file}"
+            # BASH_HASH["${script_id}"]="${hash_file}"
+            echo "${hash_file}" > "${HASH_DIR}/bash_${script_id}"
         fi
     else
         record_result "bash" "${scenario_label}" "fail"
@@ -92,10 +106,11 @@ run_rust_examples() {
     mkdir -p "${RESULT_DIR}/examples"
     if (cd "${TEST_DIR}/rust" && cargo test --quiet -- crossfile_ >>"${log_file}" 2>&1); then
         record_result "rust" "examples" "pass"
-        for id in 001 002 003; do
+        for id in 001 002 003 005; do
             local hash_path="${RESULT_DIR}/examples/crossfile-${id}-rust.sha256"
             if [[ -f "${hash_path}" ]]; then
-                RUST_HASH["crossfile-${id}"]="${hash_path}"
+                # RUST_HASH["crossfile-${id}"]="${hash_path}"
+                echo "${hash_path}" > "${HASH_DIR}/rust_crossfile-${id}"
             fi
         done
         return 0
@@ -109,8 +124,16 @@ compare_parity() {
     local id
     for id in 001 002 003; do
         local key="crossfile-${id}"
-        local bash_hash="${BASH_HASH["${key}"]:-}"
-        local rust_hash="${RUST_HASH["${key}"]:-}"
+        # local bash_hash="${BASH_HASH["${key}"]:-}"
+        # local rust_hash="${RUST_HASH["${key}"]:-}"
+        local bash_hash=""
+        local rust_hash=""
+        if [[ -f "${HASH_DIR}/bash_${key}" ]]; then
+            bash_hash=$(cat "${HASH_DIR}/bash_${key}")
+        fi
+        if [[ -f "${HASH_DIR}/rust_${key}" ]]; then
+            rust_hash=$(cat "${HASH_DIR}/rust_${key}")
+        fi
         if [[ -z "${bash_hash}" || -z "${rust_hash}" ]]; then
             record_result "parity" "${key}" "skipped" "missing hash files"
             continue
@@ -200,6 +223,7 @@ main() {
 
     local workspace
     workspace="$(create_workspace)"
+    cp "${ROOT_DIR}/Justfile" "${workspace}/Justfile"
     echo "INFO: Using temporary workspace ${workspace}" >&2
     trap 'cleanup_workspace "${workspace}"' EXIT
 

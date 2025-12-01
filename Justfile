@@ -7,6 +7,7 @@ export PATH := env_var('HOME') + "/bin:" + HOMEBREW_PREFIX + "/bin:" + env_var('
   just {{ARGS}}
 
 # Auto-setup environment on first use
+# Auto-setup environment on first use
 setup:
     #!/usr/bin/env fish
     # Check if direnv is available
@@ -15,6 +16,24 @@ setup:
             direnv allow .
         end
     end
+
+# Show this help message
+help:
+    @echo "git-cross - Vendor parts of git repos into your project"
+    @echo ""
+    @echo "Usage:"
+    @echo "  just <command> [options]"
+    @echo "  ./cross <command> [options]  (wrapper script)"
+    @echo ""
+    @echo "Available commands:"
+    @just --list --unsorted
+    @echo ""
+    @echo "Quick start:"
+    @echo "  1. Add upstream repo:    just use <name> <url>"
+    @echo "  2. Patch directory:      just patch <name>:<path> <local_path>"
+    @echo "  3. Sync from upstream:   just sync"
+    @echo " "
+    @echo "For more details, see README.md"
 
 # Check for required dependencies
 check-deps:
@@ -51,13 +70,18 @@ _resolve_context arg_rspec arg_lpath invocation_dir:
     # Check Crossfile for matching local path
     if test -f Crossfile
         while read -l line
-            # Parse: patch <remote>:<path> <local> ...
+            # Parse: [cross] patch <remote>:<path> <local> ...
             set parts (string split " " $line)
-            if test "$parts[1]" = "patch"
-                set p_local $parts[3]
+            set cmd_idx 1
+            if test "$parts[1]" = "cross"
+                set cmd_idx 2
+            end
+            
+            if test "$parts[$cmd_idx]" = "patch"
+                set p_local $parts[(math $cmd_idx + 2)] # Local path is 2 positions after command
                 # Check if CWD is inside the patch local path
                 if string match -q "$p_local*" "$rel_cwd"
-                    set rspec $parts[2]
+                    set rspec $parts[(math $cmd_idx + 1)] # Remote spec is 1 position after command
                     set lpath $p_local
                     echo "$rspec|$lpath"
                     exit 0
@@ -82,60 +106,92 @@ update_crossfile cmd:
         echo "{{cmd}}" >> $CROSSFILE
     end
 
+# Execute arbitrary shell command
+exec +CMD:
+    {{CMD}}
+
 # Add a remote repository
-use name url: check-deps (update_crossfile "use " + name + " " + url)
+use name url: check-deps (update_crossfile "cross use " + name + " " + url)
     echo here\
     @git remote show | grep -q "^{{name}}$" \
       || { git remote add {{name}} {{url}} && echo "Added remote: {{name}} -> {{url}}"; }
 
 # Patch a directory from a remote into a local path
-patch remote_spec local_path branch="master": check-deps (update_crossfile "patch " + remote_spec + " " + local_path + (if branch != "master" { " " + branch } else { "" }))
+patch remote_spec local_path branch="master": check-deps (update_crossfile "cross patch " + remote_spec + " " + local_path + (if branch != "master" { " " + branch } else { "" }))
     #!/usr/bin/env fish
     set parts (string split -m1 : {{remote_spec}})
     set remote $parts[1]
     set remote_path $parts[2]
-    
     test -n "$remote" -a -n "$remote_path" || begin
         echo "Error: Invalid format. Use remote:path"
         exit 1
     end
-    
     git remote show | grep -q "^$remote\$" || begin
         echo "Error: Remote '$remote' not found. Run: just use $remote <url>"
         exit 1
     end
-    
     set hash (echo $remote_path | md5sum | cut -d' ' -f1)
     set wt ".git/cross/worktrees/$remote"_"$hash"
-    
     echo "Setting up hidden worktree at $wt..."
-    
     if not test -d $wt
         mkdir -p (dirname $wt)
-        
         echo "Fetching $remote {{branch}}..."
         git fetch $remote {{branch}}
-        
         git rev-parse --verify "$remote/{{branch}}" >/dev/null || begin
             echo "Error: $remote/{{branch}} does not exist"
             exit 1
         end
-        
         git worktree add --no-checkout -B "cross/$remote/{{branch}}/$hash" $wt "$remote/{{branch}}" >/dev/null 2>&1
-        
         set sparse (git -C $wt rev-parse --git-path info/sparse-checkout)
         mkdir -p (dirname $sparse)
         echo "/$remote_path/" > $sparse
-        
         git -C $wt config core.sparseCheckout true
         git -C $wt read-tree -mu HEAD >/dev/null 2>&1
     end
-    
     echo "Syncing files to {{local_path}}..."
     mkdir -p {{local_path}}
     rsync -av --delete --exclude .git $wt/$remote_path/ {{local_path}}/
-    
     echo "Done. {{local_path}} now contains files from $remote:$remote_path"
+
+# Internal: sync local paths from Crossfile
+_sync_from_crossfile:
+    #!/usr/bin/env fish
+    # Check if Crossfile exists
+    if not test -f Crossfile
+        echo "Note: No Crossfile found. Only worktrees were updated."
+        exit 0
+    end
+    echo "Syncing changes to local paths..."
+    while read -l line
+        set parts (string split " " $line)
+        # Determine if line starts with 'cross' prefix
+        set cmd_idx 1
+        if test "$parts[1]" = "cross"
+            set cmd_idx 2
+        end
+        # Handle 'patch' command: sync worktree to local path
+        if test "$parts[$cmd_idx]" = "patch"
+            set rspec $parts[(math $cmd_idx + 1)]
+            set lpath $parts[(math $cmd_idx + 2)]
+            set rparts (string split -m1 : $rspec)
+            set remote $rparts[1]
+            set rpath $rparts[2]
+            set hash (echo $rpath | md5sum | cut -d' ' -f1)
+            set wt ".git/cross/worktrees/$remote"_"$hash"
+            # Sync only if worktree exists
+            if test -d $wt
+                echo "  $lpath ← $rspec"
+                mkdir -p $lpath
+                rsync -a --delete --exclude .git $wt/$rpath/ $lpath/ >/dev/null 2>&1
+            end
+        # Handle 'exec' command: run post-hooks or custom commands
+        else if test "$parts[$cmd_idx]" = "exec"
+            set cmd_str (string join " " $parts[(math $cmd_idx + 1)..-1])
+            echo "  exec: $cmd_str"
+            eval $cmd_str
+        end
+    end < Crossfile
+    echo "✅ Sync complete"
 
 # Sync all patches from upstream
 sync: check-deps
@@ -144,55 +200,27 @@ sync: check-deps
         echo "No worktrees found."
         exit 0
     end
-    
     # First, update all worktrees from upstream
     for wt in .git/cross/worktrees/*
         test -d $wt || continue
         echo "Updating $wt..."
-        
         # Stash local changes if any
         set dirty (git -C $wt status --porcelain)
         if test -n "$dirty"
             echo "Stashing local changes in $wt..."
             git -C $wt stash
         end
-        
         set branch (git -C $wt rev-parse --abbrev-ref HEAD)
         set upstream (git -C $wt rev-parse --abbrev-ref --symbolic-full-name '@{upstream}')
         git -C $wt pull --rebase >/dev/null 2>&1
-        
         # Pop stash if we stashed
         if test -n "$dirty"
             echo "Popping stash in $wt..."
             git -C $wt stash pop
         end
     end
-    
     # Then, sync changes to local paths using Crossfile
-    if test -f Crossfile
-        echo "Syncing changes to local paths..."
-        while read -l line
-            set parts (string split " " $line)
-            if test "$parts[1]" = "patch"
-                set rspec $parts[2]
-                set lpath $parts[3]
-                set rparts (string split -m1 : $rspec)
-                set remote $rparts[1]
-                set rpath $rparts[2]
-                
-                set hash (echo $rpath | md5sum | cut -d' ' -f1)
-                set wt ".git/cross/worktrees/$remote"_"$hash"
-                
-                if test -d $wt
-                    echo "  $lpath ← $rspec"
-                    rsync -a --delete --exclude .git $wt/$rpath/ $lpath/ >/dev/null 2>&1
-                end
-            end
-        end < Crossfile
-        echo "✅ Sync complete"
-    else
-        echo "Note: No Crossfile found. Only worktrees were updated."
-    end
+    just --quiet _sync_from_crossfile
 
 # Diff local vs upstream
 diff arg_rspec="" arg_lpath="": check-deps
@@ -289,9 +317,14 @@ list: check-deps
     
     while read -l line
         set parts (string split " " $line)
-        if test "$parts[1]" = "patch"
-            set remote_spec $parts[2]
-            set local_path $parts[3]
+        set cmd_idx 1
+        if test "$parts[1]" = "cross"
+            set cmd_idx 2
+        end
+
+        if test "$parts[$cmd_idx]" = "patch"
+            set remote_spec $parts[(math $cmd_idx + 1)] # Remote spec
+            set local_path $parts[(math $cmd_idx + 2)] # Local path
             set rparts (string split -m1 : $remote_spec)
             printf "%-20s %-30s %-20s\n" $rparts[1] $rparts[2] $local_path
         end
@@ -310,9 +343,14 @@ status: check-deps
     
     while read -l line
         set parts (string split " " $line)
-        if test "$parts[1]" = "patch"
-            set remote_spec $parts[2]
-            set local_path $parts[3]
+        set cmd_idx 1
+        if test "$parts[1]" = "cross"
+            set cmd_idx 2
+        end
+
+        if test "$parts[$cmd_idx]" = "patch"
+            set remote_spec $parts[(math $cmd_idx + 1)] # Remote spec
+            set local_path $parts[(math $cmd_idx + 2)] # Local path
             set rparts (string split -m1 : $remote_spec)
             set remote $rparts[1]
             set rpath $rparts[2]
@@ -370,8 +408,15 @@ replay: check-deps
             continue
         end
         
-        echo "▶ just $line"
-        just $line
+        # If line starts with "cross", execute it directly via just
+        if string match -q "cross *" $line
+             echo "▶ just $line"
+             just $line
+        else
+             # Backward compatibility for old format (implicit "cross")
+             echo "▶ just cross $line"
+             just cross $line
+        end
     end < Crossfile
     
     echo "✅ Crossfile replay complete"

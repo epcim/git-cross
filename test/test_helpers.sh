@@ -90,3 +90,16 @@ cleanup_test_env() {
         rm -rf "$TEST_DIR"
     fi
 }
+
+# Assert file contains string
+assert_file_contains() {
+    local file="$1"
+    local content="$2"
+    
+    if ! grep -qF "$content" "$file"; then
+        echo "❌ File '$file' missing content: '$content'"
+        echo "File content:"
+        cat "$file"
+        return 1
+    fi
+}

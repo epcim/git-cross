@@ -1,6 +1,8 @@
 Known issues:
 
-- re-test `replay` of default Crossfile and add additional test cases
-- patch/replay fails if "vendor" folder dont exist, `patch` function shall create required directories
-- Crossfile commands shall start with "cross"
-- Feature post hook. How to implement some clenaup per "patch". Alt1: Crossfile could be understood as "shell" file. Alt2: we could define post_hooks in Crossfile per patch, and innter would be shell cmds to executed.
+- [x] re-test `replay` of default Crossfile and add additional test cases
+- [x] patch/replay fails if "vendor" folder dont exist, `patch` function shall create required directories
+- [x] Crossfile commands shall start with "cross" (or plugin name). Future: "cross" could be the name of the tracking remote/plugin. `replay` should support 3rd party actions (e.g., `just <plugin> <cmd>`).
+- Crossfile commands shall start with "cross" (or plugin name). Future: "cross" could be the name of the tracking remote/plugin. `replay` should support 3rd party actions (e.g., `just <plugin> <cmd>`).
+- Crossfile commands shall start with "cross" (or plugin name). Future: "cross" could be the name of the tracking remote/plugin. `replay` should support 3rd party actions (e.g., `just <plugin> <cmd>`).
+- [x] Feature post hook: Implemented via `cross exec <cmd>`. User can add `cross exec just posthook` to Crossfile to trigger their own Justfile recipes.

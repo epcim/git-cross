@@ -21,6 +21,9 @@ echo "---------------------------------------------------"
 just use demo "$DEMO_URL"
 just patch demo:docs vendor/docs
 
+assert_file_contains "Crossfile" "cross use demo $DEMO_URL"
+assert_file_contains "Crossfile" "cross patch demo:docs vendor/docs"
+
 # Update the remote
 cd ..
 update_mock_remote "demo" "docs" "Updated content"

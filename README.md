@@ -40,9 +40,11 @@ This allows you to "vendor" files from other repositories directly into your sou
 
 ```bash
 cd $YOUR_REPO
+just cross help                                 # Show all commands
 just cross use demo https://github.com/example/demo.git
 just cross patch demo:docs vendor/docs
-just cross [sync|diff|push|list|status|...]
+just cross sync                                 # Update from upstream
+just cross exec just posthook                   # Run post-hooks
 ```
 
 ## Installation
@@ -197,6 +199,60 @@ LOCAL PATH           DIFF            UPSTREAM        CONFLICTS
 vendor/docs          Modified        Synced          No              
 vendor/ansible/roles Clean           2 behind        No              
 ```
+
+---
+
+#### `exec` - Run Custom Commands
+
+Execute arbitrary shell commands or scripts from your `Crossfile`. Perfect for post-hooks, cleanup tasks, or custom automation:
+
+```bash
+just cross exec <command>
+```
+
+**Example:**
+
+```bash
+# Simple command
+just cross exec echo "Setup complete"
+
+# Run a recipe from your own Justfile
+just cross exec just posthook
+
+# Chain multiple commands
+just cross exec "npm install && npm run build"
+```
+
+**Multiline commands in Crossfile:**
+
+For complex commands, you can use shell escaping or line continuation:
+
+```
+# Crossfile
+cross use demo https://github.com/example/demo.git
+cross patch demo:src vendor/src
+
+# Simple exec
+cross exec echo "Patching complete"
+
+# Multiline via shell continuation
+cross exec sh -c 'echo "Step 1" && echo "Step 2" && echo "Step 3"'
+
+# Call your own Justfile recipes
+cross exec just build
+cross exec just deploy
+```
+
+**Common use cases:**
+
+- **Post-patch hooks**: Run build scripts after vendoring dependencies
+- **Cleanup tasks**: Remove unwanted files or directories  
+- **Custom automation**: Trigger CI/CD pipelines, notifications, etc.
+- **Integration**: Call your project's own `just` recipes or shell scripts
+
+> **Note**: The `exec` command runs in your project's root directory with access to your full shell environment. Commands are executed via `eval` in `fish`.  
+
+---
 
 **Status indicators:**
 

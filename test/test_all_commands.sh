@@ -87,6 +87,12 @@ echo "Test 1: Basic patch"
 just use demo "$DEMO_URL"
 just patch demo:docs vendor/docs
 
+# Define helper since this script doesn't source test_helpers.sh fully or we want to use the one we added?
+# Actually test_all_commands.sh does NOT source test_helpers.sh. It has its own setup.
+# So I should add assert_file_contains to it or just use grep.
+if ! grep -qF "cross use demo $DEMO_URL" Crossfile; then echo "Missing cross use"; exit 1; fi
+if ! grep -qF "cross patch demo:docs vendor/docs" Crossfile; then echo "Missing cross patch"; exit 1; fi
+
 if [ -f "vendor/docs/file.txt" ]; then
     echo "PASS: vendor/docs/file.txt exists"
 else
@@ -137,7 +143,7 @@ echo "Test 3: Diff local vs upstream"
 echo "Local modification" >> vendor/docs/file.txt
 
 # Diff should show the change
-if just diff-patch demo:docs vendor/docs 2>&1 | grep -q "Local modification"; then
+if just diff demo:docs vendor/docs 2>&1 | grep -q "Local modification"; then
     echo "PASS: Diff detected local changes"
 else
     echo "FAIL: Diff did not detect changes"

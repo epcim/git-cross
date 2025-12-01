@@ -1,7 +1,7 @@
 # upstream
-use khue	https://github.com/khuedoan/homelab
-use bill	https://github.com/billimek/k8s-gitops
-use core https://github.com/habitat-sh/core-plans
+cross use khue	https://github.com/khuedoan/homelab
+cross use bill	https://github.com/billimek/k8s-gitops
+cross use core https://github.com/habitat-sh/core-plans
 
 git remote -v | grep fetch | column -t
 
@@ -10,11 +10,11 @@ git remote -v | grep fetch | column -t
 
 # cross patches
 # ex: origin:path/remote/dir [local/path/to/dir] [branch]
-patch khue:/metal       deploy/metal
-patch bill:/setup/flux  deploy/flux
+cross patch khue:/metal       deploy/metal
+cross patch bill:/setup/flux  deploy/flux
 
 # ex: patch same dir on remote to same location in local
-patch core:asciinema
+cross patch core:asciinema
 
 export CROSS_FETCH_DEPENDENCIES=${CROSS_FETCH_DEPENDENCIES:-false}
 
