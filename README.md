@@ -1,146 +1,327 @@
+# git-cross
 
-# git-cross is tool for mixing git repositories
+[![CI](https://github.com/epcim/git-cross/workflows/CI/badge.svg)](https://github.com/epcim/git-cross/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](https://github.com/epcim/git-cross/blob/main/CHANGELOG.md)
 
-TLDR;
-Minimalist approach for mixing "parts" of git repositories.
+**Git's CRISPR.** 🧬
 
-Use `git add/checkout/commit/rebase` as you are used to, the script cut the complexity behind git worktrees, sparse checkout etc.
+Minimalist approach for mixing "parts" of git repositories using `git worktree` + `rsync`.
+This allows you to "vendor" files from other repositories directly into your source tree (so they are real files, not submodules), while still maintaining a link to the upstream for updates and contributions.
 
-`Cross` allows you to mix sparse directories from your favourite upstreams to your local repo. As you do changes to spare branch,
-updates back to origin repository is always easy.
+## Why git-cross?
+
+| Feature | git-cross | Submodules | git-subrepo |
+|---------|-----------|------------|-------------|
+| **Physical files** | ✅ Yes | ❌ Gitlinks only | ✅ Yes |
+| **Easy to modify** | ✅ Direct edits | ⚠️ Complex | ✅ Direct edits |
+| **Partial checkout** | ✅ Subdirectories | ❌ Entire repo | ❌ Entire repo |
+| **Upstream sync** | ✅ Bidirectional | ⚠️ Complex | ⚠️ Merge commits |
+| **Commit visibility** | ✅ In main repo | ❌ Separate | ✅ In main repo |
+| **Learning curve** | ✅ Simple | ❌ Steep | ⚠️ Moderate |
+| **Reproducibility** | ✅ Crossfile | ⚠️ .gitmodules | ⚠️ Manual |
+| **Dependencies** | `just` + `fish` | Git only | Bash script |
+
+**Perfect for:**
+
+- Vendoring specific components from monorepos
+- Sharing code between microservices  
+- Contributing to upstream while maintaining local customizations
+- Avoiding submodule hell
 
 ## Requirements
 
-Requires `git --version >= 2.20`.
+- `git` (>= 2.20)
+- `just` (Command runner)
+- `fish` (Shell, used internally for complex logic)
+- `rsync`
+
+## TLDR
+
+```bash
+cd $YOUR_REPO
+just cross use demo https://github.com/example/demo.git
+just cross patch demo:docs vendor/docs
+just cross [sync|diff|push|list|status|...]
+```
+
+## Installation
+
+### Option 1: Include in Your Justfile (Recommended)
+
+**Step 1**: Vendor the git-cross Justfile into your project:
+
+```bash
+# Use git-cross to vendor itself! (meta, right?)
+just cross use git-cross https://github.com/epcim/git-cross.git
+just cross patch git-cross:. vendor/git-cross
+```
+
+**Step 2**: Add to your project's `Justfile`:
+
+```just
+# Import git-cross commands
+import? 'vendor/git-cross/Justfile'
+```
+
+> **Note**: `just` doesn't support importing from URLs directly (e.g., `import? 'https://...'`). You must vendor the Justfile locally first. The `import?` directive uses `?` to make the import optional, so it won't fail if the file doesn't exist yet.
+
+**Alternative**: If you don't want to vendor, use a local clone:
+
+```just
+# In your own Justfile
+import? '../git-cross/Justfile'
+```
+
+### Option 2: Standalone Installation
+
+1. **Clone the repository:**
+
+   ```bash
+   git clone https://github.com/epcim/git-cross.git
+   cd git-cross
+   ```
+
+2. **Setup environment** (optional but recommended):
+   - **Direnv**: Run `direnv allow` (if you use direnv).
+   - **Manual**: Run `source .env`.
+
+3. **Verify installation:**
+
+   ```bash
+   just cross check-deps
+   # or if .env is sourced:
+   cross check-deps
+   ```
 
 ## Usage
 
-Configure your mixins in Cross* file:
+All commands can be invoked with `just cross <command>` or directly as `cross <command>` if you've sourced `.env`.
 
-```sh
-  use core https://github.com/habitat-sh/core-plans
-  use ncerny https://github.com/ncerny/habitat-plans
+**Recommended pattern**: `just cross <command>` (works everywhere, no environment setup needed)
 
-  # example: upstream/path [branch]
-  patch core:consul
-  patch core:cacerts
-  patch core:etcd
-  patch ncerny:cfssl
+### Core Commands
+
+#### `use` - Add a Remote Repository
+
+Add external repositories you want to pull from:
+
+```bash
+just cross use <name> <url>
 ```
 
-Track and checkout plans with:
+**Example:**
 
-```sh
-./cross # to process Cross* file in repo
-# or
-./cross some ../some/remote/git/repo_url
-./cross patch some:path/on/remote to/local/path [branch]
+```bash
+just cross use demo https://github.com/example/demo.git
+just cross use homelab https://github.com/khuedoan/homelab
 ```
 
+This configuration is automatically saved to `Crossfile`.
 
-## Note
+---
 
-Do not overestimate features of this tool.
+#### `patch` - Vendor a Directory
 
-If you are interested in nesting 3rd party git repositories in your you probably want to use submodule or subtree feature instead.
-Latest versions of git/submodule allows almost same behaviour.
+Pull a specific directory from a remote into your local tree:
 
-## Other & similar projects
+```bash
+just cross patch <remote>:<remote_path> <local_path> [branch]
+```
 
-Very close idea:
+**Example:**
 
- - https://github.com/ingydotnet/git-subrepo (generic approach)
+```bash
+just cross patch demo:docs vendor/docs
+just cross patch homelab:metal/roles vendor/ansible/roles master
+```
 
-Inspired by:
+**What happens:**
 
- - https://github.com/metacloud/gilt
- - https://github.com/capr/multigit
- - https://syslog.ravelin.com/multi-to-mono-repository-c81d004df3ce
- - https://github.com/unravelin/tomono
- - https://leewc.com/articles/how-to-merge-multiple-git-repositories-into-one-repo/
- - ...
+- Creates a hidden worktree for the remote
+- Sparse-checkouts only the specified path
+- Syncs files to your local path using `rsync`
+- Auto-saves configuration to `Crossfile`
 
+---
 
-## Example
+#### `sync` - Update from Upstream
 
-```sh
+Update all vendored dependencies from their upstreams:
 
-❯ cat Cross 
+```bash
+just cross sync
+```
 
-# upstream
-use khue	https://github.com/khuedoan/homelab
-use bill	https://github.com/billimek/k8s-gitops
-use mine	../test-git-cross-dummy
+**What happens:**
 
-git remote -v | grep fetch | column -t
+- Pulls latest changes into hidden worktrees
+- Uses `git stash` to preserve local modifications in worktrees
+- Automatically syncs updated files to your local paths
+- Pops stash after update
 
-# stash?
-# repo_is_clean || say "There are uncommitted changes in the repository. Stash them first." 1
+---
 
-# cross patches
-# ex: origin:path/to/dir [local/path/to/dir] [-b branch]
-patch mine:docs/another docs
-patch khue:/metal deploy/metal
-patch bill:/logs  deploy/logs
+#### `list` - Show All Patches
 
+Display all configured patches:
 
-# hooks, are custom fn for triggers run in git-cross
-cross_post_hook() {
-  ask "Update upstream?" N && {
-    echo "DOES NOTHING"
-  }
-}
+```bash
+just cross list
+```
 
-
-❯ VERBOSE=true ./cross 
-git remote add khue https://github.com/khuedoan/homelab
-git remote add bill https://github.com/billimek/k8s-gitops
-git remote add mine ../test-git-cross-dummy
-bill  https://github.com/billimek/k8s-gitops  (fetch)
-khue  https://github.com/khuedoan/homelab     (fetch)
-mine  ../test-git-cross-dummy                 (fetch)
-
-Tracking mine:docs/another (branch:master) at docs
-git fetch --prune --depth=20 mine master:mine/docs
-remote: Enumerating objects: 10, done.
-remote: Counting objects: 100% (10/10), done.
-remote: Compressing objects: 100% (4/4), done.
-remote: Total 10 (delta 0), reused 0 (delta 0), pack-reused 0
-Unpacking objects: 100% (10/10), 1.94 KiB | 283.00 KiB/s, done.
-From ../test-git-cross-dummy
- * [new branch]      master     -> mine/docs
- * [new branch]      master     -> mine/master
-git worktree add --no-checkout -B mine/master/docs/another ./docs --track mine/master
-Preparing worktree (new branch 'mine/master/docs/another')
-Branch 'mine/master/docs/another' set up to track remote branch 'master' from 'mine'.
-git config --worktree --bool core.sparseCheckout true
-git config --worktree --path core.worktree /Users/epcim/Workspace/apealive/test-git-cross/docs/..
-git config --worktree status.showUntrackedFiles no
-git checkout
-Your branch is up to date with 'mine/master'.
-git --git-dir=.git --work-tree=. add ./docs
-warning: adding embedded git repository: docs
-...
-...
-...
-
-
-❯ git status
-On branch main
-Changes to be committed:
-  (use "git restore --staged <file>..." to unstage)
-	new file:   deploy/logs
-	new file:   deploy/metal
-	new file:   docs
-
-
-❯ cd deploy/metal 
-❯ git status
-On branch khue/master/metal
-Your branch is up to date with 'khue/master'.
-
-You are in a sparse checkout with 24% of tracked files present.
-
-nothing to commit (use -u to show untracked files)
+**Example output:**
 
 ```
+REMOTE               REMOTE PATH                    LOCAL PATH          
+----------------------------------------------------------------------
+demo                 docs                           vendor/docs         
+homelab              metal/roles                    vendor/ansible/roles
+```
+
+---
+
+#### `status` - Check Patch Status
+
+Show the status of all patches (modifications, upstream divergence, conflicts):
+
+```bash
+just cross status
+```
+
+**Example output:**
+
+```
+LOCAL PATH           DIFF            UPSTREAM        CONFLICTS       
+----------------------------------------------------------------------
+vendor/docs          Modified        Synced          No              
+vendor/ansible/roles Clean           2 behind        No              
+```
+
+**Status indicators:**
+
+- **DIFF**: `Clean` | `Modified` | `Missing WT`
+- **UPSTREAM**: `Synced` | `N ahead` | `N behind`
+- **CONFLICTS**: `No` | `YES`
+
+---
+
+### Contributing Back Upstream
+
+#### `diff-patch` - Compare Local vs Upstream
+
+Check what you've changed locally:
+
+```bash
+# Explicit arguments:
+| `just cross diff` | `remote:path` `local/path` | Show diff between local and upstream |
+| `just cross push` | `remote:path` `local/path` | Push local changes back to upstream |
+| `just cross replay` | | Re-run all patches from `Crossfile` |
+
+### 4. Check Status
+
+See what's changed in your vendored paths:
+
+```bash
+just cross status
+```
+
+### 5. View Diffs
+
+Compare your local changes against the upstream version:
+
+```bash
+just cross diff
+```
+
+### 6. Push Changes Upstream
+
+When you're ready to contribute back:
+
+```bash
+just cross push
+```
+
+This will:
+
+1. Sync your local changes to the hidden worktree
+2. Show you the diff
+3. Ask for confirmation (Run/Manual/Cancel)
+4. Commit and push to the upstream remote
+
+> **Tip**: `diff` and `push` automatically infer arguments if you run them from inside a vendored directory!ntrol
+
+- **Cancel (c)**: Abort without changes
+
+**Example:**
+
+```bash
+cd vendor/docs
+# Make changes to files
+just cross push-upstream
+# Choose 'r' to commit and push, or 'm' for manual control
+```
+
+---
+
+### Reproducibility
+
+#### `replay` - Restore from Crossfile
+
+Restore your environment from `Crossfile` (e.g., after cloning):
+
+```bash
+just cross replay
+```
+
+This executes all `use` and `patch` commands stored in `Crossfile`, recreating your vendored setup.
+
+---
+
+## Concept: Git's CRISPR
+
+Like CRISPR gene editing, `git-cross` precisely targets and vendors specific subdirectories from upstream repos, allowing you to "edit" your codebase without full integration (like submodules) or complete detachment (like copy-paste).
+
+**Key advantages:**
+
+- ✅ Physical files in your repo (not gitlinks)
+- ✅ Easy to modify and commit
+- ✅ Maintains upstream link for updates
+- ✅ Bidirectional sync (pull updates, push contributions)
+- ✅ Reproducible via `Crossfile`
+
+## How It Works
+
+Under the hood, `git-cross` uses:
+
+- **Git worktrees**: Hidden worktrees in `.git/cross/worktrees/`
+- **Sparse checkout**: Only checks out specified paths
+- **Rsync**: Syncs files between worktree and your visible directory
+- **Crossfile**: Auto-generated configuration for reproducibility
+
+## Future Roadmap
+
+### Git Plugin Integration
+
+We're considering integrating `git-cross` as a native git plugin, enabling:
+
+```bash
+git cross use demo https://github.com/example/demo.git
+git cross patch demo:docs vendor/docs
+git cross sync
+```
+
+This would make `git-cross` feel like a first-class git feature while maintaining the simplicity of the current implementation.
+
+**How it would work:**
+
+- Create `git-cross` executable in `$PATH`
+- Git automatically recognizes `git-cross` as `git cross`
+- Keep the `Justfile` as the implementation backend
+- Maintain backward compatibility with `just cross`
+
+**Status**: 🔮 Future consideration - feedback welcome!
+
+## License
+
+MIT

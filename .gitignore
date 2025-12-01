@@ -1,0 +1,7 @@
+# cross test harness artifacts
+.test*
+/test/results/
+/test/fixtures/workspaces/
+/test/fixtures/remotes/
+/test/rust/target/
+/tmp/

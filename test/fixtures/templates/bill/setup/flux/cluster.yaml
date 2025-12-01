@@ -1,0 +1,4 @@
+kind: ConfigMap
+metadata:
+  name: cross-example-cluster
+  namespace: flux-system

@@ -1,0 +1,124 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+      fail-fast: false
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install dependencies
+      run: |
+        if [ "$RUNNER_OS" == "Linux" ]; then
+          sudo apt-get update
+          sudo apt-get install -y fish rsync
+          curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to ~/bin
+          echo "$HOME/bin" >> $GITHUB_PATH
+        elif [ "$RUNNER_OS" == "macOS" ]; then
+          brew install fish rsync just
+        fi
+        
+    - name: Verify installation
+      run: |
+        just --version
+        fish --version
+        git --version
+        rsync --version
+        
+    - name: Run dependency check
+      run: just check-deps
+      
+    - name: Run all tests
+      run: ./test/test_all_commands.sh
+      
+    - name: Run individual tests
+      run: |
+        for test in test/test_*.sh; do
+          if [ -x "$test" ] && [ "$test" != "test/test_all_commands.sh" ]; then
+            echo "Running $test..."
+            $test
+          fi
+        done
+        
+    - name: Test coverage report
+      if: always()
+      run: |
+        echo "## Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Test | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|------|--------|" >> $GITHUB_STEP_SUMMARY
+        
+        TOTAL=0
+        PASSED=0
+        
+        for test in test/test_*.sh; do
+          if [ -x "$test" ]; then
+            TOTAL=$((TOTAL + 1))
+            TEST_NAME=$(basename "$test" .sh)
+            if $test > /dev/null 2>&1; then
+              echo "| $TEST_NAME | ✅ PASS |" >> $GITHUB_STEP_SUMMARY
+              PASSED=$((PASSED + 1))
+            else
+              echo "| $TEST_NAME | ❌ FAIL |" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+        done
+        
+        COVERAGE=$((PASSED * 100 / TOTAL))
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Coverage:** $PASSED/$TOTAL tests passed ($COVERAGE%)" >> $GITHUB_STEP_SUMMARY
+        
+        # Create coverage badge data
+        mkdir -p .coverage
+        echo "$COVERAGE" > .coverage/percentage.txt
+        
+    - name: Upload coverage data
+      if: always() && matrix.os == 'ubuntu-latest'
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-data
+        path: .coverage/
+        retention-days: 30
+
+  shellcheck:
+    name: Shellcheck
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Run ShellCheck
+      uses: ludeeus/action-shellcheck@master
+      with:
+        scandir: './test'
+        severity: warning
+        
+  status:
+    name: Status Check
+    runs-on: ubuntu-latest
+    needs: [test, shellcheck]
+    if: always()
+    
+    steps:
+    - name: Check test results
+      run: |
+        if [ "${{ needs.test.result }}" == "success" ] && [ "${{ needs.shellcheck.result }}" == "success" ]; then
+          echo "✅ All checks passed"
+          exit 0
+        else
+          echo "❌ Some checks failed"
+          echo "Test: ${{ needs.test.result }}"
+          echo "Shellcheck: ${{ needs.shellcheck.result }}"
+          exit 1
+        fi

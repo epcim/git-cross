@@ -1,0 +1,13 @@
+#
+# This is an example Crossfile, see more under `./examples`
+
+# use upstream
+just cross use git-cross https://github.com/epcim/git-cross.git
+
+# configure local patch
+just cross patch git-cross:. vendor/git-cross
+just sync
+
+# status
+git remote -v | grep fetch | column -t
+

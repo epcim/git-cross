@@ -1,0 +1,7 @@
+# upstream
+use khue	https://github.com/khuedoan/homelab
+
+# cross patches
+# ex: origin:path/remote/dir [local/path/to/dir] [branch]
+patch khue:/metal       deploy/metal
+

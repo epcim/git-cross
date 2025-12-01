@@ -1,0 +1,11 @@
+# Example: Full workflow with sync, diff, and PR
+use demo https://github.com/example/demo-repo
+
+# Patch a directory
+patch demo:docs vendor/docs
+
+# Later: sync updates from upstream
+# (simulated by updating the remote and running sync)
+
+# Make local changes, diff them, and prepare PR
+# (simulated by modifying files and testing diff/prepare-pr)

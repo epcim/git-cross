@@ -1,0 +1,70 @@
+name: Update Status Badges
+
+on:
+  push:
+    branches: [ main ]
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+jobs:
+  update-badges:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download coverage data
+      if: github.event.workflow_run
+      uses: actions/download-artifact@v4
+      with:
+        name: coverage-data
+        path: .coverage/
+        run-id: ${{ github.event.workflow_run.id }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+      continue-on-error: true
+      
+    - name: Create badges
+      run: |
+        # Create badges directory
+        mkdir -p badges
+        
+        # CI Status badge based on last workflow run
+        if [ "${{ github.event.workflow_run.conclusion }}" == "success" ] || [ "${{ github.event_name }}" == "push" ]; then
+          BADGE_COLOR="brightgreen"
+          BADGE_STATUS="passing"
+        else
+          BADGE_COLOR="red"
+          BADGE_STATUS="failing"
+        fi
+        
+        # Generate badge URLs (using shields.io)
+        echo "CI_BADGE=https://img.shields.io/badge/CI-$BADGE_STATUS-$BADGE_COLOR" > badges/ci.txt
+        
+        # Coverage badge if data available
+        if [ -f .coverage/percentage.txt ]; then
+          COVERAGE=$(cat .coverage/percentage.txt)
+          if [ "$COVERAGE" -ge 90 ]; then
+            COLOR="brightgreen"
+          elif [ "$COVERAGE" -ge 70 ]; then
+            COLOR="yellow"
+          else
+            COLOR="red"
+          fi
+          echo "COVERAGE_BADGE=https://img.shields.io/badge/coverage-${COVERAGE}%25-$COLOR" > badges/coverage.txt
+        fi
+        
+        # Version badge from CHANGELOG
+        if [ -f CHANGELOG.md ]; then
+          VERSION=$(grep -m1 "## \[" CHANGELOG.md | sed 's/## \[\(.*\)\].*/\1/')
+          echo "VERSION_BADGE=https://img.shields.io/badge/version-$VERSION-blue" > badges/version.txt
+        fi
+      
+    - name: Update README with badges
+      run: |
+        # This would update README.md with badge links
+        # For now, we just log the badge URLs
+        echo "Badge URLs generated:"
+        cat badges/*.txt || echo "No badges generated"
