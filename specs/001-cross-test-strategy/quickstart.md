@@ -2,10 +2,11 @@
 
 ## Prerequisites
 - Git ≥ 2.20
-- Bash ≥ 5.0 with coreutils (`mktemp`, `realpath`, `tee`)
-- `shellcheck`
-- Rust toolchain ≥ 1.75 (for Rust harness)
-- `cargo` with crates cached locally (`assert_cmd`, `predicates`, `tempfile`, `camino`)
+- `just` (command runner) - install via Homebrew or cargo
+- `fish` shell ≥ 3.0
+- `rsync`
+- Bash ≥ 3.2 (for test harness, macOS default is fine)
+- Homebrew (macOS/Linux) for PATH setup
 
 ## Environment Setup
 1. Install dependencies listed above.
@@ -16,18 +17,24 @@
 ## Running the Suite
 ```bash
 # From repository root
-test/run-all.sh
+./test/run-all.sh
 ```
+
 The script performs:
-- README default testcase in Bash (`test/bash/default-test.sh`).
-- Rust parity harness via `cargo test` under `test/rust/`.
-- Alias and patch scenario checks (`test/bash/use-alias.sh`, `test/bash/patch-workflow.sh`).
-- Constitution verification commands: `bash -n cross`, `shellcheck cross`, `./cross status --refresh`.
+- Example Crossfile tests via `test/bash/examples/crossfile-{001,002,003,005}.sh`
+- Each test clones repo, copies `Justfile` and `.env`, runs commands via `./cross`
+- Validates expected files exist and sparse checkout works correctly
+- Note: Rust harness tests are not yet implemented
+
+**Current status**: Tests require fixture seeding (see Maintenance section)
 
 ## Results
 - Consolidated output stored in `test/results/verification.json` and human-readable logs in `test/results/*.log`.
 - CI must fail if any scenario reports non-zero status, missing files, or mismatched artifact hashes.
 
 ## Maintenance
-- Update fixtures via `scripts/fixture-tooling/seed-fixtures.sh` when README examples change.
-- Document any new environment knobs in README, spec, and plan as required by Principle IV.
+- **Fixture seeding**: Run `scripts/fixture-tooling/seed-fixtures.sh` to populate `test/fixtures/remotes/` with content
+  - Currently missing: needs implementation to create bare repos with `/metal`, `/setup/flux`, `/asciinema` paths
+- Update examples in `examples/Crossfile-*` when adding new features
+- Copy modified `Justfile` and `.env` to test repos via test scripts
+- Document environment knobs (`CROSS_NON_INTERACTIVE`, `CROSS_FETCH_DEPENDENCIES`) per Principle IV

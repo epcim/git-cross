@@ -17,15 +17,15 @@ Build a repeatable automated test strategy for the `cross` CLI that:
 
 ## Technical Context
 
-**Language/Version**: Bash 5.x (POSIX-compatible) and Rust 1.75 (for the parallel harness)  
-**Primary Dependencies**: git ≥2.20, `shellcheck`, Rust crates `assert_cmd`, `predicates`, `tempfile`, `camino`  
-**Storage**: N/A (tests operate on temporary filesystem directories only)  
-**Testing**: Bash scripts executed via `test/run-default.sh` plus `cargo test` for Rust harness; both invoked from `test/run-all.sh`  
-**Target Platform**: macOS and Linux shells with GNU coreutils (matching existing cross usage)  
-**Project Type**: Single CLI project with dedicated `test/` and `examples/` directories  
-**Performance Goals**: Full suite completes within 5 minutes on contributor hardware; individual fixtures materialise in <60 seconds  
-**Constraints**: Tests MUST run in temporary directories outside the repo, avoid network calls by using local git fixtures, honour `_git` wrapper, and configure sparse checkout prior to fetch operations  
-**Scale/Scope**: Cover every Crossfile in `examples/` plus the documented `use`/`patch` flows, producing consolidated reports in `test/`
+**Implementation**: Justfile + Fish shell (December 2025 migration complete)  
+**Language/Version**: Fish 3.x for complex logic, Bash for test harness  
+**Primary Dependencies**: `git` ≥2.20, `just` (command runner), `fish` shell, `rsync`  
+**Testing**: Bash test scripts in `test/bash/examples/` exercising Crossfile-001 through 005  
+**Target Platform**: macOS and Linux with Homebrew support  
+**Project Type**: Single CLI tool with `cross` wrapper script and vendorable `Justfile`  
+**Performance Goals**: Full test suite <5 min; individual patches <60s  
+**Constraints**: Must be vendorable into user repos, support `cross` command prefix, allow post-hooks via `exec`  
+**Scale/Scope**: Cover all example Crossfiles plus core use/patch/sync/exec workflows
 
 ## Constitution Check
 

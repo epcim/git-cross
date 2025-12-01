@@ -1,5 +1,22 @@
 # Research Notes: cross command test strategy
 
+## Implementation Update: 2025-12-01
+
+### Decision: Justfile + Fish Shell implementation
+- **Rationale**: Provides excellent command-running ergonomics (`just` list, help) while delegating complex logic to fish. Vendorable into user repos via `import?` directive.
+- **Migration completed**: All commands (`use`, `patch`, `sync`, `diff`, `push`, `list`, `status`, `exec`, `replay`) now in Justfile.
+- **Trade-offs**: Requires `just` and `fish` as dependencies (added to constitution Principle III).
+
+### Decision: `cross` command prefix in Crossfile
+- **Rationale**: Extensibility for future plugin support (e.g., `just <plugin> <cmd>`). Makes git-cross commands explicit vs. potential user recipes.
+- **Implementation**: All Crossfile lines start with `cross` (e.g., `cross use`, `cross patch`, `cross exec`).
+
+### Decision: Post-hooks via `cross exec`
+- **Rationale**: Delegates flexibility to users rather than hardcoding hook logic. Allows calling user's own Justfile recipes or arbitrary shell commands.
+- **Implementation**: `_sync_from_crossfile` helper evaluates `cross exec <command>` lines from Crossfile.
+
+## Original Research (2025-11-28)
+
 ## Decision: Local git fixtures for examples and regression coverage
 - **Rationale**: Avoids network dependency while replicating README scenarios, enabling deterministic tests for `bill:/setup/flux` and other aliases. Local bare repositories can be seeded with required directories and commits.
 - **Alternatives considered**: (a) Hitting live upstreams (rejected: flaky, credentials), (b) Mocking git commands (rejected: misses integration).

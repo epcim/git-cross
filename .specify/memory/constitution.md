@@ -1,87 +1,141 @@
-<!--
-Sync Impact Report
-Version change: 0.0.0 → 1.0.0
-Modified Principles: Principle I – Upstream-First Patching; Principle II – Worktree Hygiene; Principle III – Portable Bash Discipline; Principle IV – Transparent Automation; Principle V – Verification & Release Confidence
-Added sections: Operational Constraints; Workflow & Quality Gates
-Removed sections: None
-Templates requiring updates: .specify/templates/plan-template.md ✅ updated, .specify/templates/spec-template.md ✅ updated, .specify/templates/tasks-template.md ✅ updated
-Follow-up TODOs: None
--->
-
 # git-cross Constitution
+
+**Version**: 1.0  
+**Last Updated**: 2025-12-01
+
+## Purpose
+
+This constitutional document establishes the core principles governing the design, implementation, and evolution of `git-cross`. These principles ensure the tool remains simple, transparent, and reliable for vendoring parts of git repositories.
 
 ## Core Principles
 
-### Principle I – Upstream-First Patching
-cross exists to mix sparse directories while keeping upstream repositories the source of truth.
+### Principle I: Upstream-First Patching
 
-- Patch operations MUST preserve remote alias metadata and branch naming derived from `alias/branch/path`, avoiding rewrites that break contribution flows.
-- All git interactions inside the script MUST flow through the `_git` wrapper so logging stays verbose and behaviour remains observable.
-- Crossfile definitions MUST rely on the `use` and `patch` helpers; custom fetch flows demand documented governance approval inside the feature plan.
+**git-cross SHALL maintain a direct link to upstream repositories through git worktrees.**
 
-Rationale: Maintaining upstream-first behaviour keeps external projects healthy and ensures contributors can upstream their improvements without friction.
+- Vendored files originate from real git commits in upstream repositories
+- Sparse checkout enables selective vendoring of subdirectories
+- Local modifications remain traceable to upstream sources
+- Bidirectional sync (pull and push) maintains relationship with upstream
+- No duplication of git history in the consuming repository
 
-### Principle II – Worktree Hygiene
-Reliable worktrees keep cross trustworthy for both the root repository and every patched remote.
+**Rationale**: Submodules force entire-repo checkouts and create gitlinks instead of real files. git-cross provides physical files while preserving the upstream connection, enabling both local edits and upstream contributions.
 
-- The script MUST execute with `set -euo pipefail`, guarding non-fatal lookups with `|| true` so failures are explicit.
-- Root and patch worktrees MUST be clean before cross mutates files; violations exit via `say "ERROR: …" <exit>` rather than continuing silently.
-- `./cross status --refresh` MUST be the canonical smoke check before distributing changes or releases.
+### Principle II: Worktree Hygiene
 
-Rationale: Enforcing cleanliness avoids hidden conflicts and gives contributors immediate feedback about repository health.
+**git-cross SHALL protect worktree cleanliness and prevent data loss.**
 
-### Principle III – Portable Bash Discipline
-Portability protects the script across environments and shell versions.
+- Hidden worktrees (`.git/cross/worktrees/`) store upstream state
+- Automatic stashing before pulls preserves local modifications in worktrees
+- Commands abort on dirty state when modifications could be lost
+- Explicit confirmation required for destructive operations
+- `rsync` provides safe, predictable file synchronization
 
-- Implementation MUST target Bash ≥4 syntax, relying on `[[` tests, `local` variables, and other portable constructs.
-- Indentation MUST remain four spaces; functions stay lower_snake_case; constants and exported variables stay grouped near the top of the script.
-- Direct `git` invocations are forbidden unless a documented exception is granted; `_git` handles instrumentation and future enhancements.
-- New external dependencies beyond the established coreutils MUST NOT be introduced without explicit governance approval and documentation.
+**Rationale**: Developer trust depends on predictable behavior. The tool must never silently discard work or leave repositories in inconsistent states.
 
-Rationale: A disciplined style ensures the tool remains approachable, reviewable, and easy to extend.
+### Principle III: Portable Bash Discipline
 
-### Principle IV – Transparent Automation
-Users and automations need predictable prompts and output.
+**git-cross implementation SHALL prioritize portability and maintainability.**
 
-- Prompts MUST use the shared `ask` helper and honour `CROSS_NON_INTERACTIVE` so non-interactive runs fail fast and predictably.
-- Human-facing output MUST route through `say` to maintain consistent messaging for both humans and AI-assisted tooling.
-- Reusable helpers MUST live alongside related utilities and be sourced explicitly to keep automation discoverable.
-- Any new environment knob (for example `CROSS_FETCH_DEPTH`) MUST ship with documentation updates in README, plan, and spec artifacts.
+**Current implementation**: `just` + `fish` (complex logic delegated to fish shell scripts)
 
-Rationale: Clear automation patterns reduce surprises and make integration with other tooling straightforward.
+**Standards**:
+- Justfile for command dispatch and workflow orchestration
+- Fish shell (≥3.0) for complex string manipulation and conditionals  
+- POSIX-compatible workflows where possible for broad compatibility
+- Clear separation between user-facing commands (Justfile) and internal helpers
+- No external dependencies beyond: `git`, `just`, `fish`, `rsync`, core utilities
 
-### Principle V – Verification & Release Confidence
-Confidence comes from repeatable verification gates.
+**Code style**:
+- Lower_snake_case for fish functions and variables
+- Inline comments for non-obvious logic (especially index calculations)
+- Helper functions (`_sync_from_crossfile`, `_resolve_context`) for modularity
+- Four-space indentation, grouped exports/constants
 
-- `bash -n cross` and `shellcheck cross` MUST pass with zero warnings before any change is merged.
-- `./cross status --refresh` MUST succeed for the root and every patch before publishing releases or artifacts.
-- New executable variants (e.g., `cross_v<semver>.sh`) MUST mirror the primary `cross` script and be marked executable with `chmod +x`.
-- Manual test coverage remains the default; introducing automated suites demands documentation in this constitution, AGENTS, and the Sync Impact Report.
+**Rationale**: The tool must run on contributor machines (macOS, Linux) without complex installation. `just` provides excellent command-running ergonomics while `fish` handles complex data manipulation cleanly.
 
-Rationale: Mandatory verification keeps the project reliable even without a large automated test harness.
+### Principle IV: Transparent Automation
 
-## Operational Constraints
+**git-cross SHALL make implicit behavior explicit and observable.**
 
-- Git 2.20 or newer is a hard requirement; the script MUST fail fast with actionable guidance when the version check fails.
-- cross MUST continue to support sparse checkout and partial fetch workflows, preserving alias-derived branch naming to avoid collisions.
-- Crossfile entries MUST keep comments short and aligned, always declaring destinations with the canonical `alias:path [local] [--branch]` syntax.
-- Constants and exported environment toggles (for example `CROSS_FETCH_DEPTH`) MUST live near the top of the script with defaults and rationale.
-- Remote metadata stored under `.git/cross/` MUST remain backwards compatible; migrations require explicit mention in the plan and the Sync Impact Report.
+- Commands document themselves via `just help` and `just --list`
+- `Crossfile` provides human-readable, reproducible configuration
+- `just replay` reconstructs vendoring from `Crossfile` alone
+- Operations log actions clearly (what's being fetched, synced, etc.)
+- Environment knobs (e.g., `CROSS_NON_INTERACTIVE`) are documented
+- `verbose` mode available for debugging
 
-## Workflow & Quality Gates
+**Auto-save behavior**:
+- `use` and `patch` commands automatically append to `Crossfile`
+- Idempotent: running same command twice doesn't duplicate entries
+- Crossfile structure: plain text, one command per line, comments allowed
 
-- Implementation plans MUST document how they satisfy every principle, including the exact verification commands contributors will run.
-- Developers MUST stage outputs with git after running `./cross` so the root repository captures all generated changes.
-- Before requesting review, contributors MUST record the results of `bash -n`, `shellcheck`, and `./cross status --refresh`.
-- Preparing a release requires copying `cross` to `cross_v<semver>.sh`, updating documentation, and verifying `./cross version --current` reports the new version.
-- Feature work MUST avoid adding new dependencies; when new helpers are introduced they MUST include explicit `source` statements and rationale in the plan.
+**Rationale**: "Magic" automation breeds distrust. Users should understand what the tool does, how to reproduce it, and how to debug it.
 
-## Governance
+### Principle V: Verification & Release Confidence
 
-- This constitution supersedes conflicting project guidance; compliance is mandatory for every contribution.
-- Amendments require maintainer approval, an updated Sync Impact Report, and a refreshed audit of affected templates.
-- Versioning follows Semantic Versioning: MAJOR for principle changes, MINOR for new sections or material expansions, PATCH for clarifications.
-- Ratification or amendment MUST capture the verification commands mandated by Principle V as part of the review record.
-- Maintainers MUST block merges that omit constitution gates or introduce regressions against these principles.
+**git-cross SHALL provide built-in verification mechanisms.**
 
-**Version**: 1.0.0 | **Ratified**: 2025-11-28 | **Last Amended**: 2025-11-28
+**Testing strategy**:
+- Bash test scripts (`test/bash/examples/`) for realistic scenario coverage
+- Fixture repositories (`test/fixtures/remotes/`) simulate upstreams
+- `test/run-all.sh` orchestrates full test suite
+- Tests verify both happy paths and error handling
+
+**Pre-release checks**:
+- Syntax validation: `just check-deps` verifies required tools
+- Example validation: All `examples/Crossfile-*` must execute successfully
+- Shellcheck linting (when applicable to wrapper scripts)
+- Manual verification of `README` examples
+
+**Crossfile reproducibility**:
+- `just replay` must reconstruct identical state from `Crossfile`
+- Version pinning supported via branch/tag specifications
+- Hash-based worktree naming prevents collisions
+
+**Rationale**: Contributors and users need confidence that changes don't break core workflows. Automated testing and clear verification steps enable fearless iteration.
+
+## Decision Framework
+
+When evaluating new features or changes, assess against these questions:
+
+1. **Upstream-First**: Does it maintain/improve the upstream relationship?
+2. **Hygiene**: Does it protect user data and worktree cleanliness?
+3. **Portability**: Does it run on macOS/Linux without exotic dependencies?
+4. **Transparency**: Can users understand and reproduce what it does?
+5. **Verification**: Can we test it automatically or document manual verification?
+
+**If any answer is "no"**, re-design the feature or document the trade-off explicitly.
+
+## Extension Points
+
+The constitution permits controlled extensions:
+
+- **Post-hooks**: `cross exec <command>` allows user-defined automation
+- **Custom commands**: Users can add recipes to their own `Justfile` that compose `cross` commands
+- **Plugin remotes**: Future support for `just <plugin> <cmd>` to delegate to vendored Justfiles
+
+Extensions MUST NOT violate core principles (e.g., post-hooks cannot bypass worktree hygiene checks).
+
+## Constitutional Amendments
+
+This document may be amended when:
+
+1. A principle proves infeasible in practice
+2. Ecosystem changes render a principle obsolete (e.g., git internals evolve)
+3. Community consensus emerges on a superior approach
+
+**Amendment process**: Propose changes via issue/PR with:
+- Problem statement
+- Specific principle(s) affected
+- Alternative wording or new principle
+- Impact assessment on existing users
+
+**Approval**: Requires maintainer consensus + backward compatibility plan or major version bump.
+
+## Acknowledgments
+
+Principles inspired by:
+- Git's own design philosophy (simplicity, transparency, data integrity)
+- The Unix philosophy (do one thing well, compose with other tools)
+- [Spec-kit](https://github.com/github/spec-kit) governance patterns

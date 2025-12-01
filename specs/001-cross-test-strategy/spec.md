@@ -2,10 +2,19 @@
 
 **Feature Branch**: `001-cross-test-strategy`  
 **Created**: 2025-11-28  
-**Status**: Draft  
+**Status**: In Progress  
+**Last Updated**: 2025-12-01  
+**Implementation**: Justfile + Fish (migration complete)  
 **Input**: User description: "Implement test strategy for core functions in cross especially use and patch and any time later all documented functions and callables from usage documentation."
 
 ## Clarifications
+
+### Session 2025-12-01
+
+- Q: How should the tool handle command prefixes in Crossfile? → A: All commands use `cross` prefix for extensibility (e.g., `cross use`, `cross patch`, `cross exec`).
+- Q: How should post-hooks be implemented? → A: Via `cross exec <command>` to allow users to call their own Justfile recipes or shell scripts.
+- Q: What's the correct location for constitution.md? → A: `.specify/memory/constitution.md` for spec-kit compatibility.
+- Q: Should tests handle the Justfile implementation? → A: Yes, test scripts must copy `Justfile` and `.env` to test repositories.
 
 ### Session 2025-11-28
 

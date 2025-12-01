@@ -1,7 +1,9 @@
 # Tasks: cross command test strategy
 
-**Input**: Design documents from `/specs/001-cross-test-strategy/`
-**Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
+**Input**: Design documents from `/specs/001-cross-test-strategy/`  
+**Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/  
+**Status**: Partially Complete (2025-12-01)  
+**Implementation**: Justfile + Fish shell
 
 ## Phase 1: Setup (Shared Infrastructure)
 
