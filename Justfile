@@ -12,14 +12,12 @@ setup:
     # Check if direnv is available
     if command -v direnv >/dev/null && test -f .envrc
         if not direnv status | grep -q "Found RC allowed true"
-            echo "🔧 Setting up direnv..."
             direnv allow .
-            echo "✅ direnv configured! Reload your shell or run: eval \"\$(direnv export fish)\""
         end
     end
 
 # Check for required dependencies
-check-deps: setup
+check-deps:
     #!/usr/bin/env fish
     set -l missing
     for cmd in fish rsync git python3 jq yq
