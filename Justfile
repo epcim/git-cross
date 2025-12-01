@@ -2,6 +2,10 @@
 export HOMEBREW_PREFIX := if path_exists("/opt/homebrew") == "true" { "/opt/homebrew" } else if path_exists("/usr/local/Homebrew") == "true" { "/usr/local" } else if path_exists("/home/linuxbrew/.linuxbrew") == "true" { "/home/linuxbrew/.linuxbrew" } else { env_var_or_default('HOMEBREW_PREFIX', env_var('HOME') + "/homebrew") }
 export PATH := env_var('HOME') + "/bin:" + HOMEBREW_PREFIX + "/bin:" + env_var('PATH')
 
+# Execute "just cross"
+@cross +ARGS:
+  just {{ARGS}}
+
 # Auto-setup environment on first use
 setup:
     #!/usr/bin/env fish
@@ -82,7 +86,9 @@ update_crossfile cmd:
 
 # Add a remote repository
 use name url: check-deps (update_crossfile "use " + name + " " + url)
-    @git remote show | grep -q "^{{name}}$" || { git remote add {{name}} {{url}} && echo "Added remote: {{name}} -> {{url}}"; } || echo "Remote '{{name}}' already exists"
+    echo here\
+    @git remote show | grep -q "^{{name}}$" \
+      || { git remote add {{name}} {{url}} && echo "Added remote: {{name}} -> {{url}}"; }
 
 # Patch a directory from a remote into a local path
 patch remote_spec local_path branch="master": check-deps (update_crossfile "patch " + remote_spec + " " + local_path + (if branch != "master" { " " + branch } else { "" }))
