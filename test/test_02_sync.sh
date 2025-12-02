@@ -18,11 +18,13 @@ echo "Test 2: Sync updates from upstream"
 echo "---------------------------------------------------"
 
 # Initial patch
-just use demo "$DEMO_URL"
-just patch demo:docs vendor/docs
+just cross use demo "$DEMO_URL"
+just cross patch demo:docs vendor/docs
 
 assert_file_contains "Crossfile" "cross use demo $DEMO_URL"
 assert_file_contains "Crossfile" "cross patch demo:docs vendor/docs"
+git add .
+git commit -m "Initial patch"
 
 # Update the remote
 cd ..
@@ -33,7 +35,7 @@ cd main-repo
 BEFORE=$(cat vendor/docs/file.txt)
 
 # Sync should pull updates AND update local files automatically
-just sync > /dev/null 2>&1 || echo "Sync completed (may have warnings)"
+just cross sync || echo "Sync completed (may have warnings)"
 
 # Check if visible files were updated
 if grep -q "Updated content" vendor/docs/file.txt; then

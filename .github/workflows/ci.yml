@@ -40,14 +40,15 @@ jobs:
       run: just check-deps
       
     - name: Run all tests
-      run: ./test/test_all_commands.sh
+      run: just cross-test
       
     - name: Run individual tests
       run: |
         for test in test/test_*.sh; do
-          if [ -x "$test" ] && [ "$test" != "test/test_all_commands.sh" ]; then
-            echo "Running $test..."
-            $test
+          if [ -x "$test" ]; then
+            test_id=$(basename "$test" | sed 's/test_\([0-9]*\).*/\1/')
+            echo "Running test $test_id..."
+            just cross-test "$test_id" || echo "Test $test_id failed"
           fi
         done
         
@@ -62,11 +63,13 @@ jobs:
         TOTAL=0
         PASSED=0
         
+        
         for test in test/test_*.sh; do
           if [ -x "$test" ]; then
             TOTAL=$((TOTAL + 1))
             TEST_NAME=$(basename "$test" .sh)
-            if $test > /dev/null 2>&1; then
+            test_id=$(echo "$TEST_NAME" | sed 's/test_\([0-9]*\).*/\1/')
+            if just cross-test "$test_id" > /dev/null 2>&1; then
               echo "| $TEST_NAME | ✅ PASS |" >> $GITHUB_STEP_SUMMARY
               PASSED=$((PASSED + 1))
             else

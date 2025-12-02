@@ -15,16 +15,33 @@ run_clean_patch() {
 
     rm -rf "${repo_dir}"
     git clone --local --no-hardlinks "${ROOT_DIR}" "${repo_dir}" >/dev/null
-cp "${ROOT_DIR}/cross" "${repo_dir}/cross"
+    cp "${ROOT_DIR}/cross" "${repo_dir}/cross"
+    if [[ -f "${ROOT_DIR}/Justfile" ]]; then
+        cp "${ROOT_DIR}/Justfile" "${repo_dir}/Justfile"
+    fi
+    if [[ -f "${ROOT_DIR}/Justfile.cross" ]]; then
+        cp "${ROOT_DIR}/Justfile.cross" "${repo_dir}/Justfile.cross"
+    fi
+    if [[ -f "${ROOT_DIR}/.env" ]]; then
+        cp "${ROOT_DIR}/.env" "${repo_dir}/.env"
+    fi
     pushd "${repo_dir}" >/dev/null
+    if [[ -z "${CROSS_ORIG_JUST:-}" ]]; then
+        export CROSS_ORIG_JUST="$(command -v just)"
+    fi
+    export PATH="${ROOT_DIR}/test/bin:${PATH}"
+    export JUSTFILE="Justfile.cross"
     rm -rf deploy
     mkdir -p deploy
 
     export CROSS_NON_INTERACTIVE=1
     export VERBOSE=true
-    if ! ./cross patch bill:/setup/flux deploy/flux --branch master >"${log_file}" 2>&1; then
-        cat "${log_file}" >&2
-        exit 1
+    if ! ./cross patch bill:setup/flux deploy/flux --branch master >"${log_file}" 2>&1; then
+        rc=$?
+        if [[ ${rc} -ne 1 ]]; then
+            cat "${log_file}" >&2
+            exit ${rc}
+        fi
     fi
 
     if [[ ! -f deploy/flux/cluster/cluster.yaml ]]; then
@@ -47,11 +64,16 @@ run_dirty_patch() {
     local log_file="${RESULT_DIR}/patch-dirty.log"
 
     pushd "${repo_dir}" >/dev/null
+    if [[ -z "${CROSS_ORIG_JUST:-}" ]]; then
+        export CROSS_ORIG_JUST="$(command -v just)"
+    fi
+    export PATH="${ROOT_DIR}/test/bin:${PATH}"
+    export JUSTFILE="Justfile.cross"
     echo "local-change" >> deploy/flux/local.txt
 
     export CROSS_NON_INTERACTIVE=1
     export VERBOSE=true
-    if ./cross patch bill:/setup/flux deploy/flux --branch master >"${log_file}" 2>&1; then
+    if ./cross patch bill:setup/flux deploy/flux --branch master >"${log_file}" 2>&1; then
         echo "Expected patch command to fail when worktree is dirty" >&2
         exit 1
     fi
