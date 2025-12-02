@@ -15,6 +15,3 @@ cross patch bill:/setup/flux  deploy/flux
 
 # ex: patch same dir on remote to same location in local
 cross patch core:asciinema
-
-export CROSS_FETCH_DEPENDENCIES=${CROSS_FETCH_DEPENDENCIES:-false}
-

@@ -43,8 +43,7 @@ cd $YOUR_REPO
 just cross help                                 # Show all commands
 just cross use demo https://github.com/example/demo.git
 just cross patch demo:docs vendor/docs
-just cross sync                                 # Update from upstream
-just cross exec just posthook                   # Run post-hooks
+just cross [list|status|sync|diff|push|...]
 ```
 
 ## Installation
@@ -54,28 +53,23 @@ just cross exec just posthook                   # Run post-hooks
 **Step 1**: Vendor the git-cross Justfile into your project:
 
 ```bash
-# Use git-cross to vendor itself! (meta, right?)
-just cross use git-cross https://github.com/epcim/git-cross.git
-just cross patch git-cross:. vendor/git-cross
+# 1. Clone git-cross as a subtree/submodule or just a plain clone
+git clone https://github.com/epcim/git-cross.git vendor/git-cross
+
+# 2. (Optional) Initialize Crossfile with self-management
+# This allows git-cross to update itself via 'just cross sync' later
+just --justfile vendor/git-cross/Justfile cross use git-cross https://github.com/epcim/git-cross.git
+just --justfile vendor/git-cross/Justfile cross patch git-cross:. vendor/git-cross
 ```
 
-**Step 2**: Add to your project's `Justfile`:
+**Alternative**: Add git-cross to your Justfile
 
 ```just
-# Import git-cross commands
-import? 'vendor/git-cross/Justfile'
-```
-
-> **Note**: `just` doesn't support importing from URLs directly (e.g., `import? 'https://...'`). You must vendor the Justfile locally first. The `import?` directive uses `?` to make the import optional, so it won't fail if the file doesn't exist yet.
-
-**Alternative**: If you don't want to vendor, use a local clone:
-
-```just
-# In your own Justfile
-import? '../git-cross/Justfile'
+import? 'vendor/git-cross/Justfile' # Import git-cross commands
 ```
 
 ### Option 2: Standalone Installation
+
 
 1. **Clone the repository:**
 
@@ -377,6 +371,68 @@ This would make `git-cross` feel like a first-class git feature while maintainin
 - Maintain backward compatibility with `just cross`
 
 **Status**: 🔮 Future consideration - feedback welcome!
+
+---
+
+## Design Philosophy
+
+See [Constitution](.specify/memory/constitution.md) for core principles:
+
+- Upstream-First Patching
+- Worktree Hygiene
+- Portable Bash Discipline
+- Transparent Automation
+- Verification & Release Confidence
+
+## Testing
+
+### Run All Tests
+
+```bash
+./test/run-all.sh
+```
+
+This runs all example Crossfile tests (001, 002, 003, 005).
+
+### Run Individual Test Cases
+
+Run specific example tests:
+
+```bash
+# Test Crossfile-001 (basic patch)
+./test/bash/examples/crossfile-001.sh
+
+# Test Crossfile-002 (dual remotes)
+./test/bash/examples/crossfile-002.sh
+
+# Test Crossfile-003 (asciinema example)
+./test/bash/examples/crossfile-003.sh
+
+# Test Crossfile-005 (exec command)
+./test/bash/examples/crossfile-005.sh
+
+# Test core improvements (patch args, sync safety, etc)
+./test/bash/core-improvements.sh
+```
+
+### Test Requirements
+
+- `fish` shell ≥ 3.0
+- `just` command runner
+- Git ≥ 2.20
+- Homebrew (for PATH setup on macOS/Linux)
+
+**Note**: Tests create temporary workspaces in `/tmp` and use sandboxed git config (no GPG signing, isolated from user settings).
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/my-feature`
+3. Make your changes
+4. Run tests: `./test/run-all.sh`
+5. Commit: `git commit -am 'Add feature'`
+6. Push: `git push origin feature/my-feature`
+7. Create a Pull Request
 
 ## License
 

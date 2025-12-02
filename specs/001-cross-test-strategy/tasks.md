@@ -22,7 +22,7 @@
 
 - [ ] T005 Implement fixture seeding in `scripts/fixture-tooling/seed-fixtures.sh` creating bare remotes for khue, bill, core, and mine using templates, pushing canonical commits for each Crossfile scenario.
 - [ ] T006 Populate template content for `khue:/metal`, `bill:/setup/flux`, `core:asciinema`, and `mine:docs/another` under `test/fixtures/templates/` with minimal files expected by tests.
-- [ ] T007 Add workspace lifecycle helper `test/bash/lib/workspace.sh` to provision/cleanup temp directories outside the repo via `mktemp` and optional `CROSS_TEST_TMPDIR`.
+- [x] T007 Add workspace lifecycle helper `test/bash/lib/workspace.sh` to provision/cleanup temp directories outside the repo via `mktemp` and optional `CROSS_TEST_TMPDIR`.
 - [ ] T008 Add git logging wrapper `test/bash/lib/git.sh` that proxies `_git` commands and records invocations to `test/results/git.log`.
 - [ ] T009 Add artifact hash helper `test/bash/lib/artifact_hash.sh` to collect and compare SHA256 digests across Bash/Rust harnesses.
 - [ ] T010 Implement JSON report writer `test/bash/lib/report.sh` accumulating scenario results into `test/results/verification.json` with status and optional messages.
@@ -138,3 +138,17 @@
 - Developer B: Rust parity harness, artifact/hash utilities, parity evaluations.
 - Developer C: Alias and patch regression scripts, cross patch implementation.
 - Shared: Documentation, CI integration, final verification runs (Phase 6).
+
+---
+
+## Phase 7: Core Improvements (2025-12-02)
+
+**Purpose**: Implement critical usability and robustness improvements identified in TODO.md.
+
+- [x] T031 Fix README clone instructions (bootstrap issue) - cannot run `just cross` before cloning.
+- [x] T032 Improve `patch` arguments: support `remote:path:branch` syntax and make 3rd arg optional.
+- [x] T033 Implement `use` branch detection via `git ls-remote --symref` to auto-detect main/master.
+- [x] T034 Support `mkdir -p` for `patch` local path parent directories.
+- [x] T035 Verify/Implement auto-sync after `patch` (ensure worktree is populated).
+- [x] T036 Fix `Crossfile` idempotency: prevent duplicate/failed commands from being added.
+- [x] T037 Implement `sync` safety checks: prompt/fail if local path has uncommitted changes.
