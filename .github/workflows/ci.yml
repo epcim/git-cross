@@ -22,11 +22,15 @@ jobs:
       run: |
         if [ "$RUNNER_OS" == "Linux" ]; then
           sudo apt-get update
-          sudo apt-get install -y fish rsync
+          sudo apt-get install -y fish rsync python3 jq
+          # Install yq
+          sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
+          sudo chmod +x /usr/bin/yq
+          # Install just
           curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to ~/bin
           echo "$HOME/bin" >> $GITHUB_PATH
         elif [ "$RUNNER_OS" == "macOS" ]; then
-          brew install fish rsync just
+          brew install fish rsync just python3 jq yq
         fi
         
     - name: Verify installation
@@ -35,6 +39,9 @@ jobs:
         fish --version
         git --version
         rsync --version
+        python3 --version
+        jq --version
+        yq --version
         
     - name: Run dependency check
       run: just check-deps
