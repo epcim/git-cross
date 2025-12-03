@@ -25,16 +25,61 @@
 
 ## Commands
 
-| Command | Purpose | Arguments |
-|---------|---------|-----------|
-| `use` | Add remote repository | `<name> <url>` |
-| `patch` | Vendor subdirectory | `<remote>:<path> <local> [branch]` |
-| `sync` | Update from upstream | None |
-| `list` | Show all patches | None |
-| `status` | Check patch status | None |
-| `diff-patch` | Compare local vs upstream | `[remote:path] [local]` (inferred) |
-| `push-upstream` | Push changes upstream | `[remote:path] [local]` (inferred) |
-| `replay` | Restore from Crossfile | None |
+All commands are accessible via `just cross <command>` or `./cross <command>` wrapper:
+
+### Core Workflow
+- **`use <name> <url>`** - Add a remote repository with branch auto-detection
+  - Auto-detects default branch (main/master) via `git ls-remote --symref`
+  - Fetches detected branch automatically
+  - Records in Crossfile
+
+- **`patch <remote:path[:branch]> <local_path> [branch]`** - Vendor a directory from remote
+  - Supports `remote:path:branch` syntax (branch in spec)
+  - Alternative: `remote:path local_path branch` (branch as 3rd arg)
+  - Creates worktree with sparse checkout
+  - Syncs to local path with rsync
+  - Creates intermediate directories automatically (`mkdir -p`)
+  - Updates Crossfile only on success (idempotency)
+
+- **`sync`** - Update all patches from upstream
+  - Updates all worktrees via git pull --rebase
+  - Checks for uncommitted changes in local paths
+  - Prompts before overwriting local modifications
+  - Executes `cross exec` commands from Crossfile
+
+- **`replay`** - Re-execute all Crossfile commands
+  - Processes each line sequentially
+  - Supports `cross` prefix and legacy format
+  - Skips comments and empty lines
+
+### Inspection
+- **`list`** - Show all configured patches in table format
+- **`status`** - Show patch status (diffs, upstream sync, conflicts)
+- **`diff [remote:path] [local_path]`** - Compare local vs upstream
+  - Auto-infers from current directory if in tracked path
+
+### Contribution
+- **`push [remote:path] [local_path]`** - Push changes back to upstream
+  - Syncs local to worktree
+  - Shows git status
+  - Interactive: Run (commit+push), Manual (subshell), Cancel
+  - Auto-infers from current directory if in tracked path
+
+### Automation
+- **`exec <command>`** - Execute arbitrary shell commands
+  - Used for post-hooks in Crossfile
+  - Can call user's Justfile recipes
+  - Example: `cross exec just posthook`
+
+### Utilities
+- **`help`** - Show usage and available commands
+- **`check-deps`** - Verify required dependencies (fish, rsync, git, python3, jq, yq)
+- **`setup`** - Auto-setup environment (direnv)
+
+### Internal Helpers
+- **`_resolve_context`** - Infer remote:path and local_path from CWD
+- **`_sync_from_crossfile`** - Process Crossfile for sync operations
+- **`update_crossfile`** - Append command to Crossfile (deduplicated)
 
 ## Testing
 

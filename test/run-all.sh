@@ -1,28 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Detect and add Homebrew to PATH
-if [ -d "/opt/homebrew/bin" ]; then
-    export PATH="/opt/homebrew/bin:$PATH"
-elif [ -d "/usr/local/bin" ]; then
-    export PATH="/usr/local/bin:$PATH"
-elif [ -d "/home/linuxbrew/.linuxbrew/bin" ]; then
-    export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"
-elif [ -n "$HOMEBREW_PREFIX" ]; then
-    export PATH="$HOMEBREW_PREFIX/bin:$PATH"
-fi
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")"/.. && pwd)"
 TEST_DIR="${ROOT_DIR}/test"
 RESULT_DIR="${TEST_DIR}/results"
 LIB_DIR="${TEST_DIR}/bash/lib"
 FIXTURE_TOOL="${ROOT_DIR}/scripts/fixture-tooling/seed-fixtures.sh"
 
+ORIG_JUST="$(command -v just 2>/dev/null || true)"
+if [[ -n "${ORIG_JUST}" ]]; then
+    export CROSS_ORIG_JUST="${ORIG_JUST}"
+fi
+export PATH="${ROOT_DIR}/test/bin:${PATH}"
+
+# Source environment setup
+if [ -f "${ROOT_DIR}/.env" ]; then
+    source "${ROOT_DIR}/.env"
+fi
+
 source "${LIB_DIR}/workspace.sh"
 source "${LIB_DIR}/git.sh"
 source "${LIB_DIR}/report.sh"
 source "${LIB_DIR}/artifact_hash.sh"
 
+# TODO: Switch to bash >=5 and revisit hash storage
 # declare -A BASH_HASH
 # declare -A RUST_HASH
 # Using file-based storage for hashes to support bash 3.2
@@ -43,11 +44,21 @@ EOF
 
 parse_args() {
     SCENARIO="examples"
+    TEST_ID=""
     while [[ $# -gt 0 ]]; do
+        if [[ -z "$1" ]]; then
+            shift
+            continue
+        fi
         case "$1" in
             --scenario)
                 shift
                 SCENARIO="${1:-examples}"
+                ;;
+            --test)
+                shift
+                TEST_ID="${1:-}"
+                SCENARIO="single"
                 ;;
             -h|--help)
                 show_usage
@@ -87,15 +98,29 @@ run_bash_example() {
     fi
 
     local output
-    if output="$(${script} "${workspace}")"; then
+    local exit_code=0
+    output=$("${script}" "${workspace}" 2>&1) || exit_code=$?
+    
+    if [[ $exit_code -eq 0 ]]; then
         record_result "bash" "${scenario_label}" "pass"
         local hash_file
         hash_file=$(printf '%s\n' "${output}" | awk -F= '/artifact_hash_file=/{print $2}' | tail -1)
-        if [[ -n "${hash_file}" ]]; then
-            # BASH_HASH["${script_id}"]="${hash_file}"
+        if [[ -n "${hash_file:-}" ]]; then
             echo "${hash_file}" > "${HASH_DIR}/bash_${script_id}"
         fi
+        return 0
     else
+        echo "Test ${script_id} failed with exit code ${exit_code}" >&2
+        echo "Output: ${output}" >&2
+        if [[ -f "${RESULT_DIR}/examples/${script_id}-bash.log" ]]; then
+            echo "Log file content (${RESULT_DIR}/examples/${script_id}-bash.log):" >&2
+            cat "${RESULT_DIR}/examples/${script_id}-bash.log" >&2
+        elif [[ -f "${RESULT_DIR}/${script_id}-bash.log" ]]; then
+            echo "Log file content (${RESULT_DIR}/${script_id}-bash.log):" >&2
+            cat "${RESULT_DIR}/${script_id}-bash.log" >&2
+        else
+            echo "Log file not found at ${RESULT_DIR}/examples/${script_id}-bash.log" >&2
+        fi
         record_result "bash" "${scenario_label}" "fail"
         return 1
     fi
@@ -221,11 +246,13 @@ main() {
     ensure_results_dir
     seed_fixtures
 
-    local workspace
-    workspace="$(create_workspace)"
+    local workspace="$(create_workspace)"
     cp "${ROOT_DIR}/Justfile" "${workspace}/Justfile"
+    if [[ -f "${ROOT_DIR}/Justfile.cross" ]]; then
+        cp "${ROOT_DIR}/Justfile.cross" "${workspace}/Justfile.cross"
+    fi
     echo "INFO: Using temporary workspace ${workspace}" >&2
-    trap 'cleanup_workspace "${workspace}"' EXIT
+    trap "cleanup_workspace '${workspace}'" EXIT
 
     case "${SCENARIO}" in
         examples)
@@ -236,6 +263,14 @@ main() {
             ;;
         patch)
             run_patch "${workspace}"
+            ;;
+        single)
+            if [[ -z "${TEST_ID}" ]]; then
+                echo "ERROR: --test requires a test ID (e.g., 001, 002)" >&2
+                exit 1
+            fi
+            echo "Running single test: crossfile-${TEST_ID}"
+            run_bash_example "crossfile-${TEST_ID}" "${workspace}"
             ;;
         all)
             run_examples "${workspace}"

@@ -3,12 +3,21 @@
 
 # Setup test environment
 setup_test_env() {
+    # Find the root of the repo
+    if [ -n "${BASH_SOURCE[0]}" ]; then
+        SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+        ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+    else
+        ROOT_DIR="$(pwd)"
+    fi
+
     export PATH="$HOME/bin:$HOME/homebrew/bin:$PATH"
-    TEST_DIR="$(pwd)/test_run_$(date +%s)"
-    mkdir -p "$TEST_DIR"
     
-    if [ -z "$TEST_DIR" ] || [ "$TEST_DIR" = "$HOME" ]; then
-        echo "Error: Unsafe TEST_DIR: $TEST_DIR"
+    # Use mktemp for safer temporary directory
+    TEST_DIR="$(mktemp -d -t git-cross-test.XXXXXX)"
+    
+    if [ -z "$TEST_DIR" ]; then
+        echo "Error: Could not create temporary directory"
         exit 1
     fi
     
@@ -16,8 +25,8 @@ setup_test_env() {
     cd "$TEST_DIR"
     
     # Mock git config
-    export GIT_CONFIG_GLOBAL=$(pwd)/gitconfig
-    cat <<EOF > gitconfig
+    export GIT_CONFIG_GLOBAL="${TEST_DIR}/gitconfig"
+    cat <<EOF > "${GIT_CONFIG_GLOBAL}"
 [user]
     name = Test User
     email = test@example.com
@@ -80,14 +89,27 @@ setup_main_repo() {
     mkdir main-repo
     cd main-repo
     git init > /dev/null
-    cp ../../Justfile .
+    
+    # Copy Justfile from root if it exists
+    if [ -f "${ROOT_DIR}/Justfile" ]; then
+        cp "${ROOT_DIR}/Justfile" .
+    fi
+    if [ -f "${ROOT_DIR}/Justfile.cross" ]; then
+        cp "${ROOT_DIR}/Justfile.cross" .
+    fi
 }
 
 # Cleanup test environment
 cleanup_test_env() {
-    if [ -n "$TEST_DIR" ] && [ "$TEST_DIR" != "$HOME" ]; then
-        cd /
-        rm -rf "$TEST_DIR"
+    local exit_code=$?
+    if [ -n "$TEST_DIR" ] && [ -d "$TEST_DIR" ]; then
+        if [ $exit_code -eq 0 ]; then
+            # Only cleanup on success to allow debugging failures
+            cd /
+            rm -rf "$TEST_DIR"
+        else
+            echo "Test failed. Artifacts left in $TEST_DIR"
+        fi
     fi
 }
 
@@ -96,6 +118,11 @@ assert_file_contains() {
     local file="$1"
     local content="$2"
     
+    if [ ! -f "$file" ]; then
+        echo "❌ File '$file' does not exist"
+        return 1
+    fi
+
     if ! grep -qF "$content" "$file"; then
         echo "❌ File '$file' missing content: '$content'"
         echo "File content:"

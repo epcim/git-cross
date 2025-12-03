@@ -10,8 +10,22 @@ repo_dir="${workspace}/use-alias"
 rm -rf "${repo_dir}"
 git clone --local --no-hardlinks "${ROOT_DIR}" "${repo_dir}" >/dev/null
 cp "${ROOT_DIR}/cross" "${repo_dir}/cross"
+if [[ -f "${ROOT_DIR}/Justfile" ]]; then
+    cp "${ROOT_DIR}/Justfile" "${repo_dir}/Justfile"
+fi
+if [[ -f "${ROOT_DIR}/Justfile.cross" ]]; then
+    cp "${ROOT_DIR}/Justfile.cross" "${repo_dir}/Justfile.cross"
+fi
+if [[ -f "${ROOT_DIR}/.env" ]]; then
+    cp "${ROOT_DIR}/.env" "${repo_dir}/.env"
+fi
 
 pushd "${repo_dir}" >/dev/null
+if [[ -z "${CROSS_ORIG_JUST:-}" ]]; then
+    export CROSS_ORIG_JUST="$(command -v just)"
+fi
+export PATH="${ROOT_DIR}/test/bin:${PATH}"
+export JUSTFILE="Justfile.cross"
 
 metadata_digest() {
     if [[ ! -d .git/cross ]]; then

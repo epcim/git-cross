@@ -10,9 +10,13 @@ source "${ROOT_DIR}/test/bash/lib/artifact_hash.sh"
 
 repo_dir="${workspace}/crossfile-005"
 rm -rf "${repo_dir}"
-git clone --local --no-hardlinks "${ROOT_DIR}" "${repo_dir}" >/dev/null
+git clone "${ROOT_DIR}" "${repo_dir}" >/dev/null 2>&1
 cp "${ROOT_DIR}/cross" "${repo_dir}/cross"
+chmod +x "${repo_dir}/cross"
 cp "${ROOT_DIR}/Justfile" "${repo_dir}/Justfile"
+if [[ -f "${ROOT_DIR}/Justfile.cross" ]]; then
+    cp "${ROOT_DIR}/Justfile.cross" "${repo_dir}/Justfile.cross"
+fi
 cp "${ROOT_DIR}/.env" "${repo_dir}/.env"
 cp "${ROOT_DIR}/examples/Crossfile-005" "${repo_dir}/Crossfile"
 

@@ -155,7 +155,7 @@ fn crossfile_001_parity() {
         &["deploy/metal/docs/index.md"],
         &[
             command_use("khue", &remote_url("khue")),
-            command_patch("khue:/metal", "deploy/metal"),
+            command_patch("khue:metal", "deploy/metal"),
         ],
         &[],
     );
@@ -172,8 +172,8 @@ fn crossfile_002_parity() {
         &[
             command_use("khue", &remote_url("khue")),
             command_use("bill", &remote_url("bill")),
-            command_patch("khue:/metal", "deploy/metal"),
-            command_patch("bill:/setup/flux", "deploy/flux"),
+            command_patch("khue:metal", "deploy/metal"),
+            command_patch("bill:setup/flux", "deploy/flux"),
         ],
         &[],
     );
@@ -192,8 +192,8 @@ fn crossfile_003_parity() {
             command_use("khue", &remote_url("khue")),
             command_use("bill", &remote_url("bill")),
             command_use("core", &remote_url("core")),
-            command_patch("khue:/metal", "deploy/metal"),
-            command_patch("bill:/setup/flux", "deploy/flux"),
+            command_patch("khue:metal", "deploy/metal"),
+            command_patch("bill:setup/flux", "deploy/flux"),
             command_patch("core:asciinema", "asciinema"),
         ],
         &[("CROSS_FETCH_DEPENDENCIES", "false")],

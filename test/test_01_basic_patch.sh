@@ -17,8 +17,8 @@ echo "---------------------------------------------------"
 echo "Test 1: Basic patch"
 echo "---------------------------------------------------"
 
-just use demo "$DEMO_URL"
-just patch demo:docs vendor/docs
+just cross use demo "$DEMO_URL"
+just cross patch demo:docs vendor/docs
 
 assert_file_contains "Crossfile" "cross use demo $DEMO_URL"
 assert_file_contains "Crossfile" "cross patch demo:docs vendor/docs"

@@ -81,11 +81,12 @@ mkdir main-repo
 cd main-repo
 git init > /dev/null
 cp ../../Justfile .
+cp ../../Justfile.cross .
 
 echo "---------------------------------------------------"
 echo "Test 1: Basic patch"
-just use demo "$DEMO_URL"
-just patch demo:docs vendor/docs
+just cross use demo "$DEMO_URL"
+just cross patch demo:docs vendor/docs
 
 # Define helper since this script doesn't source test_helpers.sh fully or we want to use the one we added?
 # Actually test_all_commands.sh does NOT source test_helpers.sh. It has its own setup.
@@ -112,7 +113,7 @@ cd main-repo
 BEFORE=$(cat vendor/docs/file.txt)
 
 # Sync pulls updates into hidden worktree
-just sync > /dev/null 2>&1 || echo "Sync completed (may have warnings)"
+just cross sync > /dev/null 2>&1 || echo "Sync completed (may have warnings)"
 
 # Verify the hidden worktree was updated
 HASH=$(echo "docs" | md5sum | cut -d' ' -f1)
@@ -126,7 +127,7 @@ else
 fi
 
 # Re-run patch to update visible files from updated worktree
-just patch demo:docs vendor/docs > /dev/null
+just cross patch demo:docs vendor/docs > /dev/null
 
 # Check if visible files were updated
 if grep -q "Updated content" vendor/docs/file.txt; then
@@ -143,7 +144,10 @@ echo "Test 3: Diff local vs upstream"
 echo "Local modification" >> vendor/docs/file.txt
 
 # Diff should show the change
-if just diff demo:docs vendor/docs 2>&1 | grep -q "Local modification"; then
+OUTPUT=$(just cross diff demo:docs vendor/docs 2>&1)
+echo "Diff output:"
+echo "$OUTPUT"
+if echo "$OUTPUT" | grep -q "Local modification"; then
     echo "PASS: Diff detected local changes"
 else
     echo "FAIL: Diff did not detect changes"
@@ -160,7 +164,7 @@ echo "Another change" >> vendor/docs/file.txt
 # Run push-upstream (simulate 'r' for Run)
 # We need to simulate the interactive input and avoid editor blocking
 export GIT_EDITOR="echo 'Test commit' >"
-echo "r" | just push-upstream demo:docs vendor/docs
+echo "r" | just cross push demo:docs vendor/docs
 unset GIT_EDITOR
 
 # Define paths
@@ -191,7 +195,7 @@ echo "Inferred change" >> vendor/docs/file.txt
 # Run push-upstream from within the directory
 cd vendor/docs
 export GIT_EDITOR="echo 'Inferred commit' >"
-echo "r" | just push-upstream
+echo "r" | just cross push
 unset GIT_EDITOR
 cd ../..
 
@@ -220,7 +224,7 @@ update_mock_remote "demo" "docs" "Upstream update 2"
 cd "$MAIN_REPO_DIR"
 
 # Run sync
-just sync > /dev/null 2>&1
+just cross sync > /dev/null 2>&1
 
 # Verify sync succeeded and dirty file remains
 if grep -q "Upstream update 2" "$WT_PATH/docs/file.txt"; then

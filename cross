@@ -3,4 +3,4 @@
 # This allows users to run './cross patch ...' instead of 'just patch ...'
 
 test -e .env && source .env
-exec just "$@"
+exec just cross "$@"
