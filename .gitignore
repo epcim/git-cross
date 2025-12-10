@@ -1,7 +1,12 @@
+# internal, unless forced
+.*
 # cross test harness artifacts
+testdir
 .test*
-/test/results/
-/test/fixtures/workspaces/
-/test/fixtures/remotes/
-/test/rust/target/
-/tmp/
+*.log
+**/*.log
+
+# allow
+!.github
+!.specify
+!.gitignore
