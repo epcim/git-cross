@@ -508,17 +508,17 @@ install impl="go":
             ;;
         shell|just)
             CROSS_PATH="{{JUST_DIR}}/Justfile"
-            echo "==> Setting up git alias 'cross-just' -> just --justfile $CROSS_PATH cross"
-            git config --global alias.cross-just "!just --justfile $CROSS_PATH cross"
-            echo "Success: Git alias 'cross-just' installed."
+            echo "==> Setting up git alias 'cross' -> just --justfile $CROSS_PATH cross"
+            git config --global alias.cross "!just --justfile $CROSS_PATH cross"
+            echo "Success: Git alias 'cross' installed."
             ;;
         rust)
             echo "==> Building Rust implementation..."
             (cd "{{JUST_DIR}}/src-rust" && cargo build)
             EXE="{{JUST_DIR}}/src-rust/target/debug/git-cross-rust"
-            echo "==> Setting up git alias 'cross-rust' -> $EXE"
+            echo "==> Setting up git alias 'cross' -> $EXE"
             git config --global alias.cross-rust "!$EXE"
-            echo "Success: Git alias 'cross-rust' installed."
+            echo "Success: Git alias 'cross' installed."
             ;;
         *)
             echo "ERROR: Unknown implementation '{{impl}}'. Use: go, shell, or rust."
