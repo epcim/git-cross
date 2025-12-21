@@ -122,7 +122,10 @@ This configuration is automatically saved to `Crossfile`.
 Pull a specific directory from a remote into your local tree:
 
 ```bash
-just cross patch <remote>:<remote_path> <local_path> [branch]
+just cross patch <remote>:<remote_path>
+just cross patch <remote>:<remote_path> <local_path>
+just cross patch <remote>:<branch>:<remote_path>
+just cross patch <remote>:<branch>:<remote_path> <local_path>
 ```
 
 **Example:**
