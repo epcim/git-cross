@@ -12,7 +12,6 @@ import (
 
 	"github.com/fatih/color"
 	"github.com/gogs/git-module"
-	"github.com/mattn/go-shellwords"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/cobra"
 	"github.com/zloylos/grsync"
@@ -65,14 +64,14 @@ func loadMetadata() (Metadata, error) {
 
 func saveMetadata(meta Metadata) error {
 	dir := filepath.Dir(MetadataPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(MetadataPath, data, 0644)
+	return os.WriteFile(MetadataPath, data, 0o644)
 }
 
 func updateCrossfile(line string) error {
@@ -87,7 +86,7 @@ func updateCrossfile(line string) error {
 		return nil
 	}
 
-	f, err := os.OpenFile(CrossfilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(CrossfilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
@@ -107,7 +106,7 @@ func runSync(src, dst string) error {
 		Delete:  true,
 		Exclude: []string{".git"},
 	})
-	
+
 	if err := task.Run(); err != nil {
 		return fmt.Errorf("rsync failed: %v\nLog: %v", err, task.Log())
 	}
@@ -129,9 +128,9 @@ func detectDefaultBranch(url string) (string, error) {
 }
 
 func main() {
-	var rootCmd = &cobra.Command{Use: "git-cross"}
+	rootCmd := &cobra.Command{Use: "git-cross"}
 
-	var useCmd = &cobra.Command{
+	useCmd := &cobra.Command{
 		Use:   "use [name] [url]",
 		Short: "Add a remote repository",
 		Args:  cobra.ExactArgs(2),
@@ -185,7 +184,7 @@ func main() {
 		},
 	}
 
-	var patchCmd = &cobra.Command{
+	patchCmd := &cobra.Command{
 		Use:   "patch [spec] [local_path]",
 		Short: "Vendor a directory from a remote",
 		Args:  cobra.MinimumNArgs(1),
@@ -218,21 +217,21 @@ func main() {
 			wtDir := fmt.Sprintf(".git/cross/worktrees/%s_%s", remoteName, hash)
 			if _, err := os.Stat(wtDir); os.IsNotExist(err) {
 				logInfo(fmt.Sprintf("Setting up worktree at %s...", wtDir))
-				os.MkdirAll(wtDir, 0755)
-				
+				os.MkdirAll(wtDir, 0o755)
+
 				// System call for worktree since it's a newer git feature often not fully in libraries
 				c := exec.Command("git", "worktree", "add", "--no-checkout", wtDir, fmt.Sprintf("%s/%s", remoteName, branch))
 				if out, err := c.CombinedOutput(); err != nil {
 					return fmt.Errorf("git worktree add failed: %v\nOutput: %s", err, string(out))
 				}
-				
+
 				git.NewCommand("sparse-checkout", "init", "--cone").RunInDir(wtDir)
 				git.NewCommand("sparse-checkout", "set", remotePath).RunInDir(wtDir)
 				git.NewCommand("checkout").RunInDir(wtDir)
 			}
 
 			logInfo(fmt.Sprintf("Syncing files to %s...", localPath))
-			os.MkdirAll(localPath, 0755)
+			os.MkdirAll(localPath, 0o755)
 			if err := runSync(wtDir+"/"+remotePath+"/", localPath+"/"); err != nil {
 				return err
 			}
@@ -257,7 +256,7 @@ func main() {
 		},
 	}
 
-	var syncCmd = &cobra.Command{
+	syncCmd := &cobra.Command{
 		Use:   "sync [path]",
 		Short: "Update patches from upstream",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -271,7 +270,7 @@ func main() {
 					continue
 				}
 				logInfo(fmt.Sprintf("Syncing %s...", p.LocalPath))
-				
+
 				wtRepo, err := git.Open(p.Worktree)
 				if err != nil {
 					logError(fmt.Sprintf("Failed to open worktree %s: %v", p.Worktree, err))
@@ -296,7 +295,7 @@ func main() {
 		},
 	}
 
-	var listCmd = &cobra.Command{
+	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "Show all configured patches",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -314,7 +313,7 @@ func main() {
 		},
 	}
 
-	var statusCmd = &cobra.Command{
+	statusCmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show patch status",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -338,19 +337,19 @@ func main() {
 					if err := c.Run(); err != nil {
 						diff = "Modified"
 					}
-					
+
 					behindOut, _ := git.NewCommand("rev-list", "--count", "HEAD..@{upstream}").RunInDir(p.Worktree)
 					aheadOut, _ := git.NewCommand("rev-list", "--count", "@{upstream}..HEAD").RunInDir(p.Worktree)
-					
+
 					behind := strings.TrimSpace(string(behindOut))
 					ahead := strings.TrimSpace(string(aheadOut))
-					
+
 					if behind != "" && behind != "0" {
 						upstream = behind + " behind"
 					} else if ahead != "" && ahead != "0" {
 						upstream = ahead + " ahead"
 					}
-					
+
 					if out, _ := git.NewCommand("ls-files", "-u").RunInDir(p.Worktree); len(out) > 0 {
 						conflicts = "YES"
 					}
@@ -361,43 +360,56 @@ func main() {
 		},
 	}
 
-	var replayCmd = &cobra.Command{
+	diffCmd := &cobra.Command{
+		Use:   "diff [path]",
+		Short: "Show changes between local and upstream",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			path := ""
+			if len(args) > 0 {
+				path = args[0]
+			}
+			meta, _ := loadMetadata()
+			found := false
+			for _, p := range meta.Patches {
+				if path != "" && p.LocalPath != path {
+					continue
+				}
+				found = true
+				if _, err := os.Stat(p.Worktree); os.IsNotExist(err) {
+					logError(fmt.Sprintf("Worktree not found for %s", p.LocalPath))
+					continue
+				}
+				// Use git diff --no-index to compare directories
+				c := exec.Command("git", "diff", "--no-index", filepath.Join(p.Worktree, p.RemotePath), p.LocalPath)
+				c.Stdout = os.Stdout
+				c.Stderr = os.Stderr
+				// git diff --no-index returns 1 if there are differences, which cobra might treat as error
+				_ = c.Run()
+			}
+			if !found && path != "" {
+				return fmt.Errorf("patch not found for path: %s", path)
+			}
+			return nil
+		},
+	}
+
+	replayCmd := &cobra.Command{
 		Use:   "replay",
 		Short: "Re-execute all Crossfile commands",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logInfo("Replaying Crossfile...")
-			data, err := os.ReadFile(CrossfilePath)
+			_, err := os.ReadFile(CrossfilePath)
 			if err != nil {
 				return err
 			}
-			exe, _ := os.Executable()
-			for _, line := range strings.Split(string(data), "\n") {
-				line = strings.TrimSpace(line)
-				if line == "" || strings.HasPrefix(line, "#") {
-					continue
-				}
-				logInfo("Executing: " + line)
-				words, _ := shellwords.Parse(line)
-				if len(words) == 0 {
-					continue
-				}
-				startIdx := -1
-				if words[0] == "just" && len(words) > 1 && words[1] == "cross" {
-					startIdx = 2
-				} else if words[0] == "cross" {
-					startIdx = 1
-				}
-				if startIdx >= 0 {
-					c := exec.Command(exe, words[startIdx:]...)
-					c.Stdout = os.Stdout
-					c.Stderr = os.Stderr
-					c.Run()
-				} else {
-					c := exec.Command("bash", "-c", line)
-					c.Stdout = os.Stdout
-					c.Stderr = os.Stderr
-					c.Run()
-				}
+			currExe, _ := os.Executable()
+			script := fmt.Sprintf(`cross() { "%s" "$@"; }; source "%s"`, currExe, CrossfilePath)
+			c := exec.Command("bash", "-c", script)
+			c.Stdout = os.Stdout
+			c.Stderr = os.Stderr
+			err = c.Run()
+			if err != nil {
+				return err
 			}
 			logSuccess("Replay completed.")
 			return nil
@@ -409,7 +421,7 @@ func main() {
 	var pushYes bool
 	var pushMessage string
 
-	var pushCmd = &cobra.Command{
+	pushCmd := &cobra.Command{
 		Use:   "push [path]",
 		Short: "Push changes back upstream",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -466,12 +478,12 @@ func main() {
 			if _, err := git.NewCommand("add", ".").RunInDir(patch.Worktree); err != nil {
 				return err
 			}
-			// Use shell command for commit to handle message with spaces easily if needed, 
+			// Use shell command for commit to handle message with spaces easily if needed,
 			// though gogs/git-module should handle it.
 			if _, err := git.NewCommand("commit", "-m", msg).RunInDir(patch.Worktree); err != nil {
 				// might be nothing to commit, ignore
 			}
-			
+
 			targetBranch := pushBranch
 			if targetBranch == "" {
 				targetBranch = patch.Branch
@@ -481,13 +493,13 @@ func main() {
 			if pushForce {
 				pushArgs = append(pushArgs, "--force")
 			}
-			
+
 			// Build full refspec to allow branch creation
 			refspec := "HEAD:" + targetBranch
 			if !strings.HasPrefix(targetBranch, "refs/") {
 				refspec = "HEAD:refs/heads/" + targetBranch
 			}
-			
+
 			pushArgs = append(pushArgs, patch.Remote, refspec)
 
 			if _, err := git.NewCommand(pushArgs...).RunInDir(patch.Worktree); err != nil {
@@ -502,7 +514,7 @@ func main() {
 	pushCmd.Flags().BoolVarP(&pushYes, "yes", "y", false, "Skip confirmation")
 	pushCmd.Flags().StringVarP(&pushMessage, "message", "m", "", "Commit message")
 
-	var execCmd = &cobra.Command{
+	execCmd := &cobra.Command{
 		Use:   "exec [cmd]",
 		Short: "Run arbitrary command",
 		Args:  cobra.MinimumNArgs(1),
@@ -516,25 +528,7 @@ func main() {
 		},
 	}
 
-	var installCmd = &cobra.Command{
-		Use:   "install",
-		Short: "Install git alias for git-cross",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			exe, err := os.Executable()
-			if err != nil {
-				return err
-			}
-			logInfo(fmt.Sprintf("Setting up git alias 'cross' -> %s", exe))
-			c := exec.Command("git", "config", "--global", "alias.cross", "!"+exe)
-			if err := c.Run(); err != nil {
-				return fmt.Errorf("failed to set git alias: %v", err)
-			}
-			logSuccess("Git alias 'cross' installed successfully.")
-			return nil
-		},
-	}
-
-	var initCmd = &cobra.Command{
+	initCmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize a new project with Crossfile",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -542,7 +536,7 @@ func main() {
 				logInfo("Crossfile already exists.")
 				return nil
 			}
-			err := os.WriteFile(CrossfilePath, []byte("# git-cross configuration\n"), 0644)
+			err := os.WriteFile(CrossfilePath, []byte("# git-cross configuration\n"), 0o644)
 			if err != nil {
 				return err
 			}
@@ -551,7 +545,7 @@ func main() {
 		},
 	}
 
-	rootCmd.AddCommand(useCmd, patchCmd, syncCmd, listCmd, statusCmd, replayCmd, pushCmd, execCmd, installCmd, initCmd)
+	rootCmd.AddCommand(useCmd, patchCmd, syncCmd, listCmd, statusCmd, diffCmd, replayCmd, pushCmd, execCmd, initCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

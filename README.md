@@ -29,33 +29,41 @@ The project provides three implementations, with **Go being the primary native v
 ## Installation
 
 ### Method 1: Go CLI (Recommended)
-Download the pre-built binary from [GitHub Releases](https://github.com/epcim/git-cross/releases) or build it with:
+The Go version is the primary implementation. Use the shortcut or follow manual steps.
+
+**Automation:**
 ```bash
-# Build and install locally
-cd src-go
-go install .
-# Alias it as git cross
-git config --global alias.cross '!git-cross'
+just install       # Installs Go CLI (default)
+just install shell # Installs Just/Shell version
+just install rust  # Installs Rust implementation (WIP)
 ```
+
+**Manual steps:**
+1. Download a pre-built binary from [GitHub Releases](https://github.com/epcim/git-cross/releases).
+2. Or build locally:
+   ```bash
+   cd src-go && go build -o git-cross main.go
+   # Setup git alias 'cross'
+   git config --global alias.cross "!$(pwd)/git-cross"
+   ```
 
 ### Method 2: Just (Vendoring)
-You can include `git-cross` directly in your project's `Justfile`.
-```bash
-git clone https://github.com/epcim/git-cross.git vendor/git-cross
-# Install alias: git cross-just
-just --justfile vendor/git-cross/Justfile cross install
-```
-In your `Justfile`:
-```just
-import? 'vendor/git-cross/Justfile'
-```
+The original functional version. Ideal for projects already using `just`.
+
+**Manual steps (for vendoring in your project):**
+1. Clone the repo: `git clone https://github.com/epcim/git-cross.git vendor/git-cross`
+2. Install alias: `git config --global alias.cross-just "!just --justfile $(pwd)/vendor/git-cross/Justfile cross"`
+3. Import in your `Justfile`: `import? 'vendor/git-cross/Justfile'`
 
 ### Method 3: Rust CLI (Experimental / WIP)
-If you want to contribute to the Rust implementation or explore native library interop:
+High-performance alternative for contributors or library interop testing.
+
+**Manual steps:**
 ```bash
 cd src-rust
 cargo install --path .
-git config --global alias.cross-rust '!git-cross-rust'
+# Setup git alias 'cross-rust' 
+git config --global alias.cross-rust "!git-cross-rust"
 ```
 
 ## Quick Start
@@ -124,9 +132,11 @@ Re-executes all commands in `Crossfile` to recreate the vendored environment.
 You can use the `exec` command in your `Crossfile` for post-patching tasks:
 ```bash
 # Crossfile
-git cross patch demo:src vendor/src
-git cross exec "npm install && npm run build"
+cross patch demo:src vendor/src
+cross exec "npm install && npm run build"
 ```
+
+> **Note**: While `cross` is the standard prefix for `Crossfile` entries (ensuring portability), you can also use `git cross` or `just cross` if you prefer specific implementation behavior.
 
 ### Just Integration
 If using `just`, you can override targets to add pre/post hooks:

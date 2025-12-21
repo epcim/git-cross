@@ -85,8 +85,4 @@ if [ ! -f "Crossfile" ]; then
 fi
 popd >/dev/null
 
-log_header "Testing Rust 'install' command..."
-# We don't want to actually change global git config in test, but we can check if it runs
-"$RUST_BIN" install
-
 echo "Rust implementation tests passed!"

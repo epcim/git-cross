@@ -39,10 +39,13 @@ enum Commands {
     List,
     /// Show patch status
     Status,
+    /// Show changes between local and upstream
+    Diff {
+        #[arg(default_value = "")]
+        path: String,
+    },
     /// Re-execute all Crossfile commands
     Replay,
-    /// Install git alias for git-cross-rust
-    Install,
     /// Initialize a new project with Crossfile
     Init,
     /// Push changes back to upstream
@@ -57,6 +60,11 @@ enum Commands {
         yes: bool,
         #[arg(long)]
         message: Option<String>,
+    },
+    /// Run arbitrary command
+    Exec {
+        #[arg(trailing_var_arg = true)]
+        args: Vec<String>,
     },
 }
 
@@ -337,6 +345,28 @@ fn main() -> Result<()> {
             }
             println!("{}", Table::new(rows).to_string());
         },
+        Commands::Diff { path } => {
+            let metadata = load_metadata()?;
+            let mut found = false;
+            for patch in metadata.patches {
+                if !path.is_empty() && patch.local_path != *path {
+                    continue;
+                }
+                found = true;
+                if !Path::new(&patch.worktree).exists() {
+                    log_error(&format!("Worktree not found for {}", patch.local_path));
+                    continue;
+                }
+                
+                let wt_path = format!("{}/{}", patch.worktree, patch.remote_path);
+                // git diff --no-index returns 1 on differences, duct handles it via unchecked() if we want to ignore exit code
+                let _ = duct::cmd("git", ["diff", "--no-index", &wt_path, &patch.local_path])
+                    .run();
+            }
+            if !found && !path.is_empty() {
+                return Err(anyhow!("Patch not found for path: {}", path));
+            }
+        },
         Commands::Replay => {
             log_info("Replaying Crossfile...");
             if !Path::new(CROSSFILE_PATH).exists() {
@@ -344,47 +374,16 @@ fn main() -> Result<()> {
                 return Ok(());
             }
 
-            let content = fs::read_to_string(CROSSFILE_PATH)?;
-            for line in content.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
-                }
-
-                log_info(&format!("Executing: {}", line));
-                
-                let words = shell_words::split(line)?;
-                if words.is_empty() { continue; }
-                
-                let start_idx = if words[0] == "just" && words.len() > 1 && words[1] == "cross" {
-                    2
-                } else if words[0] == "cross" {
-                    1
-                } else {
-                    0
-                };
-
-                if start_idx == 0 && words[0] != "cross" && words[0] != "just" {
-                    run_cmd(&["bash", "-c", line])?;
-                    continue;
-                }
-
-                let cmd_args = words[start_idx..].to_vec();
-                let status = duct::cmd(std::env::current_exe()?, &cmd_args)
-                    .unchecked()
-                    .run()?;
-                if !status.status.success() {
-                    log_error(&format!("Command failed: {}", line));
-                }
+            let curr_exe = std::env::current_exe()?;
+            let script = format!(r#"cross() {{ "{}" "$@"; }}; source "{}" "#, curr_exe.display(), CROSSFILE_PATH);
+            let status = duct::cmd!("bash", "-c", script).unchecked().run()?;
+            
+            if status.status.success() {
+                log_success("Replay completed.");
+            } else {
+                return Err(anyhow::anyhow!("Replay failed"));
             }
-            log_success("Replay completed.");
         },
-        Commands::Install => {
-            let exe = std::env::current_exe()?;
-            log_info(&format!("Setting up git alias 'cross-rust' -> {:?}", exe));
-            let _ = run_cmd(&["git", "config", "--global", "alias.cross-rust", &format!("!{:?}", exe)])?;
-            log_success("Git alias 'cross-rust' installed successfully.");
-        }
         Commands::Init => {
             if Path::new(CROSSFILE_PATH).exists() {
                 log_info("Crossfile already exists.");
@@ -447,6 +446,12 @@ fn main() -> Result<()> {
             run_cmd(&full_push_args)?;
 
             log_success("Push completed.");
+        },
+        Commands::Exec { args } => {
+            let full_cmd = args.join(" ");
+            log_info(&format!("Executing custom command: {}", full_cmd));
+            let _ = duct::cmd("bash", ["-c", &full_cmd])
+                .run();
         },
     }
 

@@ -85,8 +85,4 @@ if [ ! -f "Crossfile" ]; then
 fi
 popd >/dev/null
 
-log_header "Testing Go 'install' command..."
-# We don't want to actually change global git config in test, but we can check if it runs
-"$GO_BIN" install
-
 echo "Go implementation tests passed!"

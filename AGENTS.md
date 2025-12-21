@@ -56,6 +56,8 @@ Testing is modular and targets each implementation:
 ## Agent Guidelines
 
 - **Consistency**: When adding features, ensure logic parity across `Justfile.cross`, Rust, and Go versions.
+- **Command Parity**: All implementations (Just, Go, Rust) **MUST** implement the same set of core commands to ensure a consistent user experience regardless of the implementation layer used. 
+- **Tool Hygiene**: Installation and Git alias management MUST be handled through distribution (e.g., `Justfile`), keep binaries focused on functional command implementation.
 - **Hygiene**: Always protect the `.git/cross/` directory and ensure hidden worktrees are managed correctly.
 - **Reproducibility**: Any state change that affects the environment must be recorded in the `Crossfile`.
 - **Portability**: Native implementations should remain self-contained (using libraries where possible, like `grsync` in Go).

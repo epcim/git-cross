@@ -17,11 +17,12 @@ git -C "$upstream_path" commit -m "Add metal config" -q
 # We append to test that replay works with existing entries too
 echo "" >| Crossfile
 cat >> Crossfile <<EOF
-# upstream
-just cross use repo1 $upstream_url
+# upstream (standard 'cross' prefix)
+cross use repo1 $upstream_url
 
-# cross patches
-just cross patch repo1:src/metal deploy/metal
+# cross patches (mixing prefixes for test coverage)
+git cross patch repo1:src/metal deploy/metal
+just cross exec "echo 'Replay hook working'"
 EOF
 
 # Run replay

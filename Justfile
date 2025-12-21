@@ -20,6 +20,11 @@
 @cross-go *ARGS:
   go run -C "{{source_dir()}}/src-go" main.go {{ARGS}}
 
+# Install git alias for git-cross (default: go)
+[no-cd]
+@install impl="go":
+  just --justfile "{{source_dir()}}/Justfile.cross" install {{impl}}
+
 #_idea:
 #  REPO_DIR=$(git rev-parse --show-toplevel) \
-#  just --justfile "{{source_dir()}}/Justfile.cross" {{ARGS}} 
+#  just --justfile "{{source_dir()}}/Justfile.cross" {{ARGS}}

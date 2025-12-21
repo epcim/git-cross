@@ -488,16 +488,40 @@ status: check-deps
         just cross _log info "No patches found."
     end
 
-# # AICONTEXT, used by test-cases scenarios, and by user. input argument is path to Crossfile. The function them re-play the cross commands in Crossfile. This command is expected to be used on new repo checkout, to initialize the state. Patch commands are expected to be run, but shall not "sync" to local_path as final step in "patch" (obviously, user clonned our repo, not intereste in sync with upstream or upgrade from upstream   )
 # Replay commands from Crossfile
 replay: check-deps
-    just cross _log info "Replaying Crossfile..." &&\
-    /usr/bin/env bash ./Crossfile
+    /usr/bin/env bash -c "cross() { just --justfile '{{JUST_DIR}}/Justfile' cross \"\$@\"; }; source '{{REPO_DIR}}/Crossfile'"
 
-# Install git alias for this just implementation
-install:
+# Install git alias for git-cross (impl: go, shell, rust)
+install impl="go":
     #!/usr/bin/env bash
-    CROSS_PATH="{{JUST_DIR}}/Justfile"
-    echo "Setting up git alias 'cross-just' -> just --justfile $CROSS_PATH cross"
-    git config --global alias.cross-just "!just --justfile $CROSS_PATH cross"
-    just cross _log success "Git alias 'cross-just' installed successfully."
+    set -e
+    export PATH=$HOME/homebrew/bin:$PATH
+    case "{{impl}}" in
+        go)
+            echo "==> Building Go implementation..."
+            (cd "{{JUST_DIR}}/src-go" && go build -o git-cross-go main.go)
+            EXE="{{JUST_DIR}}/src-go/git-cross-go"
+            echo "==> Setting up git alias 'cross' -> $EXE"
+            git config --global alias.cross "!$EXE"
+            echo "Success: Git alias 'cross' installed."
+            ;;
+        shell|just)
+            CROSS_PATH="{{JUST_DIR}}/Justfile"
+            echo "==> Setting up git alias 'cross-just' -> just --justfile $CROSS_PATH cross"
+            git config --global alias.cross-just "!just --justfile $CROSS_PATH cross"
+            echo "Success: Git alias 'cross-just' installed."
+            ;;
+        rust)
+            echo "==> Building Rust implementation..."
+            (cd "{{JUST_DIR}}/src-rust" && cargo build)
+            EXE="{{JUST_DIR}}/src-rust/target/debug/git-cross-rust"
+            echo "==> Setting up git alias 'cross-rust' -> $EXE"
+            git config --global alias.cross-rust "!$EXE"
+            echo "Success: Git alias 'cross-rust' installed."
+            ;;
+        *)
+            echo "ERROR: Unknown implementation '{{impl}}'. Use: go, shell, or rust."
+            exit 1
+            ;;
+    esac

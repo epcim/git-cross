@@ -1,8 +1,8 @@
 # Example: Full workflow with sync, diff, and PR
-just cross use demo https://github.com/example/demo-repo
+cross use demo https://github.com/example/demo-repo
 
 # Patch a directory
-just cross patch demo:docs vendor/docs
+cross patch demo:docs vendor/docs
 
 # Later: sync updates from upstream
 # (simulated by updating the remote and running sync)

@@ -17,14 +17,12 @@ fail() {
     exit 1
 }
 
-if ! command -v just >/dev/null; then
-    if [ -f "$HOME/.cargo/bin/just" ]; then
-        export PATH="$HOME/.cargo/bin:$PATH"
-    elif [ -f "/opt/homebrew/bin/just" ]; then
-        export PATH="/opt/homebrew/bin:$PATH"
-    elif [ -f "/usr/local/bin/just" ]; then
-        export PATH="/usr/local/bin:$PATH"
-    fi
+if ! command -v just >/dev/null; then # PATH adjustment for development environments
+    for p in "$HOME/.cargo/bin" "$HOME/homebrew/bin" "/opt/homebrew/bin" "/usr/local/bin"; do
+        if [ -d "$p" ]; then
+            export PATH="$p:$PATH"
+        fi
+    done
 fi
 
 setup_sandbox() {
