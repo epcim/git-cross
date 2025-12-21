@@ -6,5 +6,10 @@ Known issues:
 - [x] Wire test 7 to github CI workflow.
 - [x] Suggest cleanup of the repository from no-longer required code and descriptions.
 - [x] Implement "cross" command in Rust with the same functionality as `just cross`.
-- [x] Update README.md with the new "cross" command implemented in Rust as a `.gitconfig` alias and `git cross` usage.
-- [ ] Implement "cross" command in Golang with the same functionality as `just cross`.
+- [x] Update README.md with the new "cross" command implemented in Rust.
+- [x] Implement "cross" command in Golang with the same functionality as `just cross`. 
+    - Use `github.com/gogs/git-module` for Git operations.
+    - Use `github.com/zloylos/grsync` for `rsync` operations.
+    - Rename "src" to "src-rust" and create "src-go" for the Golang implementation. 
+    - Update README.md with the new "cross" command implemented in Golang.
+- [x] Update `Justfile` with additional targets `cross-go` and `cross-rust` to run the appropriate implementation.

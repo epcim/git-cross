@@ -30,7 +30,15 @@ cargo install --path .
 git config --global alias.cross '!git-cross'
 ```
 
-### Method 2: Just (Vendoring)
+### Method 2: Go CLI (Native)
+If you prefer Go, you can build and install the Go version:
+```bash
+cd src-go
+go install .
+```
+Then setup the git alias as above.
+
+### Method 3: Just (Vendoring)
 You can also include `git-cross` directly in your project's `Justfile`.
 ```bash
 git clone https://github.com/epcim/git-cross.git vendor/git-cross
