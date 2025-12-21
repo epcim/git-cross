@@ -404,11 +404,15 @@ func main() {
 		},
 	}
 
+	var pushBranch string
+	var pushForce bool
+	var pushYes bool
+	var pushMessage string
+
 	var pushCmd = &cobra.Command{
 		Use:   "push [path]",
-		Short: "Push changes back upstream (WIP)",
+		Short: "Push changes back upstream",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			logInfo("The 'push' command is currently WORK IN PROGRESS.")
 			path := ""
 			if len(args) > 0 {
 				path = args[0]
@@ -438,28 +442,65 @@ func main() {
 			out, _ := git.NewCommand("status", "--short").RunInDir(patch.Worktree)
 			fmt.Print(string(out))
 
-			msg := "Update from git-cross"
-			// Try to get message from parent repo log
-			logOut, _ := git.NewCommand("log", "-1", "--pretty=%s", "--", patch.LocalPath).RunInDir(".")
-			if len(logOut) > 0 {
-				msg = strings.TrimSpace(string(logOut))
+			if !pushYes {
+				fmt.Print("Run push? (y/n): ")
+				var response string
+				fmt.Scanln(&response)
+				if strings.ToLower(response) != "y" {
+					logInfo("Push cancelled.")
+					return nil
+				}
+			}
+
+			msg := pushMessage
+			if msg == "" {
+				msg = "Update from git-cross"
+				// Try to get message from parent repo log
+				logOut, _ := git.NewCommand("log", "-1", "--pretty=%s", "--", patch.LocalPath).RunInDir(".")
+				if len(logOut) > 0 {
+					msg = strings.TrimSpace(string(logOut))
+				}
 			}
 
 			logInfo("Committing and pushing...")
 			if _, err := git.NewCommand("add", ".").RunInDir(patch.Worktree); err != nil {
 				return err
 			}
+			// Use shell command for commit to handle message with spaces easily if needed, 
+			// though gogs/git-module should handle it.
 			if _, err := git.NewCommand("commit", "-m", msg).RunInDir(patch.Worktree); err != nil {
 				// might be nothing to commit, ignore
 			}
 			
-			if _, err := git.NewCommand("push", patch.Remote, "HEAD:"+patch.Branch).RunInDir(patch.Worktree); err != nil {
+			targetBranch := pushBranch
+			if targetBranch == "" {
+				targetBranch = patch.Branch
+			}
+
+			pushArgs := []string{"push"}
+			if pushForce {
+				pushArgs = append(pushArgs, "--force")
+			}
+			
+			// Build full refspec to allow branch creation
+			refspec := "HEAD:" + targetBranch
+			if !strings.HasPrefix(targetBranch, "refs/") {
+				refspec = "HEAD:refs/heads/" + targetBranch
+			}
+			
+			pushArgs = append(pushArgs, patch.Remote, refspec)
+
+			if _, err := git.NewCommand(pushArgs...).RunInDir(patch.Worktree); err != nil {
 				return err
 			}
 			logSuccess("Push completed.")
 			return nil
 		},
 	}
+	pushCmd.Flags().StringVarP(&pushBranch, "branch", "b", "", "Target branch")
+	pushCmd.Flags().BoolVarP(&pushForce, "force", "f", false, "Force push")
+	pushCmd.Flags().BoolVarP(&pushYes, "yes", "y", false, "Skip confirmation")
+	pushCmd.Flags().StringVarP(&pushMessage, "message", "m", "", "Commit message")
 
 	var execCmd = &cobra.Command{
 		Use:   "exec [cmd]",
@@ -475,7 +516,42 @@ func main() {
 		},
 	}
 
-	rootCmd.AddCommand(useCmd, patchCmd, syncCmd, listCmd, statusCmd, replayCmd, pushCmd, execCmd)
+	var installCmd = &cobra.Command{
+		Use:   "install",
+		Short: "Install git alias for git-cross",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			exe, err := os.Executable()
+			if err != nil {
+				return err
+			}
+			logInfo(fmt.Sprintf("Setting up git alias 'cross' -> %s", exe))
+			c := exec.Command("git", "config", "--global", "alias.cross", "!"+exe)
+			if err := c.Run(); err != nil {
+				return fmt.Errorf("failed to set git alias: %v", err)
+			}
+			logSuccess("Git alias 'cross' installed successfully.")
+			return nil
+		},
+	}
+
+	var initCmd = &cobra.Command{
+		Use:   "init",
+		Short: "Initialize a new project with Crossfile",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if _, err := os.Stat(CrossfilePath); err == nil {
+				logInfo("Crossfile already exists.")
+				return nil
+			}
+			err := os.WriteFile(CrossfilePath, []byte("# git-cross configuration\n"), 0644)
+			if err != nil {
+				return err
+			}
+			logSuccess("Crossfile initialized.")
+			return nil
+		},
+	}
+
+	rootCmd.AddCommand(useCmd, patchCmd, syncCmd, listCmd, statusCmd, replayCmd, pushCmd, execCmd, installCmd, initCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

@@ -16,40 +16,46 @@
 | **Upstream sync** | ✅ Bidirectional | ⚠️ Complex | ⚠️ Merge commits |
 | **Commit visibility** | ✅ In main repo | ❌ Separate | ✅ In main repo |
 | **Reproducibility** | ✅ Crossfile | ⚠️ .gitmodules | ⚠️ Manual |
-| **Native CLI** | ✅ Go & Rust | ❌ N/A | ❌ Bash |
+| **Native CLI** | ✅ Go (Primary) | ❌ N/A | ❌ Bash |
 
 ## Implementation Note
 
-`git-cross` started as a **Proof of Concept (PoC)** implemented using `Justfile` and `fish/shell`. While that version remains fully functional and valid for usage (see Method 3), the project has since evolved into native inhabitants.
+The project provides three implementations, with **Go being the primary native version for production use.**
 
-Leveraging **AI-assisted coding** (which is almost "for free" in terms of development velocity), we've implemented high-performance versions in **Rust** and **Go**. These native implementations are the preferred choice for most users as they are significantly easier to distribute and offer a more consistent, faster experience across different platforms.
+1.  **Go Implementation:** The most robust and feature-complete version. Recommended for general use.
+2.  **Justfile/Fish:** The original functional version, great for integration-first workflows.
+3.  **Rust Implementation:** Currently **EXPERIMENTAL / WIP**. High-performance alternative being refactored to use native libraries.
 
 ## Installation
 
-### Method 1: Rust CLI (Recommended)
-The native CLI is the fastest and most ergonomic way to use `git-cross`.
+### Method 1: Go CLI (Recommended)
+Download the pre-built binary from [GitHub Releases](https://github.com/epcim/git-cross/releases) or build it with:
 ```bash
-cd src-rust
-cargo install --path .
-git config --global alias.cross '!git-cross-rust'
-```
-
-### Method 2: Go CLI (Native)
-If you prefer Go, you can build and install the Go version:
-```bash
+# Build and install locally
 cd src-go
 go install .
-git config --global alias.cross '!git-cross-go'
+# Alias it as git cross
+git config --global alias.cross '!git-cross'
 ```
 
-### Method 3: Just (Vendoring / PoC / To evaluate idea and features)
-You can also include `git-cross` directly in your project's `Justfile` (the original fish/shell PoC).
+### Method 2: Just (Vendoring)
+You can include `git-cross` directly in your project's `Justfile`.
 ```bash
 git clone https://github.com/epcim/git-cross.git vendor/git-cross
+# Install alias: git cross-just
+just --justfile vendor/git-cross/Justfile cross install
 ```
 In your `Justfile`:
 ```just
 import? 'vendor/git-cross/Justfile'
+```
+
+### Method 3: Rust CLI (Experimental / WIP)
+If you want to contribute to the Rust implementation or explore native library interop:
+```bash
+cd src-rust
+cargo install --path .
+git config --global alias.cross-rust '!git-cross-rust'
 ```
 
 ## Quick Start
@@ -100,7 +106,7 @@ git cross list
 ```
 Displays all configured patches in a table.
 
-#### `push` - Contribute Back (WIP)
+#### `push` - Contribute Back
 ```bash
 git cross push [path] [--force] [--message "msg"]
 ```
@@ -118,8 +124,8 @@ Re-executes all commands in `Crossfile` to recreate the vendored environment.
 You can use the `exec` command in your `Crossfile` for post-patching tasks:
 ```bash
 # Crossfile
-cross patch demo:src vendor/src
-cross exec "npm install && npm run build"
+git cross patch demo:src vendor/src
+git cross exec "npm install && npm run build"
 ```
 
 ### Just Integration
@@ -136,6 +142,25 @@ If using `just`, you can override targets to add pre/post hooks:
 2. **Sparse Checkout**: Only checks out the specific directories you need.
 3. **Rsync**: Efficiently syncs changes between worktree and your source tree.
 4. **Crossfile**: A plain-text record of all active patches for easy sharing.
+
+## Architecture
+
+### Technical Implementation Analysis
+
+`git-cross` provides three distinct implementation layers, ensuring the tool is available as a shell-based coordinator or a production-grade native CLI.
+
+| Feature | Go (Primary) | Pure Justfile | Rust (Exp.) | winner |
+| :--- | :---: | :---: | :---: | :---: |
+| **Philosophy** | Porcelain Wrapper | Shell Coordination | Library-First | **Go** (for balance) |
+| **CLI Ergonomics** | Cobra (Standard) | Task-based | Clap (Elegant) | **Rust** |
+| **Git Interop** | Binary Wrapper | Direct CLI calls | Native Bindings | **Shell** (for transparency) |
+| **Distribution** | Static (Zip/One) | Tool-dependent | Compiled (C-link) | **Go** |
+| **Speed to Fix** | Fast | Instant | Medium | **Shell** |
+
+### Verdict: The Multi-Layer Strategy
+*   **Go (Primary):** The designated production version. It offers the best balance of distribution ease (zero-dependency binaries) and reliable Git orchestration.
+*   **Justfile:** The original source of truth. It remains the fastest way to integrate `git-cross` into existing CI/CD pipelines that already use `just`.
+*   **Rust (Experimental):** A high-performance alternative exploring native library integration (`libgit2`). Best for users who require memory safety and a premium CLI experience.
 
 ## License
 MIT

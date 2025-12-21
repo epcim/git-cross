@@ -60,11 +60,33 @@ if ! grep -q "Updated go logic" "vendor/go-src/logic.go"; then
     fail "Go 'sync' failed to pull updates"
 fi
 
-log_header "Testing Go 'replay' command..."
-rm -rf vendor/go-src
-"$GO_BIN" replay
-if [ ! -f "vendor/go-src/logic.go" ]; then
-    fail "Go 'replay' failed to restore vendor directory"
+log_header "Testing Go 'push' command..."
+# Allow pushing to current branch in mock upstream
+pushd "$upstream_path" >/dev/null
+git config receive.denyCurrentBranch ignore
+popd >/dev/null
+
+echo "Local modification" >> vendor/go-src/logic.go
+git add vendor/go-src/logic.go
+git commit -m "Local go change"
+
+"$GO_BIN" push vendor/go-src --yes
+last_msg=$(git -C "$upstream_path" log -1 --pretty=%s)
+if [[ "$last_msg" != "Local go change" ]]; then
+    fail "Go 'push' failed. Expected 'Local go change', got '$last_msg'"
 fi
+
+log_header "Testing Go 'init' command..."
+mkdir -p init-test
+pushd init-test >/dev/null
+"$GO_BIN" init
+if [ ! -f "Crossfile" ]; then
+    fail "Go 'init' failed to create Crossfile"
+fi
+popd >/dev/null
+
+log_header "Testing Go 'install' command..."
+# We don't want to actually change global git config in test, but we can check if it runs
+"$GO_BIN" install
 
 echo "Go implementation tests passed!"

@@ -5,13 +5,13 @@
 **Stack**:
 1. **Core**: `git worktree` (vendoring mechanism) + `rsync` (syncing mechanism)
 2. **Implementation Layers**:
-   - **Rust (Recommended)**: High-performance, portable CLI located in `src-rust/`.
-   - **Go**: Native CLI using `gogs/git-module` for cleaner Git interop, located in `src-go/`.
-   - **Just + Fish (PoC)**: The original implementation in `Justfile.cross`, still fully functional for vendoring usecases.
+   - **Go (Recommended/Primary)**: Native CLI using `gogs/git-module` and `grsync`, located in `src-go/`.
+   - **Just + Fish**: The original implementation in `Justfile.cross`, still fully functional and widely used.
+   - **Rust (Experimental / WIP)**: Native CLI in `src-rust/`, being refactored to use `git2` and `duct`.
 
 ## Core Components
 
-1. **Native CLIs (`git-cross-rust` / `git-cross-go`)**:
+1. **Native CLIs (`git-cross-rust` / `git-cross-go` preferred)**:
    - Primary entry points for modern usage.
    - Command parity: `use`, `patch`, `sync`, `list`, `status`, `replay`, `push`, `exec`.
    - Mirror the original shell-based logic but are faster and easier to distribute.

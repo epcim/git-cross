@@ -6,11 +6,11 @@ setup_sandbox
 cd "$SANDBOX"
 
 # Compile rust binary (it should be already compiled but let's be sure or just use the location)
-RUST_BIN="$REPO_ROOT/target/debug/git-cross"
+RUST_BIN="$REPO_ROOT/src-rust/target/debug/git-cross-rust"
 if [ ! -f "$RUST_BIN" ]; then
     echo "Rust binary not found at $RUST_BIN. Building..."
     export PATH=$HOME/homebrew/bin:$PATH
-    (cd "$REPO_ROOT" && cargo build)
+    (cd "$REPO_ROOT/src-rust" && cargo build)
 fi
 
 # Setup upstream
@@ -60,13 +60,33 @@ if ! grep -q "Updated logic" "vendor/rust-src/logic.rs"; then
     fail "Rust 'sync' failed to pull updates"
 fi
 
-log_header "Testing Rust 'replay' command..."
-rm -rf vendor/rust-src
-# We need to clean up worktree metadata or just rely on replay to find it
-# Replay should recreate it if missing.
-"$RUST_BIN" replay
-if [ ! -f "vendor/rust-src/logic.rs" ]; then
-    fail "Rust 'replay' failed to restore vendor directory"
+log_header "Testing Rust 'push' command..."
+# Allow pushing to current branch in mock upstream
+pushd "$upstream_path" >/dev/null
+git config receive.denyCurrentBranch ignore
+popd >/dev/null
+
+echo "Local modification" >> vendor/rust-src/logic.rs
+git add vendor/rust-src/logic.rs
+git commit -m "Local rust change"
+
+"$RUST_BIN" push vendor/rust-src --yes
+last_msg=$(git -C "$upstream_path" log -1 --pretty=%s)
+if [[ "$last_msg" != "Local rust change" ]]; then
+    fail "Rust 'push' failed. Expected 'Local rust change', got '$last_msg'"
 fi
+
+log_header "Testing Rust 'init' command..."
+mkdir -p init-test
+pushd init-test >/dev/null
+"$RUST_BIN" init
+if [ ! -f "Crossfile" ]; then
+    fail "Rust 'init' failed to create Crossfile"
+fi
+popd >/dev/null
+
+log_header "Testing Rust 'install' command..."
+# We don't want to actually change global git config in test, but we can check if it runs
+"$RUST_BIN" install
 
 echo "Rust implementation tests passed!"

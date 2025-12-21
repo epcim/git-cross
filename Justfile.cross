@@ -493,3 +493,11 @@ status: check-deps
 replay: check-deps
     just cross _log info "Replaying Crossfile..." &&\
     /usr/bin/env bash ./Crossfile
+
+# Install git alias for this just implementation
+install:
+    #!/usr/bin/env bash
+    CROSS_PATH="{{JUST_DIR}}/Justfile"
+    echo "Setting up git alias 'cross-just' -> just --justfile $CROSS_PATH cross"
+    git config --global alias.cross-just "!just --justfile $CROSS_PATH cross"
+    just cross _log success "Git alias 'cross-just' installed successfully."
