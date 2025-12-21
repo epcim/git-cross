@@ -251,6 +251,38 @@ cross exec just deploy
 
 ---
 
+### Advanced: Hooks & Lifecycle
+
+You can implement pre- and post-hook actions by overriding the `cross` target in your project's `Justfile`. This allows you to chain custom logic around `git-cross` commands.
+
+**Example: Add hooks to your Justfile:**
+
+```just
+# Your project's Justfile
+# ... existing imports ...
+
+# Override 'cross' to add hooks
+@cross *ARGS:
+    echo "Pre-hook: preparing environment..."
+    
+    # Call the core git-cross logic (forwarding all arguments)
+    just --justfile vendor/git-cross/Justfile.cross {{ARGS}}
+    
+    echo "Post-hook: cleanup or notification..."
+```
+
+**Alternative: Exec hooks**
+
+You can also explicitly call hooks via `Crossfile` using the `exec` command if they only apply to specific phases (like post-patching):
+
+```bash
+# Crossfile
+cross patch demo:src vendor/src
+cross exec ./scripts/post-patch.sh
+```
+
+---
+
 **Status indicators:**
 
 - **DIFF**: `Clean` | `Modified` | `Missing WT`
@@ -259,7 +291,10 @@ cross exec just deploy
 
 ---
 
-### Contributing Back Upstream
+### Contributing Back Upstream (WIP)
+
+> [!WARNING]
+> The `push` command is currently a **Work In Progress**. Usage is for testing and evaluation. Always verify changes in the worktree before pushing.
 
 #### `diff-patch` - Compare Local vs Upstream
 
@@ -287,7 +322,7 @@ Compare your local changes against the upstream version:
 just cross diff
 ```
 
-### 6. Push Changes Upstream
+### 6. Push Changes Upstream (WIP)
 
 When you're ready to contribute back:
 

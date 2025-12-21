@@ -4,7 +4,7 @@
 # specifically for post-hooks or setup steps.
 
 # Define a post-hook that runs a recipe from the user's Justfile
-cross exec just posthook
+just cross exec just posthook
 
 # Another example: simple shell command
-cross exec echo "Crossfile-005 post-hook executed"
+just cross exec echo "Crossfile-005 post-hook executed"
