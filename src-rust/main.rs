@@ -7,7 +7,7 @@ use std::process::Command;
 use tabled::{Table, Tabled};
 
 #[derive(Parser)]
-#[command(name = "git-cross")]
+#[command(name = "git-cross-rust")]
 #[command(about = "A tool for vendoring git directories using worktrees", long_about = None)]
 struct Cli {
     #[command(subcommand)]

@@ -2,9 +2,9 @@
 
 **Feature Branch**: `001-cross-test-strategy`  
 **Created**: 2025-11-28  
-**Status**: In Progress  
-**Last Updated**: 2025-12-01  
-**Implementation**: Justfile + Fish (migration complete)  
+**Implementation**: Rust, Go, Justfile + Fish (Parity complete)
+**Status**: Feature Parity Achieved
+**Last Updated**: 2025-12-21
 **Input**: User description: "Implement test strategy for core functions in cross especially use and patch and any time later all documented functions and callables from usage documentation."
 
 ## Clarifications
@@ -32,11 +32,11 @@
 
 ### User Story 1 - Example Crossfiles (Priority: P1)
 
-Release maintainers need a single command to verify that the "default testcase" documented in README still succeeds end-to-end, proving that `cross` handles mixed worktrees as advertised.
+Release maintainers need to verify that documented testcases succeed across all implementations (Shell, Rust, Go), proving behavioral parity.
 
-**Why this priority**: This is the minimum safety net for every change and the first regression signal for contributors before they iterate on deeper checks.
+**Why this priority**: Minimum safety net for every implementation choice.
 
-**Independent Test**: Can be fully tested by running the documented default testcase (`VERBOSE=true ./cross`) inside a clean workspace and confirming expected files and git status markers are produced.
+**Independent Test**: Can be fully tested by running example Crossfiles with `CROSS_IMPL=[shell|rust|go] ./test/run-all.sh`.
 
 **Acceptance Scenarios**:
 

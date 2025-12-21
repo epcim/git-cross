@@ -22,9 +22,9 @@
 
 The script performs:
 - Example Crossfile tests via `test/bash/examples/crossfile-{001,002,003,005}.sh`
-- Each test clones repo, copies `Justfile` and `.env`, runs commands via `./cross`
-- Validates expected files exist and sparse checkout works correctly
-- Note: Rust harness tests are not yet implemented
+- Rust implementation tests via `test/008_rust_cli.sh`
+- Go implementation tests via `test/009_go_cli.sh`
+- Validates expected files exist and behavioral parity across implementations
 
 **Current status**: Tests require fixture seeding (see Maintenance section)
 

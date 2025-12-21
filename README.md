@@ -16,24 +16,22 @@
 | **Upstream sync** | ✅ Bidirectional | ⚠️ Complex | ⚠️ Merge commits |
 | **Commit visibility** | ✅ In main repo | ❌ Separate | ✅ In main repo |
 | **Reproducibility** | ✅ Crossfile | ⚠️ .gitmodules | ⚠️ Manual |
-| **Native CLI** | ✅ Rust | ❌ N/A | ❌ Bash |
+| **Native CLI** | ✅ Go & Rust | ❌ N/A | ❌ Bash |
 
 ## Implementation Note
 
 `git-cross` started as a **Proof of Concept (PoC)** implemented using `Justfile` and `fish/shell`. While that version remains fully functional and valid for usage (see Method 3), the project has since evolved into native inhabitants.
 
-Leveraging **AI-assisted coding**, we've implemented high-performance versions in **Rust** and **Go**. These native implementations are the preferred choice for most users as they are easier to distribute and offer a more consistent experience across different platforms.
+Leveraging **AI-assisted coding** (which is almost "for free" in terms of development velocity), we've implemented high-performance versions in **Rust** and **Go**. These native implementations are the preferred choice for most users as they are significantly easier to distribute and offer a more consistent, faster experience across different platforms.
 
 ## Installation
 
 ### Method 1: Rust CLI (Recommended)
 The native CLI is the fastest and most ergonomic way to use `git-cross`.
 ```bash
-# Install from source
+cd src-rust
 cargo install --path .
-
-# Configure Git alias
-git config --global alias.cross '!git-cross'
+git config --global alias.cross '!git-cross-rust'
 ```
 
 ### Method 2: Go CLI (Native)
@@ -41,11 +39,11 @@ If you prefer Go, you can build and install the Go version:
 ```bash
 cd src-go
 go install .
+git config --global alias.cross '!git-cross-go'
 ```
-Then setup the git alias as above.
 
-### Method 3: Just (Vendoring / PoC)
-You can also include `git-cross` directly in your project's `Justfile`.
+### Method 3: Just (Vendoring / PoC / To evaluate idea and features)
+You can also include `git-cross` directly in your project's `Justfile` (the original fish/shell PoC).
 ```bash
 git clone https://github.com/epcim/git-cross.git vendor/git-cross
 ```

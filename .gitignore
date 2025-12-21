@@ -10,3 +10,8 @@ testdir
 !.github
 !.specify
 !.gitignore
+
+
+# Added by cargo
+
+/target

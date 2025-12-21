@@ -4,10 +4,3 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-clap = { version = "4.4", features = ["derive"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-anyhow = "1.0"
-tabled = "0.15"
-shell-words = "1.1" # Useful for parsing Crossfile lines
-walkdir = "2.4"

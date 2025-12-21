@@ -13,3 +13,4 @@ Known issues:
     - Rename "src" to "src-rust" and create "src-go" for the Golang implementation. 
     - Update README.md with the new "cross" command implemented in Golang.
 - [x] Update `Justfile` with additional targets `cross-go` and `cross-rust` to run the appropriate implementation.
+- [x] Update AGENTS.md, specs/ and .specify/ to reflect new implementations.

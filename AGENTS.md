@@ -2,103 +2,65 @@
 
 ## Architecture
 
-**Stack**: `just` (task runner) + `fish` (scripting) + `git worktree` (vendoring mechanism)
+**Stack**:
+1. **Core**: `git worktree` (vendoring mechanism) + `rsync` (syncing mechanism)
+2. **Implementation Layers**:
+   - **Rust (Recommended)**: High-performance, portable CLI located in `src-rust/`.
+   - **Go**: Native CLI using `gogs/git-module` for cleaner Git interop, located in `src-go/`.
+   - **Just + Fish (PoC)**: The original implementation in `Justfile.cross`, still fully functional for vendoring usecases.
 
 ## Core Components
 
-1. **`Justfile`**: Entry point for all commands
-   - Commands: `use`, `patch`, `sync`, `list`, `status`, `diff-patch`, `push-upstream`, `replay`
-   - Uses fish for complex logic (loops, string manipulation, conditionals)
-   - Uses bash for simple checks (`check-deps`)
+1. **Native CLIs (`git-cross-rust` / `git-cross-go`)**:
+   - Primary entry points for modern usage.
+   - Command parity: `use`, `patch`, `sync`, `list`, `status`, `replay`, `push`, `exec`.
+   - Mirror the original shell-based logic but are faster and easier to distribute.
 
-2. **`cross`**: Thin wrapper script for CLI ergonomics
-   - Delegates to `just`
-   - Sources `.env` for PATH setup
+2. **Justfile + Justfile.cross**:
+   - `Justfile`: Root task runner delegating to `Justfile.cross` or native CLIs.
+   - `Justfile.cross`: The canonical "source of truth" for the original logic.
 
 3. **Persistence**: `Crossfile`
-   - Auto-records `use` and `patch` commands
-   - `replay` command restores configuration
+   - Plain-text record of `use` and `patch` commands.
+   - Enables `replay` command to reconstruct the entire vendored environment.
 
-4. **Environment**:
-   - `.envrc`: Direnv integration (auto-loads PATH)
-   - `.env`: Manual sourcing alternative
+4. **Metadata**: `.git/cross/metadata.json`
+   - Internal state tracking (worktree paths, remote mappings).
+   - Used by CLIs for faster lookups and status reporting.
 
 ## Commands
 
-All commands are accessible via `just cross <command>` or `./cross <command>` wrapper:
+All implementations follow the same command structure:
 
 ### Core Workflow
-- **`use <name> <url>`** - Add a remote repository with branch auto-detection
-  - Auto-detects default branch (main/master) via `git ls-remote --symref`
-  - Fetches detected branch automatically
-  - Records in Crossfile
-
-- **`patch <remote:path[:branch]> <local_path> [branch]`** - Vendor a directory from remote
-  - Supports `remote:path:branch` syntax (branch in spec)
-  - Alternative: `remote:path local_path branch` (branch as 3rd arg)
-  - Creates worktree with sparse checkout
-  - Syncs to local path with rsync
-  - Creates intermediate directories automatically (`mkdir -p`)
-  - Updates Crossfile only on success (idempotency)
-
-- **`sync`** - Update all patches from upstream
-  - Updates all worktrees via git pull --rebase
-  - Checks for uncommitted changes in local paths
-  - Prompts before overwriting local modifications
-  - Executes `cross exec` commands from Crossfile
-
-- **`replay`** - Re-execute all Crossfile commands
-  - Processes each line sequentially
-  - Supports `cross` prefix and legacy format
-  - Skips comments and empty lines
+- **`use <name> <url>`**: Register a remote and detect its default branch.
+- **`patch <remote:path[:branch]> <local_path>`**: Sync a subdirectory from a remote to a local path using a hidden worktree.
+- **`sync [path]`**: pull updates for all or specific patches. Uses rebase for clean history.
+- **`replay`**: Re-run all commands found in the `Crossfile`.
 
 ### Inspection
-- **`list`** - Show all configured patches in table format
-- **`status`** - Show patch status (diffs, upstream sync, conflicts)
-- **`diff [remote:path] [local_path]`** - Compare local vs upstream
-  - Auto-infers from current directory if in tracked path
+- **`list`**: Tabular view of all configured patches.
+- **`status`**: Detailed health check (dirty files, upstream divergence, conflicts).
+- **`diff`**: Show changes between local files and their upstream source.
 
-### Contribution
-- **`push [remote:path] [local_path]`** - Push changes back to upstream
-  - Syncs local to worktree
-  - Shows git status
-  - Interactive: Run (commit+push), Manual (subshell), Cancel
-  - Auto-infers from current directory if in tracked path
-
-### Automation
-- **`exec <command>`** - Execute arbitrary shell commands
-  - Used for post-hooks in Crossfile
-  - Can call user's Justfile recipes
-  - Example: `cross exec just posthook`
-
-### Utilities
-- **`help`** - Show usage and available commands
-- **`check-deps`** - Verify required dependencies (fish, rsync, git, python3, jq, yq)
-- **`setup`** - Auto-setup environment (direnv)
-
-### Internal Helpers
-- **`_resolve_context`** - Infer remote:path and local_path from CWD
-- **`_sync_from_crossfile`** - Process Crossfile for sync operations
-- **`update_crossfile`** - Append command to Crossfile (deduplicated)
+### Infrastructure
+- **`exec <cmd>`**: Run arbitrary commands for post-patching automation.
 
 ## Testing
 
-- **`test/verify_examples.sh`**: Basic smoke tests
-- **`test/test_all_commands.sh`**: Comprehensive integration tests
-  - Tests all commands including inference, interactive modes, stash/pop
+Testing is modular and targets each implementation:
+- **Bash/Fish**: `test/run-all.sh` executes legacy shell tests.
+- **Rust**: `test/008_rust_cli.sh` verifies the Rust port.
+- **Go**: `test/009_go_cli.sh` verifies the Go implementation.
 
-## Code Style
+## Agent Guidelines
 
-1. **Conciseness**: Prefer `test ... && ...` for one-liners
-2. **Fish syntax**: Use `if ... end` for complex blocks
-3. **Variable naming**: Short, consistent names (`rspec`, `lpath`, `rpath`)
-4. **Verbosity**: Minimal echo statements (1-2 per command)
-5. **Self-contained**: Each recipe should be independent
+- **Consistency**: When adding features, ensure logic parity across `Justfile.cross`, Rust, and Go versions.
+- **Hygiene**: Always protect the `.git/cross/` directory and ensure hidden worktrees are managed correctly.
+- **Reproducibility**: Any state change that affects the environment must be recorded in the `Crossfile`.
+- **Portability**: Native implementations should remain self-contained (using libraries where possible, like `grsync` in Go).
 
-## Implementation Notes
-
-- **Hidden worktrees**: Stored in `.git/cross/worktrees/`
-- **Sparse checkout**: Only specified paths are checked out
-- **Rsync**: Syncs files between worktree and visible directory
-- **Argument inference**: Uses `invocation_directory()` to detect context
-- **Interactive prompts**: `push-upstream` offers Run/Manual/Cancel modes
+## Implementation Details
+- **Hidden worktrees**: Stored in `.git/cross/worktrees/`.
+- **Sparse checkout**: Only specified paths are checked out to save disk and time.
+- **Rsync**: Used for the final sync to the local source tree to ensure physical files exist (unlike submodules).
