@@ -13,6 +13,7 @@ testdir
 !.goreleaser.yaml
 
 
-# Added by cargo
-
-/target
+# builds
+src-go/git-cross-go
+src-rust/git-cross-rust
+src-rust/target
