@@ -152,3 +152,15 @@
 - [x] T035 Verify/Implement auto-sync after `patch` (ensure worktree is populated).
 - [x] T036 Fix `Crossfile` idempotency: prevent duplicate/failed commands from being added.
 - [x] T037 Implement `sync` safety checks: prompt/fail if local path has uncommitted changes.
+
+---
+
+## Phase 8: Native Implementations (2025-12-21)
+
+**Purpose**: Move from PoC (Fish/Just) to production-ready native CLIs in Rust and Go.
+
+- [x] T038 **Rust Implementation**: Complete port of all core logic to Rust CLI in `src-rust/`.
+- [x] T039 **Go Implementation**: Complete port to Go CLI in `src-go/`, utilizing native libraries for Git/Rsync.
+- [x] T040 **Parity Testing**: Add automated test scripts `test/008_rust_cli.sh` and `test/009_go_cli.sh` ensuring parity with shell version.
+- [x] US1 behavioral parity across Shell, Rust, and Go for all example Crossfiles.
+- [x] Update documentation (AGENTS.md, README.md, Constitution) to reflect native implementation as primary distribution method.

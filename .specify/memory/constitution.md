@@ -33,18 +33,19 @@ This constitutional document establishes the core principles governing the desig
 
 **Rationale**: Developer trust depends on predictable behavior. The tool must never silently discard work or leave repositories in inconsistent states.
 
-### Principle III: Portable Bash Discipline
+### Principle III: Multi-Implementation Portability
 
-**git-cross implementation SHALL prioritize portability and maintainability.**
+**git-cross SHALL prioritize ease of distribution and performance through native implementations while maintaining a portable shell-based reference.**
 
-**Current implementation**: `just` + `fish` (complex logic delegated to fish shell scripts)
+**Current implementation**:
+- **Native**: Rust (`src-rust/`) and Go (`src-go/`) provide high-performance, single-binary CLIs.
+- **Reference**: `just` + `fish` implementation (`Justfile.cross`) serves as the PoC and logic reference.
 
 **Standards**:
-- Justfile for command dispatch and workflow orchestration
-- Fish shell (≥3.0) for complex string manipulation and conditionals  
-- POSIX-compatible workflows where possible for broad compatibility
-- Clear separation between user-facing commands (Justfile) and internal helpers
-- No external dependencies beyond: `git`, `just`, `fish`, `rsync`, core utilities
+- All implementations MUST share identical command syntax and behavior.
+- Use libraries where appropriate for Git interop (e.g., `gogs/git-module` in Go).
+- Native versions SHOULD be self-contained for easy distribution.
+- Maintain Bash coverage for broad CI compatibility.
 
 **Code style**:
 - Lower_snake_case for fish functions and variables

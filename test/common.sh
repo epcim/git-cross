@@ -12,6 +12,11 @@ log_header() {
 }
 
 # Ensure just is in PATH
+fail() {
+    echo -e "\033[0;31mFAIL: $1\033[0m"
+    exit 1
+}
+
 if ! command -v just >/dev/null; then
     if [ -f "$HOME/.cargo/bin/just" ]; then
         export PATH="$HOME/.cargo/bin:$PATH"

@@ -18,10 +18,10 @@ git -C "$upstream_path" commit -m "Add metal config" -q
 echo "" >| Crossfile
 cat >> Crossfile <<EOF
 # upstream
-cross use repo1 $upstream_url
+just cross use repo1 $upstream_url
 
 # cross patches
-cross patch repo1:src/metal deploy/metal
+just cross patch repo1:src/metal deploy/metal
 EOF
 
 # Run replay

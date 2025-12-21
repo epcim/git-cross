@@ -94,26 +94,6 @@ check-deps:
         exit 1
     end
 
-# Internal: resolve rspec and lpath from args or CWD
-# Internal: resolve rspec and lpath from optional path or CWD
-_resolve_context path="" *fixture="": check-initialized
-    #!/usr/bin/env fish
-    # Resolve git repo relative path of target
-    if test -z "$path"
-        set -x path "$(git rev-parse --show-prefix | sed 's,\/$,,')" # cwd, relative to git repo
-    end
-
-    # Query metadata.json and export matching key as env variables
-    # Find patch where local_path matches rel_target or is a parent of rel_target
-    jq -r --arg p "{{path}}" '
-        .patches
-        | map(. as $patch | select($p | startswith(($patch.local_path))))
-        | map(. + {mlen:(.local_path|length)})
-        | max_by(.mlen)
-        | to_entries | map("set -x \(.key) \(.value|@sh)") | .[]
-        ' "{{METADATA}}" | source \
-        && echo "$remote:$remote_path|$local_path" \
-        || { just cross _log error "Error: Could not resolve metadata for $path."; exit 1; }
 
 # AICONTEXT: This is new and better implementation of resolve_context
 # Internal: resolve patch metadata from path argument or CWD
@@ -347,7 +327,7 @@ diff path="": check-initialized
 # AICONTEXT: "push" works on  .git/cross/worktrees/$remote"_"$hash/$remote_path. Input argument is local_path (or understand user stand in the under git-cross'ed local_path and call this comand). The "sync" shall be run first, then regular git push to remote (as pull request, merge request shall happen to remote), the branch to push MR shall be autocalculated ie: "gituser_$hash" used in WT. User shall be give the optino to force-push, as he can repeate. (feature on git-cross)
 # Push changes back to upstream
 [no-cd]
-push path="": check-initialized
+push path="" branch="" force="false" yes="false" message="": check-initialized
     #!/usr/bin/env fish
 
     # Query metadata.json
@@ -355,6 +335,7 @@ push path="": check-initialized
         || { just cross _log error "Error: Could not resolve metadata for '$path'."; exit 1; }
 
     pushd "{{REPO_DIR}}"
+        just cross _log warn "The 'push' command is currently WORK IN PROGRESS."
         if not test -d $worktree
             just cross _log error "Error: Worktree not found. Run 'just patch' first."
             exit 1
@@ -369,17 +350,58 @@ push path="": check-initialized
         just cross _log info "---------------------------------------------------"
         
         while true
-            read -P "Run (r), Manual (m), Cancel (c)? " choice
+            if test "{{yes}}" = "true"
+                set choice "r"
+            else
+                read -P "Run (r), Manual (m), Cancel (c)? " choice
+            end
+
             switch $choice
                 case r R
-                    just cross _log info "Committing and pushing..."
+                    just cross _log info "Preparing commit..."
                     pushd $worktree
                         git add .
-                        git commit -v
-                        set upstream (git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}')
-                        set remote (string split -m1 / $upstream)[1]
-                        set branch (string split -m1 / $upstream)[2]
-                        git push $remote HEAD:$branch
+                        
+                        # Determine commit message
+                        set msg "{{message}}"
+                        
+                        if test -z "$msg"; and test "{{yes}}" = "false"
+                             read -P "Commit message (empty to auto-generate from local log): " user_msg
+                             if test -n "$user_msg"
+                                 set msg "$user_msg"
+                             end
+                        end
+                        
+                        if test -z "$msg"
+                            # Auto-generate from local git log of the path
+                            # We need to find the last commit that touched the local_path in the main repo
+                            # Note: REPO_DIR is the main repo root
+                            set msg (git -C "{{REPO_DIR}}" log -n 1 --pretty=format:%s -- "$local_path")
+                            if test -z "$msg"
+                                set msg "Sync updates from $local_path"
+                            end
+                            just cross _log info "Auto-generated message: $msg"
+                        end
+
+                        git commit -m "$msg"
+
+                        # Determine push target
+                        if test -z "{{branch}}"
+                            set upstream (git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}')
+                            set remote (string split -m1 / $upstream)[1]
+                            set target_branch (string split -m1 / $upstream)[2]
+                        else
+                            set remote "$remote"
+                            set target_branch "{{branch}}"
+                        end
+                        
+                        set push_args "$remote" "HEAD:$target_branch"
+                        if test "{{force}}" = "true"
+                            set push_args $push_args "--force"
+                        end
+
+                        just cross _log info "Pushing to $push_args..."
+                        git push $push_args
                     popd >/dev/null
                     break
                 case m M
@@ -466,31 +488,16 @@ status: check-deps
         just cross _log info "No patches found."
     end
 
-# AICONTEXT, used by test-cases scenarios, and by user. input argument is path to Crossfile. The function them re-play the cross commands in Crossfile. This command is expected to be used on new repo checkout, to initialize the state. Patch commands are expected to be run, but shall not "sync" to local_path as final step in "patch" (obviously, user clonned our repo, not intereste in sync with upstream or upgrade from upstream   )
+# # AICONTEXT, used by test-cases scenarios, and by user. input argument is path to Crossfile. The function them re-play the cross commands in Crossfile. This command is expected to be used on new repo checkout, to initialize the state. Patch commands are expected to be run, but shall not "sync" to local_path as final step in "patch" (obviously, user clonned our repo, not intereste in sync with upstream or upgrade from upstream   )
 # Replay commands from Crossfile
-[no-cd]
 replay: check-deps
-    #!/usr/bin/env fish
-    if not test -f "Crossfile"
-        just cross _log error "No Crossfile found. Run 'just use' or 'just patch' to create one."
-        exit 1
-    end
-    
-    just cross _log info "Replaying Crossfile..."
-    while read -l line
-        
-        # If line starts with "cross", execute it directly via just
-        if string match -q "cross *" "$line"
-             just cross _log info "▶ just $line"
-             set -l args (string split " " $line)
-             just $args
-        end
-    end < Crossfile
-    
-    just cross _log success "Crossfile replay complete"
+    just cross _log info "Replaying Crossfile..." &&\
+    /usr/bin/env bash ./Crossfile
 
-
-replay2: check-deps
-    just cross _log info "Replaying Crossfile..."\
-    /usr/bin/env bash ./Crossfile &&\
-    just cross _log success "Crossfile replay complete"
+# Install git alias for this just implementation
+install:
+    #!/usr/bin/env bash
+    CROSS_PATH="{{JUST_DIR}}/Justfile"
+    echo "Setting up git alias 'cross-just' -> just --justfile $CROSS_PATH cross"
+    git config --global alias.cross-just "!just --justfile $CROSS_PATH cross"
+    just cross _log success "Git alias 'cross-just' installed successfully."

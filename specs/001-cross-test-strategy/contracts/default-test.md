@@ -17,9 +17,9 @@
 - Directories materialised: `deploy/flux/cluster/cluster.yaml` and `deploy/metal/docs/index.md` only; **no** `deploy/setup/flux` directory present.
 - `git status` at repo root shows staged changes limited to the expected paths.
 - `git status` inside `deploy/flux` reports `branch is up to date with 'bill/master'`.
-- Verification bundle records artifact hashes identical between Bash and Rust harness executions.
+- Verification bundle records artifact hashes identical between Bash, Rust, and Go harness executions.
 
 ## Failure Conditions
 - Presence of `deploy/setup/flux` or other unexpected directories.
 - Non-zero exit code or missing staged files.
-- Divergence between Bash and Rust artifact hashes/logs.
+- Divergence between Bash, Rust, or Go artifact hashes/logs.
