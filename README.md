@@ -18,6 +18,12 @@
 | **Reproducibility** | ✅ Crossfile | ⚠️ .gitmodules | ⚠️ Manual |
 | **Native CLI** | ✅ Rust | ❌ N/A | ❌ Bash |
 
+## Implementation Note
+
+`git-cross` started as a **Proof of Concept (PoC)** implemented using `Justfile` and `fish/shell`. While that version remains fully functional and valid for usage (see Method 3), the project has since evolved into native inhabitants.
+
+Leveraging **AI-assisted coding**, we've implemented high-performance versions in **Rust** and **Go**. These native implementations are the preferred choice for most users as they are easier to distribute and offer a more consistent experience across different platforms.
+
 ## Installation
 
 ### Method 1: Rust CLI (Recommended)
@@ -38,7 +44,7 @@ go install .
 ```
 Then setup the git alias as above.
 
-### Method 3: Just (Vendoring)
+### Method 3: Just (Vendoring / PoC)
 You can also include `git-cross` directly in your project's `Justfile`.
 ```bash
 git clone https://github.com/epcim/git-cross.git vendor/git-cross
