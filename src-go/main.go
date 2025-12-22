@@ -18,9 +18,33 @@ import (
 )
 
 const (
-	MetadataPath  = ".git/cross/metadata.json"
-	CrossfilePath = "Crossfile"
+	MetadataRelPath  = ".git/cross/metadata.json"
+	CrossfileRelPath = "Crossfile"
 )
+
+func getRepoRoot() (string, error) {
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func getMetadataPath() (string, error) {
+	root, err := getRepoRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, MetadataRelPath), nil
+}
+
+func getCrossfilePath() (string, error) {
+	root, err := getRepoRoot()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, CrossfileRelPath), nil
+}
 
 type Patch struct {
 	Remote     string `json:"remote"`
@@ -110,7 +134,11 @@ func logError(msg string) {
 
 func loadMetadata() (Metadata, error) {
 	var meta Metadata
-	data, err := os.ReadFile(MetadataPath)
+	path, err := getMetadataPath()
+	if err != nil {
+		return meta, err
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return meta, nil
@@ -122,7 +150,11 @@ func loadMetadata() (Metadata, error) {
 }
 
 func saveMetadata(meta Metadata) error {
-	dir := filepath.Dir(MetadataPath)
+	path, err := getMetadataPath()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -130,12 +162,16 @@ func saveMetadata(meta Metadata) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(MetadataPath, data, 0o644)
+	return os.WriteFile(path, data, 0o644)
 }
 
 func updateCrossfile(line string) error {
+	path, err := getCrossfilePath()
+	if err != nil {
+		return err
+	}
 	line = strings.TrimSpace(line)
-	data, err := os.ReadFile(CrossfilePath)
+	data, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -145,7 +181,7 @@ func updateCrossfile(line string) error {
 		return nil
 	}
 
-	f, err := os.OpenFile(CrossfilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
@@ -212,8 +248,57 @@ func detectDefaultBranch(url string) (string, error) {
 	return "main", nil
 }
 
+func repoRelativePath() (string, error) {
+	out, err := git.NewCommand("rev-parse", "--show-toplevel").RunInDir(".")
+	if err != nil {
+		return "", err
+	}
+	root := strings.TrimSpace(string(out))
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	rel, err := filepath.Rel(root, cwd)
+	if err != nil {
+		return "", err
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == "." {
+		return "", nil
+	}
+	return strings.Trim(rel, "/"), nil
+}
+
+func findPatchForPath(meta Metadata, rel string) *Patch {
+	rel = strings.Trim(strings.TrimSpace(rel), "/")
+	if rel == "" {
+		return nil
+	}
+
+	var selected *Patch
+	longest := -1
+	for i := range meta.Patches {
+		lp := strings.Trim(meta.Patches[i].LocalPath, "/")
+		if lp == "" {
+			continue
+		}
+		if rel == lp || strings.HasPrefix(rel, lp+"/") {
+			if len(lp) > longest {
+				longest = len(lp)
+				selected = &meta.Patches[i]
+			}
+		}
+	}
+
+	return selected
+}
+
+// selectPatchWithFZF is removed as it was only used by wt command.
+
 func main() {
+	var dry string
 	rootCmd := &cobra.Command{Use: "git-cross"}
+	rootCmd.PersistentFlags().StringVar(&dry, "dry", "", "Dry run command (e.g. echo)")
 
 	useCmd := &cobra.Command{
 		Use:   "use [name] [url]",
@@ -505,12 +590,16 @@ func main() {
 		Short: "Re-execute all Crossfile commands",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logInfo("Replaying Crossfile...")
-			_, err := os.ReadFile(CrossfilePath)
+			path, err := getCrossfilePath()
+			if err != nil {
+				return err
+			}
+			_, err = os.ReadFile(path)
 			if err != nil {
 				return err
 			}
 			currExe, _ := os.Executable()
-			script := fmt.Sprintf(`cross() { "%s" "$@"; }; source "%s"`, currExe, CrossfilePath)
+			script := fmt.Sprintf(`cross() { "%s" "$@"; }; source "%s"`, currExe, path)
 			c := exec.Command("bash", "-c", script)
 			c.Stdout = os.Stdout
 			c.Stderr = os.Stderr
@@ -639,11 +728,12 @@ func main() {
 		Use:   "init",
 		Short: "Initialize a new project with Crossfile",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if _, err := os.Stat(CrossfilePath); err == nil {
+			path := "Crossfile"
+			if _, err := os.Stat(path); err == nil {
 				logInfo("Crossfile already exists.")
 				return nil
 			}
-			err := os.WriteFile(CrossfilePath, []byte("# git-cross configuration\n"), 0o644)
+			err := os.WriteFile(path, []byte("# git-cross configuration\n"), 0o644)
 			if err != nil {
 				return err
 			}

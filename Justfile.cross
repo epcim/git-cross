@@ -7,6 +7,8 @@ CROSSDIR := ".git/cross"
 METADATA := "$CROSSDIR/metadata.json"
 JUST_DIR := env("JUST_DIR", source_dir())
 REPO_DIR := env ("REPO_DIR", "$(git rev-parse --show-toplevel)")
+SHELL := env("SHELL")
+dry := ""
 
 
 # Auto-setup environment on first use
@@ -439,6 +441,50 @@ list: check-deps
     else
         just cross _log info "No patches found. Run 'just cross patch <remote> <path>' to start."
     end
+
+# wt wrapper
+[no-cd]
+worktree path="":
+    just cross wt "{{path}}" dry="{{dry}}"
+    
+[no-cd]
+wt path="":
+    #!/usr/bin/env fish
+
+    # if not initialized, exit
+    just cross check-initialized | grep "No patches" && exit 1;
+
+    # try to resolve context (uses "{{path}}" if provided, else CWD)
+    just cross _resolve_context2 (string trim -r -c / {{path}}) 2>/dev/null | source || true;
+
+    # if "worktree" is not provided and we are not in a patch, use fzf or just list
+    if test -z "$worktree"
+        if not command -v fzf >/dev/null
+            just cross list
+            exit 0
+        end
+
+        # if dry is set, skip this section interaction with fzf is not tested
+        if test -z "{{dry}}"
+            echo ""
+        #     set -l selection (just cross list | tail -n +3 | fzf --select-1 --header "Select patch worktree" --height 40% 2>/dev/null)
+        #     set -l selected_path (echo "$selection" | awk '{print $NF}')
+        #     if test -n "$selected_path"
+        #         # Call just cross to re-dispatch to this recipe with the path
+        #         just cross dry="{{dry}}" wt "$selected_path"
+        #     end
+        #     exit 0
+        else
+            just cross list
+            exit 0
+        end
+    end
+
+    just cross _log info "Entering worktree at $worktree, use 'CTRL+D' to return..."
+    test -d "{{REPO_DIR}}/$worktree" > /dev/null || exit 1
+    {{dry}} cd "{{REPO_DIR}}/$worktree"
+    {{dry}} exec {{SHELL}}
+
 
 # AICONTEXT: "status" shows status of current local_path patch vs. WT, and WT upstream. Input argument is local_path (or understand user stand in the under git-cross'ed local_path and call this comand). It shall be called to get status of local_path from "list" command. Either the status of remote WT upstream (as resource consuming, shall be optional or only ocasional)
 # Show status of all patches

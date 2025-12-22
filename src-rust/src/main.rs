@@ -2,7 +2,9 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::io::Write;
 use std::path::Path;
+use std::process::{Command, Stdio};
 use tabled::{Table, Tabled};
 
 #[derive(Parser)]
@@ -13,6 +15,8 @@ use tabled::{Table, Tabled};
     long_about = "Note: The Rust implementation of git-cross is currently EXPERIMENTAL and WORK IN PROGRESS. The Go implementation is the primary focus and recommended for production use."
 )]
 struct Cli {
+    #[arg(long, global = true, default_value = "")]
+    dry: String,
     #[command(subcommand)]
     command: Commands,
 }
@@ -69,12 +73,14 @@ enum Commands {
 
 #[derive(Serialize, Deserialize, Debug, Tabled, Clone)]
 struct Patch {
-    remote: String,
-    remote_path: String,
-    local_path: String,
-    worktree: String,
+    #[serde(default)]
+    pub id: String,
+    pub remote: String,
+    pub remote_path: String,
+    pub local_path: String,
+    pub worktree: String,
     #[tabled(skip)]
-    branch: String,
+    pub branch: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -89,8 +95,22 @@ struct PatchSpec {
     branch_provided: bool,
 }
 
-const METADATA_PATH: &str = ".git/cross/metadata.json";
-const CROSSFILE_PATH: &str = "Crossfile";
+const METADATA_REL_PATH: &str = ".git/cross/metadata.json";
+const CROSSFILE_REL_PATH: &str = "Crossfile";
+
+fn get_repo_root() -> Result<String> {
+    run_cmd(&["git", "rev-parse", "--show-toplevel"])
+}
+
+fn get_metadata_path() -> Result<std::path::PathBuf> {
+    let root = get_repo_root()?;
+    Ok(Path::new(&root).join(METADATA_REL_PATH))
+}
+
+fn get_crossfile_path() -> Result<std::path::PathBuf> {
+    let root = get_repo_root()?;
+    Ok(Path::new(&root).join(CROSSFILE_REL_PATH))
+}
 
 fn parse_patch_spec(spec: &str) -> Result<PatchSpec> {
     let parts: Vec<&str> = spec.split(':').collect();
@@ -281,9 +301,53 @@ fn run_cmd(args: &[&str]) -> Result<String> {
     Ok(stdout)
 }
 
+fn normalize_local_path(path: &str) -> String {
+    let mut normalized = path.replace('\\', "/");
+    normalized = normalized.trim().to_string();
+    while let Some(stripped) = normalized.strip_prefix("./") {
+        normalized = stripped.to_string();
+    }
+    normalized.trim_matches('/').to_string()
+}
+
+fn find_patch_for_path(metadata: &Metadata, rel: &str) -> Option<Patch> {
+    let rel = normalize_local_path(rel);
+    if rel.is_empty() {
+        return None;
+    }
+
+    let mut selected: Option<Patch> = None;
+    let mut longest = 0usize;
+    for patch in &metadata.patches {
+        let lp = normalize_local_path(&patch.local_path);
+        if lp.is_empty() {
+            continue;
+        }
+        if rel == lp || rel.starts_with(&(lp.clone() + "/")) {
+            if lp.len() > longest {
+                longest = lp.len();
+                selected = Some(patch.clone());
+            }
+        }
+    }
+
+    selected
+}
+
+fn repo_relative_path() -> Result<Option<String>> {
+    let prefix = run_cmd(&["git", "rev-parse", "--show-prefix"])?;
+    if prefix.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(prefix.trim_end_matches('/').to_string()))
+    }
+}
+
+
 fn load_metadata() -> Result<Metadata> {
-    if Path::new(METADATA_PATH).exists() {
-        let content = fs::read_to_string(METADATA_PATH)?;
+    let path = get_metadata_path()?;
+    if path.exists() {
+        let content = fs::read_to_string(path)?;
         Ok(serde_json::from_str(&content)?)
     } else {
         Ok(Metadata {
@@ -293,16 +357,18 @@ fn load_metadata() -> Result<Metadata> {
 }
 
 fn save_metadata(metadata: &Metadata) -> Result<()> {
-    let dir = Path::new(METADATA_PATH).parent().unwrap();
+    let path = get_metadata_path()?;
+    let dir = path.parent().unwrap();
     fs::create_dir_all(dir)?;
     let content = serde_json::to_string_pretty(metadata)?;
-    fs::write(METADATA_PATH, content)?;
+    fs::write(path, content)?;
     Ok(())
 }
 
 fn update_crossfile(line: &str) -> Result<()> {
-    let mut content = if Path::new(CROSSFILE_PATH).exists() {
-        fs::read_to_string(CROSSFILE_PATH)?
+    let path = get_crossfile_path()?;
+    let mut content = if path.exists() {
+        fs::read_to_string(&path)?
     } else {
         String::new()
     };
@@ -313,7 +379,7 @@ fn update_crossfile(line: &str) -> Result<()> {
         }
         content.push_str(line);
         content.push('\n');
-        fs::write(CROSSFILE_PATH, content)?;
+        fs::write(path, content)?;
     }
     Ok(())
 }
@@ -422,12 +488,14 @@ fn main() -> Result<()> {
                 .iter_mut()
                 .find(|p| p.local_path == target_path)
             {
+                existing.id = hash.to_string();
                 existing.remote = spec.remote.clone();
                 existing.remote_path = spec.remote_path.clone();
                 existing.branch = branch_name.clone();
                 existing.worktree = wt_dir.clone();
             } else {
                 metadata.patches.push(Patch {
+                    id: hash.to_string(),
                     remote: spec.remote.clone(),
                     remote_path: spec.remote_path.clone(),
                     local_path: target_path.clone(),
@@ -602,7 +670,8 @@ fn main() -> Result<()> {
         }
         Commands::Replay => {
             log_info("Replaying Crossfile...");
-            if !Path::new(CROSSFILE_PATH).exists() {
+            let path = get_crossfile_path()?;
+            if !path.exists() {
                 println!("No Crossfile found.");
                 return Ok(());
             }
@@ -611,7 +680,7 @@ fn main() -> Result<()> {
             let script = format!(
                 r#"cross() {{ "{}" "$@"; }}; source "{}" "#,
                 curr_exe.display(),
-                CROSSFILE_PATH
+                path.display()
             );
             let status = duct::cmd!("bash", "-c", script).unchecked().run()?;
 
@@ -622,12 +691,13 @@ fn main() -> Result<()> {
             }
         }
         Commands::Init => {
-            if Path::new(CROSSFILE_PATH).exists() {
+            let path = "Crossfile";
+            if Path::new(path).exists() {
                 log_info("Crossfile already exists.");
-            } else {
-                fs::write(CROSSFILE_PATH, "# git-cross configuration\n")?;
-                log_success("Crossfile initialized.");
+                return Ok(());
             }
+            fs::write(path, "# git-cross configuration\n")?;
+            log_success("Crossfile initialized.");
         }
         Commands::Push {
             path,

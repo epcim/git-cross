@@ -29,6 +29,11 @@
 - [x] Implement "cross" command in Golang.
 - [x] Update AGENTS.md, specs/ and .specify/ to reflect new implementations.
 
+## Future Enhancements / Backlog
+
+- [ ] Re-implement `wt` (worktree) command in Go and Rust with full test coverage (align logic with Justfile).
+- [ ] Improve interactive `fzf` selection in native implementations.
+
 ## Known Issues (To FIX)
 
 - [x] If remote_spec contains "khue:master:/metal" the first slash shall be auto-removed
