@@ -34,6 +34,65 @@ type Metadata struct {
 	Patches []Patch `json:"patches"`
 }
 
+type patchSpec struct {
+	Remote         string
+	RemotePath     string
+	Branch         string
+	BranchProvided bool
+}
+
+func parsePatchSpec(spec string) (patchSpec, error) {
+	parts := strings.Split(spec, ":")
+	if len(parts) < 2 {
+		return patchSpec{}, fmt.Errorf("invalid spec. Use remote[:branch]:remote_path")
+	}
+
+	remote := parts[0]
+	remotePath := parts[len(parts)-1]
+	branch := ""
+	branchProvided := false
+
+	switch len(parts) {
+	case 2:
+		// remote:path
+	case 3:
+		branch = parts[1]
+		branchProvided = branch != ""
+	default:
+		branch = parts[1]
+		branchProvided = branch != ""
+		remotePath = strings.Join(parts[2:], ":")
+	}
+
+	remotePath = strings.TrimPrefix(remotePath, "/")
+	remotePath = strings.TrimSuffix(remotePath, "/")
+	if remotePath == "" {
+		return patchSpec{}, fmt.Errorf("invalid remote path in spec: %s", spec)
+	}
+
+	return patchSpec{
+		Remote:         remote,
+		RemotePath:     remotePath,
+		Branch:         branch,
+		BranchProvided: branchProvided,
+	}, nil
+}
+
+func canonicalSpec(spec patchSpec) string {
+	if spec.Branch != "" {
+		return fmt.Sprintf("%s:%s:%s", spec.Remote, spec.Branch, spec.RemotePath)
+	}
+	return fmt.Sprintf("%s:%s", spec.Remote, spec.RemotePath)
+}
+
+func detectRemoteBranch(repo *git.Repository, remote string) (string, error) {
+	urlBytes, err := git.NewCommand("remote", "get-url", remote).RunInDir(repo.Path())
+	if err != nil {
+		return "", err
+	}
+	return detectDefaultBranch(strings.TrimSpace(string(urlBytes)))
+}
+
 func logInfo(msg string) {
 	color.New(color.Bold, color.FgBlue).Print("==> ")
 	fmt.Println(msg)
@@ -114,16 +173,42 @@ func runSync(src, dst string) error {
 }
 
 func detectDefaultBranch(url string) (string, error) {
-	refs, err := git.LsRemote(url)
+	cmd := exec.Command("git", "ls-remote", "--symref", url, "HEAD")
+	if out, err := cmd.CombinedOutput(); err == nil {
+		lines := strings.Split(string(out), "\n")
+		for _, line := range lines {
+			if strings.HasPrefix(line, "ref: ") {
+				parts := strings.Split(line, "\t")
+				if len(parts) == 2 && parts[1] == "HEAD" {
+					target := strings.TrimPrefix(parts[0], "ref: ")
+					if strings.HasPrefix(target, "refs/heads/") {
+						return strings.TrimPrefix(target, "refs/heads/"), nil
+					}
+				}
+			}
+		}
+	}
+
+	refs, err := git.LsRemote(url, git.LsRemoteOptions{Heads: true})
 	if err != nil {
 		return "", err
 	}
 
-	for _, ref := range refs {
-		if strings.HasPrefix(ref.Refspec, "ref: refs/heads/") {
-			return strings.TrimPrefix(ref.Refspec, "ref: refs/heads/"), nil
+	for _, candidate := range []string{"main", "master"} {
+		refName := "refs/heads/" + candidate
+		for _, ref := range refs {
+			if ref.Refspec == refName {
+				return candidate, nil
+			}
 		}
 	}
+
+	for _, ref := range refs {
+		if strings.HasPrefix(ref.Refspec, "refs/heads/") {
+			return strings.TrimPrefix(ref.Refspec, "refs/heads/"), nil
+		}
+	}
+
 	return "main", nil
 }
 
@@ -143,29 +228,20 @@ func main() {
 				return err
 			}
 
-			remotes, _ := repo.Remotes()
-			found := false
-			for _, r := range remotes {
-				if r == name {
-					found = true
-					break
+			if urls, _ := repo.RemoteGetURL(name); len(urls) > 0 {
+				if _, err := git.NewCommand("remote", "set-url", name, url).RunInDir("."); err != nil {
+					return err
 				}
-			}
-
-			if found {
-				// Use Command for set-url since porcelain might be missing
-				_, err = git.NewCommand("remote", "set-url", name, url).RunInDir(".")
 			} else {
-				err = repo.RemoteAdd(name, url)
-			}
-			if err != nil {
-				return err
+				if err := repo.RemoteAdd(name, url); err != nil {
+					return err
+				}
 			}
 
 			logInfo("Autodetecting default branch...")
 			branch, err := detectDefaultBranch(url)
 			if err != nil {
-				logError(fmt.Sprintf("Failed to detect branch: %v. Fallback to main.", err))
+				logError(fmt.Sprintf("Failed to detect branch: %v. Falling back to main.", err))
 				branch = "main"
 			}
 			logInfo(fmt.Sprintf("Detected default branch: %s", branch))
@@ -189,50 +265,79 @@ func main() {
 		Short: "Vendor a directory from a remote",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			spec := args[0]
+			specInput := args[0]
+			spec, err := parsePatchSpec(specInput)
+			if err != nil {
+				return err
+			}
+
 			localPath := ""
 			if len(args) > 1 {
 				localPath = args[1]
 			}
-
-			parts := strings.Split(spec, ":")
-			if len(parts) < 2 {
-				return fmt.Errorf("invalid spec. Use remote:path[:branch]")
-			}
-			remoteName, remotePath := parts[0], parts[1]
-			branch := "main"
-			if len(parts) > 2 {
-				branch = parts[2]
-			}
 			if localPath == "" {
-				localPath = filepath.Base(remotePath)
+				localPath = filepath.Base(spec.RemotePath)
 			}
 
-			logInfo(fmt.Sprintf("Patching %s to %s", spec, localPath))
+			repo, err := git.Open(".")
+			if err != nil {
+				return err
+			}
+
+			if !spec.BranchProvided {
+				logInfo("Autodetecting default branch...")
+				branch, err := detectRemoteBranch(repo, spec.Remote)
+				if err != nil {
+					logError(fmt.Sprintf("Failed to detect branch: %v. Falling back to main.", err))
+					spec.Branch = "main"
+				} else {
+					spec.Branch = branch
+				}
+				logInfo(fmt.Sprintf("Using branch: %s", spec.Branch))
+			}
+			if spec.Branch == "" {
+				spec.Branch = "main"
+			}
+
+			if _, err := git.NewCommand("remote", "get-url", spec.Remote).RunInDir(repo.Path()); err != nil {
+				return fmt.Errorf("remote %s not found", spec.Remote)
+			}
+
+			canonical := canonicalSpec(spec)
+			logInfo(fmt.Sprintf("Patching %s to %s", canonical, localPath))
+
+			if _, err := git.NewCommand("fetch", spec.Remote, spec.Branch).RunInDir(repo.Path()); err != nil {
+				return fmt.Errorf("git fetch %s %s failed: %w", spec.Remote, spec.Branch, err)
+			}
 
 			h := sha256.New()
-			h.Write([]byte(spec + branch))
+			h.Write([]byte(spec.Remote + spec.RemotePath + spec.Branch))
 			hash := hex.EncodeToString(h.Sum(nil))[:8]
 
-			wtDir := fmt.Sprintf(".git/cross/worktrees/%s_%s", remoteName, hash)
+			wtDir := fmt.Sprintf(".git/cross/worktrees/%s_%s", spec.Remote, hash)
 			if _, err := os.Stat(wtDir); os.IsNotExist(err) {
 				logInfo(fmt.Sprintf("Setting up worktree at %s...", wtDir))
-				os.MkdirAll(wtDir, 0o755)
+				if err := os.MkdirAll(wtDir, 0o755); err != nil {
+					return err
+				}
 
-				// System call for worktree since it's a newer git feature often not fully in libraries
-				c := exec.Command("git", "worktree", "add", "--no-checkout", wtDir, fmt.Sprintf("%s/%s", remoteName, branch))
+				c := exec.Command("git", "worktree", "add", "--no-checkout", wtDir, fmt.Sprintf("%s/%s", spec.Remote, spec.Branch))
 				if out, err := c.CombinedOutput(); err != nil {
 					return fmt.Errorf("git worktree add failed: %v\nOutput: %s", err, string(out))
 				}
 
 				git.NewCommand("sparse-checkout", "init", "--cone").RunInDir(wtDir)
-				git.NewCommand("sparse-checkout", "set", remotePath).RunInDir(wtDir)
+				git.NewCommand("sparse-checkout", "set", spec.RemotePath).RunInDir(wtDir)
 				git.NewCommand("checkout").RunInDir(wtDir)
 			}
 
 			logInfo(fmt.Sprintf("Syncing files to %s...", localPath))
-			os.MkdirAll(localPath, 0o755)
-			if err := runSync(wtDir+"/"+remotePath+"/", localPath+"/"); err != nil {
+			if err := os.MkdirAll(localPath, 0o755); err != nil {
+				return err
+			}
+			src := filepath.Join(wtDir, spec.RemotePath) + string(os.PathSeparator)
+			dst := localPath + string(os.PathSeparator)
+			if err := runSync(src, dst); err != nil {
 				return err
 			}
 
@@ -240,17 +345,19 @@ func main() {
 			found := false
 			for i, p := range meta.Patches {
 				if p.LocalPath == localPath {
-					meta.Patches[i] = Patch{remoteName, remotePath, localPath, wtDir, branch}
+					meta.Patches[i] = Patch{spec.Remote, spec.RemotePath, localPath, wtDir, spec.Branch}
 					found = true
 					break
 				}
 			}
 			if !found {
-				meta.Patches = append(meta.Patches, Patch{remoteName, remotePath, localPath, wtDir, branch})
+				meta.Patches = append(meta.Patches, Patch{spec.Remote, spec.RemotePath, localPath, wtDir, spec.Branch})
 			}
-			saveMetadata(meta)
+			if err := saveMetadata(meta); err != nil {
+				return err
+			}
 
-			updateCrossfile(fmt.Sprintf("patch %s %s", spec, localPath))
+			updateCrossfile(fmt.Sprintf("patch %s %s", canonicalSpec(spec), localPath))
 			logSuccess("Patch successful.")
 			return nil
 		},

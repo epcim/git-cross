@@ -6,7 +6,7 @@ cross use bill	https://github.com/billimek/k8s-gitops
 # repo_is_clean || say "There are uncommitted changes in the repository. Stash them first." 1
 
 # cross patches
-# ex: origin:path/remote/dir [local/path/to/dir] [branch]
+# ex: origin:path/remote/dir [local/path/to/dir]
 cross patch khue:master:/metal       deploy/metal
 cross patch bill:/setup/flux         # setup/flux
 

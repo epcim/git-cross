@@ -33,12 +33,30 @@ if ! git remote | grep -q "^demo$"; then
     fail "Go 'use' failed to add remote 'demo'"
 fi
 
-log_header "Testing Go 'patch' command..."
+log_header "Testing Go 'patch' command without branch..."
 "$GO_BIN" patch demo:src vendor/go-src
 
 # Verify files
 if [ ! -f "vendor/go-src/logic.go" ]; then
     fail "Go 'patch' failed to vendor logic.go"
+fi
+
+log_header "Testing Go 'patch' command with explicit branch..."
+"$GO_BIN" patch demo:main:src vendor/go-src-branch
+if [ ! -f "vendor/go-src-branch/logic.go" ]; then
+    fail "Go 'patch' with explicit branch failed"
+fi
+
+log_header "Testing Go 'patch' command with nested path and leading slash..."
+pushd "$upstream_path" >/dev/null
+    mkdir -p nested/dir
+    echo "Nested file" > nested/dir/file.txt
+    git add nested/dir/file.txt
+    git commit -m "Add nested file" >/dev/null
+popd >/dev/null
+"$GO_BIN" patch demo:main:/nested/dir vendor/nested-dir
+if [ ! -f "vendor/nested-dir/file.txt" ]; then
+    fail "Go 'patch' failed to vendor nested dir"
 fi
 
 log_header "Testing Go 'list' command..."
