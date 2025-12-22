@@ -33,12 +33,30 @@ if ! git remote | grep -q "^demo$"; then
     fail "Rust 'use' failed to add remote 'demo'"
 fi
 
-log_header "Testing Rust 'patch' command..."
+log_header "Testing Rust 'patch' command without branch..."
 "$RUST_BIN" patch demo:src vendor/rust-src
 
 # Verify files
 if [ ! -f "vendor/rust-src/logic.rs" ]; then
     fail "Rust 'patch' failed to vendor logic.rs"
+fi
+
+log_header "Testing Rust 'patch' command with explicit branch..."
+"$RUST_BIN" patch demo:main:src vendor/rust-src-branch
+if [ ! -f "vendor/rust-src-branch/logic.rs" ]; then
+    fail "Rust 'patch' with explicit branch failed"
+fi
+
+log_header "Testing Rust 'patch' command with nested path and leading slash..."
+pushd "$upstream_path" >/dev/null
+    mkdir -p nested/dir
+    echo "Nested" > nested/dir/file.txt
+    git add nested/dir/file.txt
+    git commit -m "Add nested dir" >/dev/null
+popd >/dev/null
+"$RUST_BIN" patch demo:main:/nested/dir vendor/nested-dir
+if [ ! -f "vendor/nested-dir/file.txt" ]; then
+    fail "Rust 'patch' failed to vendor nested dir"
 fi
 
 log_header "Testing Rust 'list' command..."

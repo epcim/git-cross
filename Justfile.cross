@@ -490,7 +490,7 @@ status: check-deps
 
 # Replay commands from Crossfile
 replay: check-deps
-    /usr/bin/env bash -c "cross() { just --justfile '{{JUST_DIR}}/Justfile' cross \"\$@\"; }; source '{{REPO_DIR}}/Crossfile'"
+    /usr/bin/env bash -c "cross() { just --justfile '{{JUST_DIR}}/Justfile' cross \"\$@\"; }; git() { if [ \"\${1-}\" = \"cross\" ]; then shift; cross \"\$@\"; else command git \"\$@\"; fi; }; source '{{REPO_DIR}}/Crossfile'"
 
 # Install git alias for git-cross (impl: go, shell, rust)
 install impl="go":

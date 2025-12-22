@@ -31,9 +31,9 @@
 
 ## Known Issues (To FIX)
 
-- [ ] If remote_spec contains "khue:master:/metal" the first slash shall be auto-removed
-- [ ] Remove " [branch]" string at end of some commented examples under ./examples, branch is now part of remote_spec.
-- [ ] on Golang implementation, the use command fails to autodetecd and use real branch. example:
+- [x] If remote_spec contains "khue:master:/metal" the first slash shall be auto-removed
+- [x] Remove " [branch]" string at end of some commented examples under ./examples, branch is now part of remote_spec.
+- [x] on Golang implementation, the use command fails to autodetect and use real branch. example:
 
 ```sh
 ❯ git cross use bill       https://github.com/billimek/k8s-gitops
@@ -43,7 +43,7 @@
 Error: exit status 128 - fatal: couldn't find remote ref main
 ```
 
-- [ ] on Golang implementation, the patch comand cant properly use recognized branch, failed example:
+- [x] on Golang implementation, the patch command can't properly use recognized branch, failed example:
 
 ```sh
 ❯ git cross patch khue:/metal deploy/metal
@@ -64,7 +64,7 @@ Flags:
   -h, --help   help for patch
 ```
 
-- [ ] on Golang implementation, the patch command dont accept properly the branch name in remote_spec.
+- [x] on Golang implementation, the patch command doesn't accept properly the branch name in remote_spec.
 
 ```sh
  git cross patch khue:main:/metal deploy/metal
