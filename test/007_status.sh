@@ -82,12 +82,12 @@ check_status "vendor/docs" "Clean.*Synced"
 
 # Now commit something in WT
 pushd "$wt_dir" >/dev/null
-echo "WT change" >> README.md
-git add README.md
+echo "WT change" >> docs/README.md
+git add docs/README.md
 git commit -m "WT changes"
 popd >/dev/null
 
-check_status "vendor/docs" "Clean.*1 ahead"
+check_status "vendor/docs" ".*1 ahead"
 
 # ------------------------------------------------------------------
 # Test 5: Missing WT

@@ -80,6 +80,18 @@ if [ ! -f "vendor/nested-dir/file.txt" ]; then
     fail "Rust 'patch' failed to vendor nested dir"
 fi
 
+log_header "Testing Rust 'cd' command dry run..."
+cd_output=$("$RUST_BIN" cd vendor/rust-src --dry echo)
+if ! echo "$cd_output" | grep -q "exec"; then
+    fail "Rust 'cd' dry run missing exec output: $cd_output"
+fi
+
+log_header "Testing Rust 'wt' command dry run..."
+wt_output=$("$RUST_BIN" wt vendor/rust-src --dry echo)
+if ! echo "$wt_output" | grep -q "exec"; then
+    fail "Rust 'wt' dry run missing exec output: $wt_output"
+fi
+
 log_header "Testing Rust 'list' command..."
 "$RUST_BIN" list
 

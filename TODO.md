@@ -31,11 +31,17 @@
 
 ## Future Enhancements / Backlog
 
+- [ ] `cross list` comand shall either print all cross remote repositories (REMOTE (alias), GIT URL) in separate table above the table with patches. Or directly inline with each patch.
+- [ ] Implement `cross remove` patch, to remove local_pathch patch and it's worktree. Finally clean up the Metadata an Crossfile. Once physically removed, `git worktree prune` will clenaup git itself.
+- [ ] Implement `cross cut` to remove git remote repo registration from "cross use" command and ask user whether either remove all patches (like: cross remove)
 - [ ] Re-implement `wt` (worktree) command in Go and Rust with full test coverage (align logic with Justfile).
 - [ ] Improve interactive `fzf` selection in native implementations.
 
 ## Known Issues (To FIX)
 
+- [ ] Updates to Crossfile can create duplicit lines (especially if user add spaces between remote_spec and local_spec.) Ideally we shall only check whether the local/path is already specified, and if yes then avoid update and avoid patch (as path exist.)
+- [ ] Extend the tests, start using <https://github.com/runtipi/runtipi-appstore/> and sub-path apps/ for "patches". Document this in test-case design.
+- [ ] Looks like the worktree created dont have any more "sparse checkout". Extend the validation, ie: that no other top-level files present in checkouts (assuming sub-path is used on remote repo)
 - [x] If remote_spec contains "khue:master:/metal" the first slash shall be auto-removed
 - [x] Remove " [branch]" string at end of some commented examples under ./examples, branch is now part of remote_spec.
 - [x] on Golang implementation, the use command fails to autodetect and use real branch. example:

@@ -40,18 +40,18 @@ popd >/dev/null
 just cross use demo "$upstream_url"
 just cross patch demo:src vendor/shell-src
 
-# Test wt with explicit path
-output=$(just cross dry=echo wt vendor/shell-src | grep "exec ")
+# Test cd with explicit path
+output=$(just cross dry=echo cd vendor/shell-src | grep "exec ")
 if [[ "$output" != *"exec $SHELL"* ]]; then
-    fail "wt with explicit path failed. Output: $output"
+    fail "cd with explicit path failed. Output: $output"
 fi
 
-# Test wt from patch directory (implicit context)
+# Test cd from patch directory (implicit context)
 pushd vendor/shell-src >/dev/null
-output=$(just cross dry=echo wt | grep "exec ")
+output=$(just cross dry=echo cd | grep "exec ")
 if [[ "$output" != *"exec $SHELL"* ]]; then
-    fail "wt from patch directory failed. Output: $output"
+    fail "cd from patch directory failed. Output: $output"
 fi
 popd >/dev/null
 
-echo "Shell wt command tests passed!"
+echo "Shell cd command tests passed!"

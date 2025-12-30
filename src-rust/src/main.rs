@@ -1,8 +1,9 @@
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use tabled::{Table, Tabled};
@@ -35,6 +36,16 @@ enum Commands {
 
     /// Update all patches from upstream
     Sync {
+        #[arg(default_value = "")]
+        path: String,
+    },
+    /// Open a shell in the patch worktree
+    Cd {
+        #[arg(default_value = "")]
+        path: String,
+    },
+    /// Alias for cd
+    Wt {
         #[arg(default_value = "")]
         path: String,
     },
@@ -334,6 +345,73 @@ fn find_patch_for_path(metadata: &Metadata, rel: &str) -> Option<Patch> {
     selected
 }
 
+fn select_patch_interactive(metadata: &Metadata) -> Result<Option<Patch>> {
+    if metadata.patches.is_empty() {
+        return Ok(None);
+    }
+
+    let mut input = String::new();
+    for patch in &metadata.patches {
+        input.push_str(&format!(
+            "{}\t{}\t{}\n",
+            patch.remote, patch.remote_path, patch.local_path
+        ));
+    }
+
+    let mut child = Command::new("fzf")
+        .args([
+            "--with-nth=1,2,3",
+            "--delimiter",
+            "\t",
+            "--prompt",
+            "Select patch> ",
+            "--height",
+            "40%",
+            "--select-1",
+            "--exit-0",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|err| {
+            if err.kind() == ErrorKind::NotFound {
+                anyhow!("fzf not found")
+            } else {
+                anyhow!(err)
+            }
+        })?;
+
+    {
+        let stdin = child.stdin.as_mut().context("Failed to open fzf stdin")?;
+        stdin.write_all(input.as_bytes())?;
+    }
+
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let selection = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if selection.is_empty() {
+        return Ok(None);
+    }
+
+    let local_path = selection
+        .rsplit_once('\t')
+        .map(|(_, s)| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| selection.split_whitespace().last().map(|s| s.to_string()))
+        .ok_or_else(|| anyhow!("Unable to parse selection: {}", selection))?;
+
+    metadata
+        .patches
+        .iter()
+        .find(|p| p.local_path == local_path)
+        .cloned()
+        .ok_or_else(|| anyhow!("Selected patch not found: {}", local_path))
+        .map(Some)
+}
+
 fn repo_relative_path() -> Result<Option<String>> {
     let prefix = run_cmd(&["git", "rev-parse", "--show-prefix"])?;
     if prefix.is_empty() {
@@ -342,7 +420,6 @@ fn repo_relative_path() -> Result<Option<String>> {
         Ok(Some(prefix.trim_end_matches('/').to_string()))
     }
 }
-
 
 fn load_metadata() -> Result<Metadata> {
     let path = get_metadata_path()?;
@@ -463,7 +540,7 @@ fn main() -> Result<()> {
                     &wt_dir,
                     &format!("{}/{}", spec.remote, branch_name),
                 ])?;
-                run_cmd(&["git", "-C", &wt_dir, "sparse-checkout", "init", "--cone"])?;
+                run_cmd(&["git", "-C", &wt_dir, "sparse-checkout", "init", "--no-cone"])?;
                 run_cmd(&[
                     "git",
                     "-C",
@@ -557,6 +634,80 @@ fn main() -> Result<()> {
                 run_cmd(&["rsync", "-av", "--delete", "--exclude", ".git", &src, &dst])?;
             }
             log_success("Sync completed.");
+        }
+        Commands::Cd { path } | Commands::Wt { path } => {
+            let metadata = load_metadata()?;
+            if metadata.patches.is_empty() {
+                println!("No patches configured.");
+                return Ok(());
+            }
+
+            let target_patch = if !path.is_empty() {
+                let mut patch = find_patch_for_path(&metadata, path).or_else(|| {
+                    metadata
+                        .patches
+                        .iter()
+                        .find(|p| p.local_path == *path)
+                        .cloned()
+                });
+                patch
+                    .take()
+                    .context(format!("Patch not found for path: {}", path))?
+            } else {
+                match select_patch_interactive(&metadata) {
+                    Ok(Some(patch)) => patch,
+                    Ok(None) => {
+                        log_info("No selection made.");
+                        return Ok(());
+                    }
+                    Err(err) => {
+                        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+                            if io_err.kind() == ErrorKind::NotFound {
+                                log_info(
+                                    "fzf not available. Showing patch list; rerun with a path to enter a worktree.",
+                                );
+                                println!("{}", Table::new(metadata.patches.clone()));
+                                return Ok(());
+                            }
+                        }
+                        if err.to_string() == "fzf not found" {
+                            log_info(
+                                "fzf not available. Showing patch list; rerun with a path to enter a worktree.",
+                            );
+                            println!("{}", Table::new(metadata.patches.clone()));
+                            return Ok(());
+                        }
+                        return Err(err);
+                    }
+                }
+            };
+
+            if !Path::new(&target_patch.worktree).exists() {
+                return Err(anyhow!(
+                    "Worktree not found for {}",
+                    target_patch.local_path
+                ));
+            }
+
+            let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+
+            if !cli.dry.is_empty() {
+                println!("{} cd {}", cli.dry, target_patch.worktree);
+                println!("{} exec {}", cli.dry, shell);
+                return Ok(());
+            }
+
+            log_info(&format!("Opening shell in {}", target_patch.worktree));
+            let status = Command::new(&shell)
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .current_dir(&target_patch.worktree)
+                .status()?;
+
+            if !status.success() {
+                return Err(anyhow!("Shell exited with error"));
+            }
         }
         Commands::List => {
             let metadata = load_metadata()?;

@@ -293,7 +293,64 @@ func findPatchForPath(meta Metadata, rel string) *Patch {
 	return selected
 }
 
-// selectPatchWithFZF is removed as it was only used by wt command.
+func selectPatchInteractive(meta *Metadata) (*Patch, error) {
+	if _, err := exec.LookPath("fzf"); err != nil {
+		return nil, err
+	}
+	if len(meta.Patches) == 0 {
+		return nil, nil
+	}
+
+	var b strings.Builder
+	for _, p := range meta.Patches {
+		b.WriteString(fmt.Sprintf("%s\t%s\t%s\n", p.Remote, p.RemotePath, p.LocalPath))
+	}
+
+	cmd := exec.Command("fzf",
+		"--with-nth=1,2,3",
+		"--delimiter",
+		"\t",
+		"--prompt",
+		"Select patch> ",
+		"--height",
+		"40%",
+		"--select-1",
+		"--exit-0",
+	)
+	cmd.Stdin = strings.NewReader(b.String())
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	selection := strings.TrimSpace(string(out))
+	if selection == "" {
+		return nil, nil
+	}
+
+	parts := strings.Split(selection, "\t")
+	var localPath string
+	if len(parts) >= 3 {
+		localPath = strings.TrimSpace(parts[len(parts)-1])
+	} else {
+		fields := strings.Fields(selection)
+		if len(fields) > 0 {
+			localPath = fields[len(fields)-1]
+		}
+	}
+
+	if localPath == "" {
+		return nil, fmt.Errorf("unable to parse selection: %s", selection)
+	}
+
+	for i := range meta.Patches {
+		if meta.Patches[i].LocalPath == localPath {
+			return &meta.Patches[i], nil
+		}
+	}
+
+	return nil, fmt.Errorf("selected patch not found: %s", localPath)
+}
 
 func main() {
 	var dry string
@@ -411,7 +468,7 @@ func main() {
 					return fmt.Errorf("git worktree add failed: %v\nOutput: %s", err, string(out))
 				}
 
-				git.NewCommand("sparse-checkout", "init", "--cone").RunInDir(wtDir)
+				git.NewCommand("sparse-checkout", "init", "--no-cone").RunInDir(wtDir)
 				git.NewCommand("sparse-checkout", "set", spec.RemotePath).RunInDir(wtDir)
 				git.NewCommand("checkout").RunInDir(wtDir)
 			}
@@ -484,6 +541,79 @@ func main() {
 			}
 			logSuccess("Sync completed.")
 			return nil
+		},
+	}
+
+	cdCmd := &cobra.Command{
+		Use:   "cd [path]",
+		Short: "Open a shell in the patch worktree",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			meta, _ := loadMetadata()
+			if len(meta.Patches) == 0 {
+				fmt.Println("No patches configured.")
+				return nil
+			}
+
+			var patch *Patch
+			if len(args) > 0 {
+				path := strings.TrimSpace(args[0])
+				patch = findPatchForPath(meta, path)
+				if patch == nil {
+					for i := range meta.Patches {
+						if meta.Patches[i].LocalPath == path {
+							patch = &meta.Patches[i]
+							break
+						}
+					}
+				}
+				if patch == nil {
+					return fmt.Errorf("patch not found for path: %s", path)
+				}
+			} else {
+				selected, err := selectPatchInteractive(&meta)
+				if err != nil {
+					logInfo("fzf not available. Showing patch list; rerun with a path to enter a worktree.")
+					table := tablewriter.NewWriter(os.Stdout)
+					table.Header("REMOTE", "REMOTE PATH", "LOCAL PATH")
+					for _, p := range meta.Patches {
+						table.Append(p.Remote, p.RemotePath, p.LocalPath)
+					}
+					table.Render()
+					return nil
+				}
+				if selected == nil {
+					logInfo("No selection made.")
+					return nil
+				}
+				patch = selected
+			}
+
+			if patch == nil {
+				return nil
+			}
+
+			if _, err := os.Stat(patch.Worktree); os.IsNotExist(err) {
+				return fmt.Errorf("worktree not found for %s", patch.LocalPath)
+			}
+
+			shell := os.Getenv("SHELL")
+			if shell == "" {
+				shell = "/bin/sh"
+			}
+
+			if dry != "" {
+				fmt.Printf("%s cd %s\n", dry, patch.Worktree)
+				fmt.Printf("%s exec %s\n", dry, shell)
+				return nil
+			}
+
+			logInfo(fmt.Sprintf("Opening shell in %s", patch.Worktree))
+			c := exec.Command(shell)
+			c.Dir = patch.Worktree
+			c.Stdin = os.Stdin
+			c.Stdout = os.Stdout
+			c.Stderr = os.Stderr
+			return c.Run()
 		},
 	}
 
@@ -742,7 +872,13 @@ func main() {
 		},
 	}
 
-	rootCmd.AddCommand(useCmd, patchCmd, syncCmd, listCmd, statusCmd, diffCmd, replayCmd, pushCmd, execCmd, initCmd)
+	wtCmd := &cobra.Command{
+		Use:   "wt [path]",
+		Short: "Alias for cd",
+		RunE:  cdCmd.RunE,
+	}
+
+	rootCmd.AddCommand(useCmd, patchCmd, syncCmd, cdCmd, wtCmd, listCmd, statusCmd, diffCmd, replayCmd, pushCmd, execCmd, initCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
