@@ -114,7 +114,7 @@ assert_grep() {
 }
 
 cleanup() {
-    if [ "$CLEANUP" = true ] && [ -n "${SANDBOX:-}" ] && [ -d "$SANDBOX" ]; then
+    if [ "${CLEANUP:-true}" = true ] && [ -n "${SANDBOX:-}" ] && [ -d "$SANDBOX" ]; then
         rm -rf "$SANDBOX"
     fi
 }

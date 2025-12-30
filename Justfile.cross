@@ -7,6 +7,8 @@ CROSSDIR := ".git/cross"
 METADATA := "$CROSSDIR/metadata.json"
 JUST_DIR := env("JUST_DIR", source_dir())
 REPO_DIR := env ("REPO_DIR", "$(git rev-parse --show-toplevel)")
+SHELL := env("SHELL")
+dry := ""
 
 
 # Auto-setup environment on first use
@@ -51,6 +53,8 @@ test *ARGS:
         PATH="$TPATH" \
         SHELL="$BASH" \
         TERM="${TTERM:-xterm}" \
+        GIT_CONFIG_NOSYSTEM=1 \
+        GIT_CONFIG_GLOBAL=/dev/null \
         "$BASH" --norc --noprofile -c 'cd "{{JUST_DIR}}"; ./test/run-all.sh {{ARGS}}';
     STATUS=$?
     echo "Test exited with $STATUS";
@@ -150,18 +154,78 @@ _log level +message:
 exec +CMD:
     {{CMD}}
 
+# Initialize a new project with Crossfile
+[no-cd]
+init:
+    #!/usr/bin/env fish
+    if test -f "{{CROSSFILE}}"
+        just cross _log info "Crossfile already exists."
+    else
+        echo "# git-cross configuration" > "{{CROSSFILE}}"
+        just cross _log success "Crossfile initialized."
+    end
+
 # AICONTEXT: "use" register remote git repository and update Crossfile with "use" command. Do not change implementation!
 # Add a remote repository
 [no-cd]
 use name url: check-deps
     #!/usr/bin/env fish
     cd "{{REPO_DIR}}" &&\
-    if not git remote show $remote |grep -vq "^$remote\$" 
+    if not git remote show {{name}} >/dev/null 2>&1
         git remote add {{name}} {{url}}
         # Detect default branch
         git ls-remote --heads {{url}} 2>/dev/null \
         && just cross update_crossfile "cross use {{name}} {{url}}"
     end
+
+# Remove a patch and its worktree
+[no-cd]
+remove path: check-deps
+    #!/usr/bin/env fish
+    set l_path "{{path}}"
+    pushd "{{REPO_DIR}}"
+        if not test -f {{METADATA}}
+            just cross _log error "No metadata found."
+            exit 1
+        end
+
+        set entry (jq -r --arg lp "$l_path" '.patches[] | select(.local_path == $lp)' {{METADATA}})
+        if test -z "$entry"
+            just cross _log error "Patch not found for path: $l_path"
+            exit 1
+        end
+
+        set wt (echo "$entry" | jq -r '.worktree')
+
+        just cross _log info "Removing patch at $l_path..."
+
+        # 1. Remove worktree
+        if test -d "$wt"
+            just cross _log info "Removing git worktree at $wt..."
+            git worktree remove --force "$wt"
+        end
+
+        # 2. Remove from Crossfile
+        just cross _log info "Removing from Crossfile..."
+        if test -f "{{CROSSFILE}}"
+            set tmp (mktemp)
+            grep -v "patch" "{{CROSSFILE}}" > "$tmp"
+            grep "patch" "{{CROSSFILE}}" | grep -v "$l_path" >> "$tmp"
+            mv "$tmp" "{{CROSSFILE}}"
+        end
+
+        # 3. Update metadata
+        just cross _log info "Updating metadata..."
+        set tmp_meta (mktemp)
+        jq --arg lp "$l_path" '.patches |= map(select(.local_path != $lp))' {{METADATA}} > "$tmp_meta"
+        mv "$tmp_meta" {{METADATA}}
+
+        # 4. Remove local directory
+        just cross _log info "Deleting local directory $l_path..."
+        rm -rf "$l_path"
+
+        just cross _log success "Patch removed successfully."
+    popd
 
 # AICONTEXT: "patch" will do sparse checkout of specified branch of remote repository into local path. "remote_spec" is in format "remote_name:branch", where "branch" is optional. local_path is the same are remote_path if not provided. Command shall firs use `git ls-remote --heads ` to identify whether remote is having main or master as default branch if not provided - no more evaluation needed, simply grep "refs/heads" with regexp. Tool shall configure sparse checkout and use `git worktree add` and use `".git/cross/worktrees/$remote"_"$hash"` as working directory. Hash shall be short, but shall be created from path and branch name and humans shall ideally read it. checkout either only need maximum of 1 git history (last commmit version). When the checkout is done, "sync" target is called, to sync just this specific "patch" git worktree into main repository to local_path. Then a placeholder is required for post_sync_hook function to run. Finally call `git add` on local_path in top level repo.
 # AICONTEXT: for implementation, use "fish" keep it simple, shell comamnds shall be readable. Ideally keep bellow 30 lines. User interaction shall be kept minimal. Debug statements are not needed. Document in comments major logical blocks.
@@ -222,7 +286,7 @@ patch remote_spec local_path="": check-deps
             git worktree add --no-checkout -B "cross/$remote/$remote_branch/$hash" $wt "$remote/$remote_branch" >/dev/null 2>&1
 
             # Sparse checkout
-            git -C $wt sparse-checkout init --cone
+            git -C $wt sparse-checkout init --no-cone
             git -C $wt sparse-checkout set $r_path
             git -C $wt checkout
         end
@@ -422,23 +486,83 @@ push path="" branch="" force="false" yes="false" message="": check-initialized
 
 # AICONTEXT: "list" lists all patches in local repo, by reading Crossfile and `git worktree list` under .git/cross/worktrees. The listing shall be combined with status of each WT and git status of local_path. The logic can be take from "status" implementation.
 # List all patches
+[no-cd]
 list: check-deps
     #!/usr/bin/env fish
-    if not test -f Crossfile
-        just cross _log warn "No patches found (Crossfile missing)."
-        exit 0
-    end
-    
-    printf "%-20s %-30s %-20s\n" "REMOTE" "REMOTE PATH" "LOCAL PATH"
-    printf "%s\n" (string repeat -n 70 "-")
-    
-    if test -f .git/cross/metadata.json
-        jq -r '.patches[] | "\(.remote) \(.remote_path) \(.local_path)"' .git/cross/metadata.json | while read -l remote rpath lpath
-             printf "%-20s %-30s %-20s\n" $remote $rpath $lpath
+    pushd "{{REPO_DIR}}" >/dev/null
+        if test -d .git
+            just cross _log info "Configured Remotes:"
+            git remote -v | awk '{printf "%-20s %-50s %s\n", $1, $2, $3}'
+            echo ""
         end
-    else
-        just cross _log info "No patches found. Run 'just cross patch <remote> <path>' to start."
+
+        if not test -f Crossfile
+            just cross _log warn "No patches found (Crossfile missing)."
+            popd >/dev/null
+            exit 0
+        end
+        
+        just cross _log info "Configured Patches:"
+        printf "%-20s %-30s %-20s\n" "REMOTE" "REMOTE PATH" "LOCAL PATH"
+        printf "%s\n" (string repeat -n 70 "-")
+        
+        if test -f .git/cross/metadata.json
+            jq -r '.patches[] | "\(.remote) \(.remote_path) \(.local_path)"' .git/cross/metadata.json | while read -l remote rpath lpath
+                 printf "%-20s %-30s %-20s\n" $remote $rpath $lpath
+            end
+        else
+            just cross _log info "No patches found. Run 'just cross patch <remote> <path>' to start."
+        end
+    popd >/dev/null
+
+# wt wrapper
+[no-cd]
+worktree path="":
+    just cross cd "{{path}}" dry="{{dry}}"
+    
+[no-cd]
+wt path="":
+    just cross cd "{{path}}" dry="{{dry}}"
+
+[no-cd]
+cd path="":
+    #!/usr/bin/env fish
+
+    # if not initialized, exit
+    just cross check-initialized | grep "No patches" && exit 1;
+
+    # try to resolve context (uses "{{path}}" if provided, else CWD)
+    just cross _resolve_context2 (string trim -r -c / {{path}}) 2>/dev/null | source || true;
+
+    # if "worktree" is not provided and we are not in a patch, use fzf or just list
+    if test -z "$worktree"
+        if not command -v fzf >/dev/null
+            just cross list
+            exit 0
+        end
+
+        if test -z "{{dry}}"
+            set -l selection (just cross list | tail -n +3 | fzf --select-1 --header "Select patch worktree" --height 40% 2>/dev/null)
+            set -l selected_path (echo "$selection" | awk '{print $NF}')
+            if test -n "$selected_path"
+                just cross cd "$selected_path" dry="{{dry}}"
+            end
+            exit 0
+        else
+            just cross list
+            exit 0
+        end
     end
+
+    just cross _log info "Entering worktree at $worktree, use 'CTRL+D' to return..."
+    test -d "{{REPO_DIR}}/$worktree" > /dev/null || exit 1
+    set shell "{{SHELL}}"
+    if test -z "$shell"
+        set shell /bin/sh
+    end
+    {{dry}} cd "{{REPO_DIR}}/$worktree"
+    {{dry}} exec $shell
+
 
 # AICONTEXT: "status" shows status of current local_path patch vs. WT, and WT upstream. Input argument is local_path (or understand user stand in the under git-cross'ed local_path and call this comand). It shall be called to get status of local_path from "list" command. Either the status of remote WT upstream (as resource consuming, shall be optional or only ocasional)
 # Show status of all patches

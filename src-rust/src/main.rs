@@ -1,8 +1,11 @@
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs;
+use std::io::{ErrorKind, Write};
 use std::path::Path;
+use std::process::{Command, Stdio};
 use tabled::{Table, Tabled};
 
 #[derive(Parser)]
@@ -13,6 +16,8 @@ use tabled::{Table, Tabled};
     long_about = "Note: The Rust implementation of git-cross is currently EXPERIMENTAL and WORK IN PROGRESS. The Go implementation is the primary focus and recommended for production use."
 )]
 struct Cli {
+    #[arg(long, global = true, default_value = "")]
+    dry: String,
     #[command(subcommand)]
     command: Commands,
 }
@@ -34,6 +39,16 @@ enum Commands {
         #[arg(default_value = "")]
         path: String,
     },
+    /// Open a shell in the patch worktree
+    Cd {
+        #[arg(default_value = "")]
+        path: String,
+    },
+    /// Alias for cd
+    Wt {
+        #[arg(default_value = "")]
+        path: String,
+    },
     /// Show all configured patches
     List,
     /// Show patch status
@@ -47,6 +62,11 @@ enum Commands {
     Replay,
     /// Initialize a new project with Crossfile
     Init,
+    /// Remove a patch and its worktree
+    Remove {
+        /// Local path of the patch to remove
+        path: String,
+    },
     /// Push changes back to upstream
     Push {
         #[arg(default_value = "")]
@@ -69,12 +89,14 @@ enum Commands {
 
 #[derive(Serialize, Deserialize, Debug, Tabled, Clone)]
 struct Patch {
-    remote: String,
-    remote_path: String,
-    local_path: String,
-    worktree: String,
+    #[serde(default)]
+    pub id: String,
+    pub remote: String,
+    pub remote_path: String,
+    pub local_path: String,
+    pub worktree: String,
     #[tabled(skip)]
-    branch: String,
+    pub branch: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -89,8 +111,22 @@ struct PatchSpec {
     branch_provided: bool,
 }
 
-const METADATA_PATH: &str = ".git/cross/metadata.json";
-const CROSSFILE_PATH: &str = "Crossfile";
+const METADATA_REL_PATH: &str = ".git/cross/metadata.json";
+const CROSSFILE_REL_PATH: &str = "Crossfile";
+
+fn get_repo_root() -> Result<String> {
+    run_cmd(&["git", "rev-parse", "--show-toplevel"])
+}
+
+fn get_metadata_path() -> Result<std::path::PathBuf> {
+    let root = get_repo_root()?;
+    Ok(Path::new(&root).join(METADATA_REL_PATH))
+}
+
+fn get_crossfile_path() -> Result<std::path::PathBuf> {
+    let root = get_repo_root()?;
+    Ok(Path::new(&root).join(CROSSFILE_REL_PATH))
+}
 
 fn parse_patch_spec(spec: &str) -> Result<PatchSpec> {
     let parts: Vec<&str> = spec.split(':').collect();
@@ -281,9 +317,119 @@ fn run_cmd(args: &[&str]) -> Result<String> {
     Ok(stdout)
 }
 
+fn normalize_local_path(path: &str) -> String {
+    let mut normalized = path.replace('\\', "/");
+    normalized = normalized.trim().to_string();
+    while let Some(stripped) = normalized.strip_prefix("./") {
+        normalized = stripped.to_string();
+    }
+    normalized.trim_matches('/').to_string()
+}
+
+fn find_patch_for_path(metadata: &Metadata, rel: &str) -> Option<Patch> {
+    let rel = normalize_local_path(rel);
+    if rel.is_empty() {
+        return None;
+    }
+
+    let mut selected: Option<Patch> = None;
+    let mut longest = 0usize;
+    for patch in &metadata.patches {
+        let lp = normalize_local_path(&patch.local_path);
+        if lp.is_empty() {
+            continue;
+        }
+        if rel == lp || rel.starts_with(&(lp.clone() + "/")) {
+            if lp.len() > longest {
+                longest = lp.len();
+                selected = Some(patch.clone());
+            }
+        }
+    }
+
+    selected
+}
+
+fn select_patch_interactive(metadata: &Metadata) -> Result<Option<Patch>> {
+    if metadata.patches.is_empty() {
+        return Ok(None);
+    }
+
+    let mut input = String::new();
+    for patch in &metadata.patches {
+        input.push_str(&format!(
+            "{}\t{}\t{}\n",
+            patch.remote, patch.remote_path, patch.local_path
+        ));
+    }
+
+    let mut child = Command::new("fzf")
+        .args([
+            "--with-nth=1,2,3",
+            "--delimiter",
+            "\t",
+            "--prompt",
+            "Select patch> ",
+            "--height",
+            "40%",
+            "--select-1",
+            "--exit-0",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|err| {
+            if err.kind() == ErrorKind::NotFound {
+                anyhow!("fzf not found")
+            } else {
+                anyhow!(err)
+            }
+        })?;
+
+    {
+        let stdin = child.stdin.as_mut().context("Failed to open fzf stdin")?;
+        stdin.write_all(input.as_bytes())?;
+    }
+
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let selection = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if selection.is_empty() {
+        return Ok(None);
+    }
+
+    let local_path = selection
+        .rsplit_once('\t')
+        .map(|(_, s)| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| selection.split_whitespace().last().map(|s| s.to_string()))
+        .ok_or_else(|| anyhow!("Unable to parse selection: {}", selection))?;
+
+    metadata
+        .patches
+        .iter()
+        .find(|p| p.local_path == local_path)
+        .cloned()
+        .ok_or_else(|| anyhow!("Selected patch not found: {}", local_path))
+        .map(Some)
+}
+
+fn repo_relative_path() -> Result<Option<String>> {
+    let prefix = run_cmd(&["git", "rev-parse", "--show-prefix"])?;
+    if prefix.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(prefix.trim_end_matches('/').to_string()))
+    }
+}
+
 fn load_metadata() -> Result<Metadata> {
-    if Path::new(METADATA_PATH).exists() {
-        let content = fs::read_to_string(METADATA_PATH)?;
+    let path = get_metadata_path()?;
+    if path.exists() {
+        let content = fs::read_to_string(path)?;
         Ok(serde_json::from_str(&content)?)
     } else {
         Ok(Metadata {
@@ -293,27 +439,40 @@ fn load_metadata() -> Result<Metadata> {
 }
 
 fn save_metadata(metadata: &Metadata) -> Result<()> {
-    let dir = Path::new(METADATA_PATH).parent().unwrap();
+    let path = get_metadata_path()?;
+    let dir = path.parent().unwrap();
     fs::create_dir_all(dir)?;
     let content = serde_json::to_string_pretty(metadata)?;
-    fs::write(METADATA_PATH, content)?;
+    fs::write(path, content)?;
     Ok(())
 }
 
 fn update_crossfile(line: &str) -> Result<()> {
-    let mut content = if Path::new(CROSSFILE_PATH).exists() {
-        fs::read_to_string(CROSSFILE_PATH)?
+    let path = get_crossfile_path()?;
+    let mut content = if path.exists() {
+        fs::read_to_string(&path)?
     } else {
         String::new()
     };
 
-    if !content.lines().any(|l| l.trim() == line.trim()) {
+    let line = line.trim();
+    let line_without_prefix = line.strip_prefix("cross ").unwrap_or(line).trim();
+
+    let already_exists = content.lines().any(|l| {
+        let trimmed_l = l.trim();
+        trimmed_l == line || trimmed_l == format!("cross {}", line) || trimmed_l == line_without_prefix
+    });
+
+    if !already_exists {
         if !content.is_empty() && !content.ends_with('\n') {
             content.push('\n');
         }
+        if !line.starts_with("cross ") {
+            content.push_str("cross ");
+        }
         content.push_str(line);
         content.push('\n');
-        fs::write(CROSSFILE_PATH, content)?;
+        fs::write(path, content)?;
     }
     Ok(())
 }
@@ -397,7 +556,7 @@ fn main() -> Result<()> {
                     &wt_dir,
                     &format!("{}/{}", spec.remote, branch_name),
                 ])?;
-                run_cmd(&["git", "-C", &wt_dir, "sparse-checkout", "init", "--cone"])?;
+                run_cmd(&["git", "-C", &wt_dir, "sparse-checkout", "init", "--no-cone"])?;
                 run_cmd(&[
                     "git",
                     "-C",
@@ -422,12 +581,14 @@ fn main() -> Result<()> {
                 .iter_mut()
                 .find(|p| p.local_path == target_path)
             {
+                existing.id = hash.to_string();
                 existing.remote = spec.remote.clone();
                 existing.remote_path = spec.remote_path.clone();
                 existing.branch = branch_name.clone();
                 existing.worktree = wt_dir.clone();
             } else {
                 metadata.patches.push(Patch {
+                    id: hash.to_string(),
                     remote: spec.remote.clone(),
                     remote_path: spec.remote_path.clone(),
                     local_path: target_path.clone(),
@@ -490,11 +651,116 @@ fn main() -> Result<()> {
             }
             log_success("Sync completed.");
         }
+        Commands::Cd { path } | Commands::Wt { path } => {
+            let metadata = load_metadata()?;
+            if metadata.patches.is_empty() {
+                println!("No patches configured.");
+                return Ok(());
+            }
+
+            let target_patch = if !path.is_empty() {
+                let mut patch = find_patch_for_path(&metadata, path).or_else(|| {
+                    metadata
+                        .patches
+                        .iter()
+                        .find(|p| p.local_path == *path)
+                        .cloned()
+                });
+                patch
+                    .take()
+                    .context(format!("Patch not found for path: {}", path))?
+            } else {
+                match select_patch_interactive(&metadata) {
+                    Ok(Some(patch)) => patch,
+                    Ok(None) => {
+                        log_info("No selection made.");
+                        return Ok(());
+                    }
+                    Err(err) => {
+                        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+                            if io_err.kind() == ErrorKind::NotFound {
+                                log_info(
+                                    "fzf not available. Showing patch list; rerun with a path to enter a worktree.",
+                                );
+                                println!("{}", Table::new(metadata.patches.clone()));
+                                return Ok(());
+                            }
+                        }
+                        if err.to_string() == "fzf not found" {
+                            log_info(
+                                "fzf not available. Showing patch list; rerun with a path to enter a worktree.",
+                            );
+                            println!("{}", Table::new(metadata.patches.clone()));
+                            return Ok(());
+                        }
+                        return Err(err);
+                    }
+                }
+            };
+
+            if !Path::new(&target_patch.worktree).exists() {
+                return Err(anyhow!(
+                    "Worktree not found for {}",
+                    target_patch.local_path
+                ));
+            }
+
+            let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+
+            if !cli.dry.is_empty() {
+                println!("{} cd {}", cli.dry, target_patch.worktree);
+                println!("{} exec {}", cli.dry, shell);
+                return Ok(());
+            }
+
+            log_info(&format!("Opening shell in {}", target_patch.worktree));
+            let status = Command::new(&shell)
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit())
+                .current_dir(&target_patch.worktree)
+                .status()?;
+
+            if !status.success() {
+                return Err(anyhow!("Shell exited with error"));
+            }
+        }
         Commands::List => {
+            if let Ok(remotes) = run_cmd(&["git", "remote", "-v"]) {
+                if !remotes.is_empty() {
+                    log_info("Configured Remotes:");
+                    #[derive(Tabled)]
+                    struct RemoteRow {
+                        name: String,
+                        url: String,
+                        #[tabled(rename = "type")]
+                        rtype: String,
+                    }
+                    let rows: Vec<RemoteRow> = remotes
+                        .lines()
+                        .filter_map(|line| {
+                            let fields: Vec<&str> = line.split_whitespace().collect();
+                            if fields.len() >= 3 {
+                                Some(RemoteRow {
+                                    name: fields[0].to_string(),
+                                    url: fields[1].to_string(),
+                                    rtype: fields[2].to_string(),
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    println!("{}", Table::new(rows));
+                    println!();
+                }
+            }
+
             let metadata = load_metadata()?;
             if metadata.patches.is_empty() {
                 println!("No patches configured.");
             } else {
+                log_info("Configured Patches:");
                 println!("{}", Table::new(metadata.patches).to_string());
             }
         }
@@ -579,6 +845,58 @@ fn main() -> Result<()> {
             }
             println!("{}", Table::new(rows).to_string());
         }
+        Commands::Remove { path } => {
+            let path = normalize_local_path(path);
+            let mut metadata = load_metadata()?;
+            let patch_idx = metadata
+                .patches
+                .iter()
+                .position(|p| normalize_local_path(&p.local_path) == path);
+
+            let patch = match patch_idx {
+                Some(idx) => metadata.patches.remove(idx),
+                None => return Err(anyhow!("Patch not found for path: {}", path)),
+            };
+
+            log_info(&format!("Removing patch at {}...", path));
+
+            // 1. Remove worktree
+            if Path::new(&patch.worktree).exists() {
+                log_info(&format!("Removing git worktree at {}...", patch.worktree));
+                if let Err(e) = run_cmd(&["git", "worktree", "remove", "--force", &patch.worktree]) {
+                    log_error(&format!("Failed to remove worktree: {}", e));
+                }
+            }
+
+            // 2. Remove from Crossfile
+            log_info("Removing from Crossfile...");
+            if let Ok(cross_path) = get_crossfile_path() {
+                if let Ok(content) = fs::read_to_string(&cross_path) {
+                    let lines: Vec<String> = content
+                        .lines()
+                        .filter(|l| !l.contains("patch") || !l.contains(&path))
+                        .map(|l| l.to_string())
+                        .collect();
+                    let mut new_content = lines.join("\n");
+                    if !new_content.is_empty() {
+                        new_content.push('\n');
+                    }
+                    let _ = fs::write(&cross_path, new_content);
+                }
+            }
+
+            // 3. Save metadata
+            log_info("Updating metadata...");
+            save_metadata(&metadata)?;
+
+            // 4. Remove local directory
+            log_info(&format!("Deleting local directory {}...", path));
+            if let Err(e) = fs::remove_dir_all(&path) {
+                log_error(&format!("Failed to remove local directory: {}", e));
+            }
+
+            log_success("Patch removed successfully.");
+        }
         Commands::Diff { path } => {
             let metadata = load_metadata()?;
             let mut found = false;
@@ -602,7 +920,8 @@ fn main() -> Result<()> {
         }
         Commands::Replay => {
             log_info("Replaying Crossfile...");
-            if !Path::new(CROSSFILE_PATH).exists() {
+            let path = get_crossfile_path()?;
+            if !path.exists() {
                 println!("No Crossfile found.");
                 return Ok(());
             }
@@ -611,7 +930,7 @@ fn main() -> Result<()> {
             let script = format!(
                 r#"cross() {{ "{}" "$@"; }}; source "{}" "#,
                 curr_exe.display(),
-                CROSSFILE_PATH
+                path.display()
             );
             let status = duct::cmd!("bash", "-c", script).unchecked().run()?;
 
@@ -622,12 +941,13 @@ fn main() -> Result<()> {
             }
         }
         Commands::Init => {
-            if Path::new(CROSSFILE_PATH).exists() {
+            let path = "Crossfile";
+            if Path::new(path).exists() {
                 log_info("Crossfile already exists.");
-            } else {
-                fs::write(CROSSFILE_PATH, "# git-cross configuration\n")?;
-                log_success("Crossfile initialized.");
+                return Ok(());
             }
+            fs::write(path, "# git-cross configuration\n")?;
+            log_success("Crossfile initialized.");
         }
         Commands::Push {
             path,
