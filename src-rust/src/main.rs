@@ -62,6 +62,11 @@ enum Commands {
     Replay,
     /// Initialize a new project with Crossfile
     Init,
+    /// Remove a patch and its worktree
+    Remove {
+        /// Local path of the patch to remove
+        path: String,
+    },
     /// Push changes back to upstream
     Push {
         #[arg(default_value = "")]
@@ -450,9 +455,20 @@ fn update_crossfile(line: &str) -> Result<()> {
         String::new()
     };
 
-    if !content.lines().any(|l| l.trim() == line.trim()) {
+    let line = line.trim();
+    let line_without_prefix = line.strip_prefix("cross ").unwrap_or(line).trim();
+
+    let already_exists = content.lines().any(|l| {
+        let trimmed_l = l.trim();
+        trimmed_l == line || trimmed_l == format!("cross {}", line) || trimmed_l == line_without_prefix
+    });
+
+    if !already_exists {
         if !content.is_empty() && !content.ends_with('\n') {
             content.push('\n');
+        }
+        if !line.starts_with("cross ") {
+            content.push_str("cross ");
         }
         content.push_str(line);
         content.push('\n');
@@ -710,10 +726,41 @@ fn main() -> Result<()> {
             }
         }
         Commands::List => {
+            if let Ok(remotes) = run_cmd(&["git", "remote", "-v"]) {
+                if !remotes.is_empty() {
+                    log_info("Configured Remotes:");
+                    #[derive(Tabled)]
+                    struct RemoteRow {
+                        name: String,
+                        url: String,
+                        #[tabled(rename = "type")]
+                        rtype: String,
+                    }
+                    let rows: Vec<RemoteRow> = remotes
+                        .lines()
+                        .filter_map(|line| {
+                            let fields: Vec<&str> = line.split_whitespace().collect();
+                            if fields.len() >= 3 {
+                                Some(RemoteRow {
+                                    name: fields[0].to_string(),
+                                    url: fields[1].to_string(),
+                                    rtype: fields[2].to_string(),
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    println!("{}", Table::new(rows));
+                    println!();
+                }
+            }
+
             let metadata = load_metadata()?;
             if metadata.patches.is_empty() {
                 println!("No patches configured.");
             } else {
+                log_info("Configured Patches:");
                 println!("{}", Table::new(metadata.patches).to_string());
             }
         }
@@ -797,6 +844,58 @@ fn main() -> Result<()> {
                 rows.push(row);
             }
             println!("{}", Table::new(rows).to_string());
+        }
+        Commands::Remove { path } => {
+            let path = normalize_local_path(path);
+            let mut metadata = load_metadata()?;
+            let patch_idx = metadata
+                .patches
+                .iter()
+                .position(|p| normalize_local_path(&p.local_path) == path);
+
+            let patch = match patch_idx {
+                Some(idx) => metadata.patches.remove(idx),
+                None => return Err(anyhow!("Patch not found for path: {}", path)),
+            };
+
+            log_info(&format!("Removing patch at {}...", path));
+
+            // 1. Remove worktree
+            if Path::new(&patch.worktree).exists() {
+                log_info(&format!("Removing git worktree at {}...", patch.worktree));
+                if let Err(e) = run_cmd(&["git", "worktree", "remove", "--force", &patch.worktree]) {
+                    log_error(&format!("Failed to remove worktree: {}", e));
+                }
+            }
+
+            // 2. Remove from Crossfile
+            log_info("Removing from Crossfile...");
+            if let Ok(cross_path) = get_crossfile_path() {
+                if let Ok(content) = fs::read_to_string(&cross_path) {
+                    let lines: Vec<String> = content
+                        .lines()
+                        .filter(|l| !l.contains("patch") || !l.contains(&path))
+                        .map(|l| l.to_string())
+                        .collect();
+                    let mut new_content = lines.join("\n");
+                    if !new_content.is_empty() {
+                        new_content.push('\n');
+                    }
+                    let _ = fs::write(&cross_path, new_content);
+                }
+            }
+
+            // 3. Save metadata
+            log_info("Updating metadata...");
+            save_metadata(&metadata)?;
+
+            // 4. Remove local directory
+            log_info(&format!("Deleting local directory {}...", path));
+            if let Err(e) = fs::remove_dir_all(&path) {
+                log_error(&format!("Failed to remove local directory: {}", e));
+            }
+
+            log_success("Patch removed successfully.");
         }
         Commands::Diff { path } => {
             let metadata = load_metadata()?;

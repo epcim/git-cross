@@ -177,8 +177,14 @@ func updateCrossfile(line string) error {
 	}
 
 	content := string(data)
-	if strings.Contains(content, line) {
-		return nil
+	// Improved deduplication: check for exact line or line without 'cross ' prefix
+	lineWithoutPrefix := strings.TrimPrefix(line, "cross ")
+	lines := strings.Split(content, "\n")
+	for _, l := range lines {
+		trimmedL := strings.TrimSpace(l)
+		if trimmedL == line || trimmedL == "cross "+line || trimmedL == lineWithoutPrefix {
+			return nil
+		}
 	}
 
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
@@ -190,7 +196,11 @@ func updateCrossfile(line string) error {
 	if len(data) > 0 && data[len(data)-1] != '\n' {
 		f.WriteString("\n")
 	}
-	_, err = f.WriteString("cross " + line + "\n")
+	if !strings.HasPrefix(line, "cross ") {
+		_, err = f.WriteString("cross " + line + "\n")
+	} else {
+		_, err = f.WriteString(line + "\n")
+	}
 	return err
 }
 
@@ -619,19 +629,41 @@ func main() {
 
 	listCmd := &cobra.Command{
 		Use:   "list",
-		Short: "Show all configured patches",
+		Short: "Show all configured patches and remotes",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			repo, err := git.Open(".")
+			if err == nil {
+				remotes, _ := git.NewCommand("remote", "-v").RunInDir(repo.Path())
+				if len(remotes) > 0 {
+					logInfo("Configured Remotes:")
+					remotesStr := strings.TrimSpace(string(remotes))
+					lines := strings.Split(remotesStr, "\n")
+					table := tablewriter.NewWriter(os.Stdout)
+					table.Header("NAME", "URL", "TYPE")
+					for _, line := range lines {
+						fields := strings.Fields(line)
+						if len(fields) >= 3 {
+							table.Append(fields[0], fields[1], fields[2])
+						}
+					}
+					table.Render()
+					fmt.Println()
+				}
+			}
+
 			meta, _ := loadMetadata()
 			if len(meta.Patches) == 0 {
 				fmt.Println("No patches configured.")
 				return nil
 			}
+			logInfo("Configured Patches:")
 			table := tablewriter.NewWriter(os.Stdout)
 			table.Header("REMOTE", "REMOTE PATH", "LOCAL PATH", "WORKTREE")
 			for _, p := range meta.Patches {
 				table.Append(p.Remote, p.RemotePath, p.LocalPath, p.Worktree)
 			}
-			return table.Render()
+			table.Render()
+			return nil
 		},
 	}
 
@@ -878,7 +910,73 @@ func main() {
 		RunE:  cdCmd.RunE,
 	}
 
-	rootCmd.AddCommand(useCmd, patchCmd, syncCmd, cdCmd, wtCmd, listCmd, statusCmd, diffCmd, replayCmd, pushCmd, execCmd, initCmd)
+	removeCmd := &cobra.Command{
+		Use:   "remove [path]",
+		Short: "Remove a patch and its worktree",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			localPath := filepath.Clean(args[0])
+			meta, _ := loadMetadata()
+			var patch *Patch
+			patchIdx := -1
+			for i, p := range meta.Patches {
+				if p.LocalPath == localPath {
+					patch = &meta.Patches[i]
+					patchIdx = i
+					break
+				}
+			}
+
+			if patch == nil {
+				return fmt.Errorf("patch not found for path: %s", localPath)
+			}
+
+			logInfo(fmt.Sprintf("Removing patch at %s...", localPath))
+
+			// 1. Remove worktree
+			if _, err := os.Stat(patch.Worktree); err == nil {
+				logInfo(fmt.Sprintf("Removing git worktree at %s...", patch.Worktree))
+				if _, err := git.NewCommand("worktree", "remove", "--force", patch.Worktree).RunInDir("."); err != nil {
+					logError(fmt.Sprintf("Failed to remove worktree: %v", err))
+				}
+			}
+
+			// 2. Remove from Crossfile
+			logInfo("Removing from Crossfile...")
+			path, err := getCrossfilePath()
+			if err == nil {
+				data, err := os.ReadFile(path)
+				if err == nil {
+					lines := strings.Split(string(data), "\n")
+					var newLines []string
+					for _, line := range lines {
+						if !strings.Contains(line, "patch") || !strings.Contains(line, localPath) {
+							newLines = append(newLines, line)
+						}
+					}
+					os.WriteFile(path, []byte(strings.Join(newLines, "\n")), 0o644)
+				}
+			}
+
+			// 3. Remove from metadata
+			logInfo("Updating metadata...")
+			meta.Patches = append(meta.Patches[:patchIdx], meta.Patches[patchIdx+1:]...)
+			if err := saveMetadata(meta); err != nil {
+				return err
+			}
+
+			// 4. Remove local directory
+			logInfo(fmt.Sprintf("Deleting local directory %s...", localPath))
+			if err := os.RemoveAll(localPath); err != nil {
+				logError(fmt.Sprintf("Failed to remove local directory: %v", err))
+			}
+
+			logSuccess("Patch removed successfully.")
+			return nil
+		},
+	}
+
+	rootCmd.AddCommand(useCmd, patchCmd, syncCmd, removeCmd, cdCmd, wtCmd, listCmd, statusCmd, diffCmd, replayCmd, pushCmd, execCmd, initCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

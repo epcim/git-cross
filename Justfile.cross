@@ -154,18 +154,78 @@ _log level +message:
 exec +CMD:
     {{CMD}}
 
+# Initialize a new project with Crossfile
+[no-cd]
+init:
+    #!/usr/bin/env fish
+    if test -f "{{CROSSFILE}}"
+        just cross _log info "Crossfile already exists."
+    else
+        echo "# git-cross configuration" > "{{CROSSFILE}}"
+        just cross _log success "Crossfile initialized."
+    end
+
 # AICONTEXT: "use" register remote git repository and update Crossfile with "use" command. Do not change implementation!
 # Add a remote repository
 [no-cd]
 use name url: check-deps
     #!/usr/bin/env fish
     cd "{{REPO_DIR}}" &&\
-    if not git remote show $remote |grep -vq "^$remote\$" 
+    if not git remote show {{name}} >/dev/null 2>&1
         git remote add {{name}} {{url}}
         # Detect default branch
         git ls-remote --heads {{url}} 2>/dev/null \
         && just cross update_crossfile "cross use {{name}} {{url}}"
     end
+
+# Remove a patch and its worktree
+[no-cd]
+remove path: check-deps
+    #!/usr/bin/env fish
+    set l_path "{{path}}"
+    pushd "{{REPO_DIR}}"
+        if not test -f {{METADATA}}
+            just cross _log error "No metadata found."
+            exit 1
+        end
+
+        set entry (jq -r --arg lp "$l_path" '.patches[] | select(.local_path == $lp)' {{METADATA}})
+        if test -z "$entry"
+            just cross _log error "Patch not found for path: $l_path"
+            exit 1
+        end
+
+        set wt (echo "$entry" | jq -r '.worktree')
+
+        just cross _log info "Removing patch at $l_path..."
+
+        # 1. Remove worktree
+        if test -d "$wt"
+            just cross _log info "Removing git worktree at $wt..."
+            git worktree remove --force "$wt"
+        end
+
+        # 2. Remove from Crossfile
+        just cross _log info "Removing from Crossfile..."
+        if test -f "{{CROSSFILE}}"
+            set tmp (mktemp)
+            grep -v "patch" "{{CROSSFILE}}" > "$tmp"
+            grep "patch" "{{CROSSFILE}}" | grep -v "$l_path" >> "$tmp"
+            mv "$tmp" "{{CROSSFILE}}"
+        end
+
+        # 3. Update metadata
+        just cross _log info "Updating metadata..."
+        set tmp_meta (mktemp)
+        jq --arg lp "$l_path" '.patches |= map(select(.local_path != $lp))' {{METADATA}} > "$tmp_meta"
+        mv "$tmp_meta" {{METADATA}}
+
+        # 4. Remove local directory
+        just cross _log info "Deleting local directory $l_path..."
+        rm -rf "$l_path"
+
+        just cross _log success "Patch removed successfully."
+    popd
 
 # AICONTEXT: "patch" will do sparse checkout of specified branch of remote repository into local path. "remote_spec" is in format "remote_name:branch", where "branch" is optional. local_path is the same are remote_path if not provided. Command shall firs use `git ls-remote --heads ` to identify whether remote is having main or master as default branch if not provided - no more evaluation needed, simply grep "refs/heads" with regexp. Tool shall configure sparse checkout and use `git worktree add` and use `".git/cross/worktrees/$remote"_"$hash"` as working directory. Hash shall be short, but shall be created from path and branch name and humans shall ideally read it. checkout either only need maximum of 1 git history (last commmit version). When the checkout is done, "sync" target is called, to sync just this specific "patch" git worktree into main repository to local_path. Then a placeholder is required for post_sync_hook function to run. Finally call `git add` on local_path in top level repo.
 # AICONTEXT: for implementation, use "fish" keep it simple, shell comamnds shall be readable. Ideally keep bellow 30 lines. User interaction shall be kept minimal. Debug statements are not needed. Document in comments major logical blocks.
@@ -430,12 +490,19 @@ push path="" branch="" force="false" yes="false" message="": check-initialized
 list: check-deps
     #!/usr/bin/env fish
     pushd "{{REPO_DIR}}" >/dev/null
+        if test -d .git
+            just cross _log info "Configured Remotes:"
+            git remote -v | awk '{printf "%-20s %-50s %s\n", $1, $2, $3}'
+            echo ""
+        end
+
         if not test -f Crossfile
             just cross _log warn "No patches found (Crossfile missing)."
             popd >/dev/null
             exit 0
         end
         
+        just cross _log info "Configured Patches:"
         printf "%-20s %-30s %-20s\n" "REMOTE" "REMOTE PATH" "LOCAL PATH"
         printf "%s\n" (string repeat -n 70 "-")
         
