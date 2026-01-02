@@ -33,8 +33,10 @@
 
 - [x] `cross list` comand shall either print all cross remote repositories (REMOTE (alias), GIT URL) in separate table above the table with patches. Or directly inline with each patch.
 - [x] Implement `cross remove` patch, to remove local_pathch patch and it's worktree. Finally clean up the Metadata an Crossfile. Once physically removed, `git worktree prune` will clenaup git itself.
-- [ ] Implement `cross cut` to remove git remote repo registration from "cross use" command and ask user whether either remove all patches (like: cross remove)
+- [ ] Implement `cross prune [remote name]` to remove git remote repo registration from "cross use" command and ask user whether either remove all git remotes without active cross patches (like after: cross remove), then `git worktree prune` to remove all worktrees. optional argument (an remote repo alias/name would enforce either removal of all it's patches altogther with worktrees and remotes)
 - [x] Re-implement `wt` (worktree) command in Go and Rust with full test coverage (align logic with Justfile).
+- [ ] Refactor `cross cd` to target local patched folder and output path (no subshell), supporting fzf.
+- [ ] Review and propose implementation (tool and test) to be able patch even single file. If not easily possible without major refactoring, then evaluate new command "patch-file".
 - [ ] Improve interactive `fzf` selection in native implementations.
 
 ## Known Issues (To FIX)

@@ -16,9 +16,16 @@
 | **Upstream sync** | ✅ Bidirectional | ⚠️ Complex | ⚠️ Merge commits |
 | **Commit visibility** | ✅ In main repo | ❌ Separate | ✅ In main repo |
 | **Reproducibility** | ✅ Crossfile | ⚠️ .gitmodules | ⚠️ Manual |
-| **Native CLI** | ✅ Go (Primary) | ❌ N/A | ❌ Bash |
 
-## Implementation Note
+## What it is not
+
+Git-cross is not a replacement for `git-subrepo` or `git-submodule`. -- It provides an alternative approach and simplifies otherwise manual and complex git workflow behind into intuitive commands.
+
+Git-cross does not directly link external repositories to your main repository. -- It provides separate worktrees for each upstream patch, and help with sync to local repository.
+
+## Implementation status
+
+The project is still in early days and Work In Progress. Just/Golang versions are tested by the author on best-effort basis. Most of the commands and structure of "Crossfile" is already freezed.
 
 The project provides three implementations, with **Go being the primary native version for production use.**
 
