@@ -11,3 +11,5 @@ cross sync
 # cross exec git remote -v | grep fetch | column -t
 # cross exec git worktree list
 
+cross use khue https://github.com/khuedoan/homelab
+cross patch khue:master:/metal deploy/metal

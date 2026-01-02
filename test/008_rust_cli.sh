@@ -1,9 +1,30 @@
 #!/usr/bin/env bash
-source $(dirname "$0")/common.sh
+source "$(dirname "$0")/common.sh"
 
 # Initialize sandbox
 setup_sandbox
 cd "$SANDBOX"
+
+mkdir -p "$SANDBOX/bin"
+cat > "$SANDBOX/bin/fzf" <<'EOF'
+#!/usr/bin/env bash
+lines=()
+while IFS= read -r line; do
+  lines+=("$line")
+done
+for (( idx=${#lines[@]}-1; idx>=0; idx--)); do
+  line="${lines[$idx]}"
+  trimmed="$(echo "$line" | tr -d '[:space:]')"
+  if [[ -z "$trimmed" ]]; then continue; fi
+  if [[ "$line" == *"REMOTE"* && "$line" != *"/"* ]]; then continue; fi
+  if [[ "$line" =~ ^[-+]+$ ]]; then continue; fi
+  echo "$line"
+  exit 0
+done
+exit 0
+EOF
+chmod +x "$SANDBOX/bin/fzf"
+export PATH="$SANDBOX/bin:$PATH"
 
 # Compile rust binary (it should be already compiled but let's be sure or just use the location)
 RUST_BIN="$REPO_ROOT/src-rust/target/debug/git-cross-rust"
@@ -33,12 +54,42 @@ if ! git remote | grep -q "^demo$"; then
     fail "Rust 'use' failed to add remote 'demo'"
 fi
 
-log_header "Testing Rust 'patch' command..."
+log_header "Testing Rust 'patch' command without branch..."
 "$RUST_BIN" patch demo:src vendor/rust-src
 
 # Verify files
 if [ ! -f "vendor/rust-src/logic.rs" ]; then
     fail "Rust 'patch' failed to vendor logic.rs"
+fi
+
+log_header "Testing Rust 'patch' command with explicit branch..."
+"$RUST_BIN" patch demo:main:src vendor/rust-src-branch
+if [ ! -f "vendor/rust-src-branch/logic.rs" ]; then
+    fail "Rust 'patch' with explicit branch failed"
+fi
+
+log_header "Testing Rust 'patch' command with nested path and leading slash..."
+pushd "$upstream_path" >/dev/null
+    mkdir -p nested/dir
+    echo "Nested" > nested/dir/file.txt
+    git add nested/dir/file.txt
+    git commit -m "Add nested dir" >/dev/null
+popd >/dev/null
+"$RUST_BIN" patch demo:main:/nested/dir vendor/nested-dir
+if [ ! -f "vendor/nested-dir/file.txt" ]; then
+    fail "Rust 'patch' failed to vendor nested dir"
+fi
+
+log_header "Testing Rust 'cd' command dry run..."
+cd_output=$("$RUST_BIN" cd vendor/rust-src --dry echo)
+if ! echo "$cd_output" | grep -q "exec"; then
+    fail "Rust 'cd' dry run missing exec output: $cd_output"
+fi
+
+log_header "Testing Rust 'wt' command dry run..."
+wt_output=$("$RUST_BIN" wt vendor/rust-src --dry echo)
+if ! echo "$wt_output" | grep -q "exec"; then
+    fail "Rust 'wt' dry run missing exec output: $wt_output"
 fi
 
 log_header "Testing Rust 'list' command..."

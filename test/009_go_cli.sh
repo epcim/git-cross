@@ -1,9 +1,30 @@
 #!/usr/bin/env bash
-source $(dirname "$0")/common.sh
+source "$(dirname "$0")/common.sh"
 
 # Initialize sandbox
 setup_sandbox
 cd "$SANDBOX"
+
+mkdir -p "$SANDBOX/bin"
+cat > "$SANDBOX/bin/fzf" <<'EOF'
+#!/usr/bin/env bash
+lines=()
+while IFS= read -r line; do
+  lines+=("$line")
+done
+for (( idx=${#lines[@]}-1; idx>=0; idx--)); do
+  line="${lines[$idx]}"
+  trimmed="$(echo "$line" | tr -d '[:space:]')"
+  if [[ -z "$trimmed" ]]; then continue; fi
+  if [[ "$line" == *"REMOTE"* && "$line" != *"/"* ]]; then continue; fi
+  if [[ "$line" =~ ^[-+]+$ ]]; then continue; fi
+  echo "$line"
+  exit 0
+done
+exit 0
+EOF
+chmod +x "$SANDBOX/bin/fzf"
+export PATH="$SANDBOX/bin:$PATH"
 
 # Compile go binary
 GO_BIN="$REPO_ROOT/src-go/git-cross-go"
@@ -33,12 +54,42 @@ if ! git remote | grep -q "^demo$"; then
     fail "Go 'use' failed to add remote 'demo'"
 fi
 
-log_header "Testing Go 'patch' command..."
+log_header "Testing Go 'patch' command without branch..."
 "$GO_BIN" patch demo:src vendor/go-src
 
 # Verify files
 if [ ! -f "vendor/go-src/logic.go" ]; then
     fail "Go 'patch' failed to vendor logic.go"
+fi
+
+log_header "Testing Go 'patch' command with explicit branch..."
+"$GO_BIN" patch demo:main:src vendor/go-src-branch
+if [ ! -f "vendor/go-src-branch/logic.go" ]; then
+    fail "Go 'patch' with explicit branch failed"
+fi
+
+log_header "Testing Go 'patch' command with nested path and leading slash..."
+pushd "$upstream_path" >/dev/null
+    mkdir -p nested/dir
+    echo "Nested file" > nested/dir/file.txt
+    git add nested/dir/file.txt
+    git commit -m "Add nested file" >/dev/null
+popd >/dev/null
+"$GO_BIN" patch demo:main:/nested/dir vendor/nested-dir
+if [ ! -f "vendor/nested-dir/file.txt" ]; then
+    fail "Go 'patch' failed to vendor nested dir"
+fi
+
+log_header "Testing Go 'cd' command dry run..."
+cd_output=$("$GO_BIN" cd vendor/go-src --dry echo)
+if ! echo "$cd_output" | grep -q "exec"; then
+    fail "Go 'cd' dry run missing exec output: $cd_output"
+fi
+
+log_header "Testing Go 'wt' command dry run..."
+wt_output=$("$GO_BIN" wt vendor/go-src --dry echo)
+if ! echo "$wt_output" | grep -q "exec"; then
+    fail "Go 'wt' dry run missing exec output: $wt_output"
 fi
 
 log_header "Testing Go 'list' command..."

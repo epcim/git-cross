@@ -2,6 +2,6 @@
 cross use khue	https://github.com/khuedoan/homelab
 
 # cross patches
-# ex: origin:path/remote/dir [local/path/to/dir] [branch]
+# ex: origin:path/remote/dir [local/path/to/dir]
 cross patch khue:/metal       deploy/metal
 

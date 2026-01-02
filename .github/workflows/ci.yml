@@ -19,10 +19,10 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y fish rsync jq
         # Install yq
-        sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
+        sudo wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 5 https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
         sudo chmod +x /usr/bin/yq
         # Install just
-        curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to ~/bin
+        curl --proto '=https' --tlsv1.2 -sSf --retry 5 --retry-connrefused --retry-delay 5 https://just.systems/install.sh | bash -s -- --to ~/bin
         echo "$HOME/bin" >> $GITHUB_PATH
         
     - name: Verify installation

@@ -5,7 +5,6 @@ go 1.25.5
 require (
 	github.com/fatih/color v1.18.0
 	github.com/gogs/git-module v1.8.5
-	github.com/mattn/go-shellwords v1.0.12
 	github.com/olekukonko/tablewriter v1.1.2
 	github.com/spf13/cobra v1.10.2
 	github.com/zloylos/grsync v1.7.0

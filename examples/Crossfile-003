@@ -9,7 +9,7 @@ git remote -v | grep fetch | column -t
 # repo_is_clean || say "There are uncommitted changes in the repository. Stash them first." 1
 
 # cross patches
-# ex: origin:path/remote/dir [local/path/to/dir] [branch]
+# ex: origin:path/remote/dir [local/path/to/dir]
 cross patch khue:/metal       deploy/metal
 cross patch bill:/setup/flux  deploy/flux
 
