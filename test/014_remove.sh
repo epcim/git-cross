@@ -39,11 +39,13 @@ if [ -d "vendor/app-rust" ]; then fail "vendor/app-rust still exists after remov
 if grep -q "vendor/app-rust" Crossfile; then fail "Crossfile still contains patch entry"; fi
 if grep -q "vendor/app-rust" .git/cross/metadata.json; then fail "Metadata still contains patch entry"; fi
 
-# 4. Test list command (Go)
+# 4. Test list command (Go) - need active patch for remotes to show
 echo "## Testing 'list' command (Go)..."
+just cross patch repo1:src/lib vendor/list-test
 list_output=$("$REPO_ROOT/src-go/git-cross-go" list)
 if ! echo "$list_output" | grep -q "Configured Remotes"; then fail "Go list missing Remotes section"; fi
 if ! echo "$list_output" | grep -q "repo1"; then fail "Go list missing repo1 remote"; fi
+just cross remove vendor/list-test
 
 # 5. Test Crossfile deduplication (Go)
 echo "## Testing Crossfile deduplication (Go)..."

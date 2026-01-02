@@ -726,37 +726,70 @@ fn main() -> Result<()> {
             }
         }
         Commands::List => {
-            if let Ok(remotes) = run_cmd(&["git", "remote", "-v"]) {
-                if !remotes.is_empty() {
-                    log_info("Configured Remotes:");
-                    #[derive(Tabled)]
-                    struct RemoteRow {
-                        name: String,
-                        url: String,
-                        #[tabled(rename = "type")]
-                        rtype: String,
-                    }
-                    let rows: Vec<RemoteRow> = remotes
-                        .lines()
-                        .filter_map(|line| {
+            let metadata = load_metadata()?;
+
+            // Collect unique remote names from patches
+            let used_remotes: std::collections::HashSet<String> =
+                metadata.patches.iter().map(|p| p.remote.clone()).collect();
+
+            if !used_remotes.is_empty() {
+                if let Ok(remotes) = run_cmd(&["git", "remote", "-v"]) {
+                    if !remotes.is_empty() {
+                        log_info("Configured Remotes:");
+
+                        // Map to track fetch/push URLs per remote for deduplication
+                        let mut remote_map: std::collections::HashMap<String, (String, String)> =
+                            std::collections::HashMap::new();
+
+                        for line in remotes.lines() {
                             let fields: Vec<&str> = line.split_whitespace().collect();
                             if fields.len() >= 3 {
-                                Some(RemoteRow {
-                                    name: fields[0].to_string(),
-                                    url: fields[1].to_string(),
-                                    rtype: fields[2].to_string(),
-                                })
-                            } else {
-                                None
+                                let name = fields[0];
+                                let url = fields[1];
+                                let rtype = fields[2];
+
+                                if !used_remotes.contains(name) {
+                                    continue;
+                                }
+
+                                let entry = remote_map.entry(name.to_string()).or_insert_with(|| (String::new(), String::new()));
+                                if rtype.contains("fetch") {
+                                    entry.0 = url.to_string();
+                                } else if rtype.contains("push") {
+                                    entry.1 = url.to_string();
+                                }
                             }
-                        })
-                        .collect();
-                    println!("{}", Table::new(rows));
-                    println!();
+                        }
+
+                        #[derive(Tabled)]
+                        struct RemoteRow {
+                            name: String,
+                            url: String,
+                        }
+                        let mut rows: Vec<RemoteRow> = Vec::new();
+                        for (name, (fetch, push)) in &remote_map {
+                            if fetch == push || push.is_empty() {
+                                rows.push(RemoteRow {
+                                    name: name.clone(),
+                                    url: fetch.clone(),
+                                });
+                            } else {
+                                rows.push(RemoteRow {
+                                    name: name.clone(),
+                                    url: format!("{} (fetch)", fetch),
+                                });
+                                rows.push(RemoteRow {
+                                    name: name.clone(),
+                                    url: format!("{} (push)", push),
+                                });
+                            }
+                        }
+                        println!("{}", Table::new(rows));
+                        println!();
+                    }
                 }
             }
 
-            let metadata = load_metadata()?;
             if metadata.patches.is_empty() {
                 println!("No patches configured.");
             } else {

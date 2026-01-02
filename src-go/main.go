@@ -631,19 +631,59 @@ func main() {
 		Use:   "list",
 		Short: "Show all configured patches and remotes",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			meta, _ := loadMetadata()
+
+			// Collect unique remote names from patches
+			usedRemotes := make(map[string]bool)
+			for _, p := range meta.Patches {
+				usedRemotes[p.Remote] = true
+			}
+
 			repo, err := git.Open(".")
-			if err == nil {
+			if err == nil && len(usedRemotes) > 0 {
 				remotes, _ := git.NewCommand("remote", "-v").RunInDir(repo.Path())
 				if len(remotes) > 0 {
 					logInfo("Configured Remotes:")
 					remotesStr := strings.TrimSpace(string(remotes))
 					lines := strings.Split(remotesStr, "\n")
-					table := tablewriter.NewWriter(os.Stdout)
-					table.Header("NAME", "URL", "TYPE")
+
+					// Map to track fetch/push URLs per remote for deduplication
+					type remoteInfo struct {
+						fetch string
+						push  string
+					}
+					remoteMap := make(map[string]*remoteInfo)
+
 					for _, line := range lines {
 						fields := strings.Fields(line)
 						if len(fields) >= 3 {
-							table.Append(fields[0], fields[1], fields[2])
+							name := fields[0]
+							url := fields[1]
+							rtype := fields[2] // (fetch) or (push)
+
+							if !usedRemotes[name] {
+								continue
+							}
+
+							if remoteMap[name] == nil {
+								remoteMap[name] = &remoteInfo{}
+							}
+							if strings.Contains(rtype, "fetch") {
+								remoteMap[name].fetch = url
+							} else if strings.Contains(rtype, "push") {
+								remoteMap[name].push = url
+							}
+						}
+					}
+
+					table := tablewriter.NewWriter(os.Stdout)
+					table.Header("NAME", "URL")
+					for name, info := range remoteMap {
+						if info.fetch == info.push || info.push == "" {
+							table.Append(name, info.fetch)
+						} else {
+							table.Append(name, info.fetch+" (fetch)")
+							table.Append(name, info.push+" (push)")
 						}
 					}
 					table.Render()
@@ -651,7 +691,6 @@ func main() {
 				}
 			}
 
-			meta, _ := loadMetadata()
 			if len(meta.Patches) == 0 {
 				fmt.Println("No patches configured.")
 				return nil

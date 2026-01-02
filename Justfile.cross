@@ -490,10 +490,40 @@ push path="" branch="" force="false" yes="false" message="": check-initialized
 list: check-deps
     #!/usr/bin/env fish
     pushd "{{REPO_DIR}}" >/dev/null
-        if test -d .git
-            just cross _log info "Configured Remotes:"
-            git remote -v | awk '{printf "%-20s %-50s %s\n", $1, $2, $3}'
-            echo ""
+        if test -f .git/cross/metadata.json
+            # Get unique remotes used by patches
+            set used_remotes (jq -r '.patches[].remote' .git/cross/metadata.json | sort -u)
+            
+            if test (count $used_remotes) -gt 0
+                just cross _log info "Configured Remotes:"
+                printf "%-20s %s\n" "NAME" "URL"
+                printf "%s\n" (string repeat -n 70 "-")
+                
+                # Build grep pattern for used remotes
+                set pattern (string join "|" $used_remotes)
+                
+                # Get remotes, filter by used, deduplicate fetch/push
+                git remote -v | grep -E "^($pattern)\s" | awk '
+                    {
+                        name=$1; url=$2; type=$3
+                        if (!(name in seen)) {
+                            seen[name] = url
+                            types[name] = type
+                        } else if (seen[name] != url) {
+                            # Different fetch/push URLs
+                            printf "%-20s %s\n", name, seen[name] " " types[name]
+                            printf "%-20s %s\n", name, url " " type
+                            delete seen[name]
+                        }
+                    }
+                    END {
+                        for (name in seen) {
+                            printf "%-20s %s\n", name, seen[name]
+                        }
+                    }
+                '
+                echo ""
+            end
         end
 
         if not test -f Crossfile
