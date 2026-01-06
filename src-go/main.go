@@ -1136,7 +1136,145 @@ func main() {
 		},
 	}
 
-	rootCmd.AddCommand(useCmd, patchCmd, syncCmd, removeCmd, cdCmd, wtCmd, listCmd, statusCmd, diffCmd, replayCmd, pushCmd, execCmd, initCmd)
+	pruneCmd := &cobra.Command{
+		Use:   "prune [remote]",
+		Short: "Prune unused remotes and worktrees, or remove all patches for a specific remote",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			meta, _ := loadMetadata()
+
+			if len(args) == 1 {
+				// Prune specific remote: remove all its patches
+				remoteName := args[0]
+				logInfo(fmt.Sprintf("Pruning all patches for remote: %s...", remoteName))
+
+				// Find all patches for this remote
+				var patchesToRemove []string
+				for _, p := range meta.Patches {
+					if p.Remote == remoteName {
+						patchesToRemove = append(patchesToRemove, p.LocalPath)
+					}
+				}
+
+				if len(patchesToRemove) == 0 {
+					logInfo(fmt.Sprintf("No patches found for remote: %s", remoteName))
+				} else {
+					// Remove each patch
+					for _, patchPath := range patchesToRemove {
+						logInfo(fmt.Sprintf("Removing patch: %s", patchPath))
+						// Call remove logic directly
+						localPath := filepath.Clean(patchPath)
+						meta, _ := loadMetadata()
+						var patch *Patch
+						patchIdx := -1
+						for i, p := range meta.Patches {
+							if p.LocalPath == localPath {
+								patch = &meta.Patches[i]
+								patchIdx = i
+								break
+							}
+						}
+
+						if patch != nil {
+							// Remove worktree
+							if _, err := os.Stat(patch.Worktree); err == nil {
+								git.NewCommand("worktree", "remove", "--force", patch.Worktree).RunInDir(".")
+							}
+
+							// Remove from Crossfile
+							path, err := getCrossfilePath()
+							if err == nil {
+								data, err := os.ReadFile(path)
+								if err == nil {
+									lines := strings.Split(string(data), "\n")
+									var newLines []string
+									for _, line := range lines {
+										if !strings.Contains(line, "patch") || !strings.Contains(line, localPath) {
+											newLines = append(newLines, line)
+										}
+									}
+									os.WriteFile(path, []byte(strings.Join(newLines, "\n")), 0o644)
+								}
+							}
+
+							// Remove from metadata
+							meta.Patches = append(meta.Patches[:patchIdx], meta.Patches[patchIdx+1:]...)
+							saveMetadata(meta)
+
+							// Remove local directory
+							os.RemoveAll(localPath)
+						}
+					}
+				}
+
+				// Remove the remote itself
+				out, _ := git.NewCommand("remote").RunInDir(".")
+				remotes := strings.Split(strings.TrimSpace(string(out)), "\n")
+				for _, r := range remotes {
+					if strings.TrimSpace(r) == remoteName {
+						logInfo(fmt.Sprintf("Removing git remote: %s", remoteName))
+						git.NewCommand("remote", "remove", remoteName).RunInDir(".")
+						break
+					}
+				}
+
+				logSuccess(fmt.Sprintf("Remote %s and all its patches pruned successfully.", remoteName))
+			} else {
+				// Prune all unused remotes (no active patches)
+				logInfo("Finding unused remotes...")
+
+				// Get all remotes used by patches
+				usedRemotes := make(map[string]bool)
+				for _, p := range meta.Patches {
+					usedRemotes[p.Remote] = true
+				}
+
+				// Get all git remotes
+				out, _ := git.NewCommand("remote").RunInDir(".")
+				allRemotes := strings.Split(strings.TrimSpace(string(out)), "\n")
+
+				// Find unused remotes (excluding origin and git-cross)
+				var unusedRemotes []string
+				for _, remote := range allRemotes {
+					remote = strings.TrimSpace(remote)
+					if remote == "" || remote == "origin" || remote == "git-cross" {
+						continue
+					}
+					if !usedRemotes[remote] {
+						unusedRemotes = append(unusedRemotes, remote)
+					}
+				}
+
+				if len(unusedRemotes) == 0 {
+					logInfo("No unused remotes found.")
+				} else {
+					logInfo(fmt.Sprintf("Unused remotes: %s", strings.Join(unusedRemotes, ", ")))
+					fmt.Print("Remove these remotes? [y/N]: ")
+					var confirm string
+					fmt.Scanln(&confirm)
+
+					if confirm == "y" || confirm == "Y" {
+						for _, remote := range unusedRemotes {
+							logInfo(fmt.Sprintf("Removing remote: %s", remote))
+							git.NewCommand("remote", "remove", remote).RunInDir(".")
+						}
+						logSuccess("Unused remotes removed.")
+					} else {
+						logInfo("Pruning cancelled.")
+					}
+				}
+
+				// Always prune stale worktrees
+				logInfo("Pruning stale worktrees...")
+				git.NewCommand("worktree", "prune", "--verbose").RunInDir(".")
+				logSuccess("Worktree pruning complete.")
+			}
+
+			return nil
+		},
+	}
+
+	rootCmd.AddCommand(useCmd, patchCmd, syncCmd, removeCmd, pruneCmd, cdCmd, wtCmd, listCmd, statusCmd, diffCmd, replayCmd, pushCmd, execCmd, initCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

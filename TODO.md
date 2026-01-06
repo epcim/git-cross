@@ -38,9 +38,18 @@
 ## Future Enhancements / Backlog
 
 ### P1: High Priority
-- [ ] **Implement `cross prune [remote name]`** - Remove git remote registration from "cross use" command and ask user whether to remove all git remotes without active cross patches (like after: cross remove), then `git worktree prune` to remove all worktrees. Optional argument (a remote repo alias/name) would enforce removal of all its patches together with worktrees and remotes.
-  - **Effort:** 3-4 hours
-  - **Files:** `src-go/main.go`, `src-rust/`, `Justfile.cross`, `test/015_prune.sh`
+- [x] **Implement `cross prune [remote name]`** - Remove git remote registration from "cross use" command and ask user whether to remove all git remotes without active cross patches (like after: cross remove), then `git worktree prune` to remove all worktrees. Optional argument (a remote repo alias/name) would enforce removal of all its patches together with worktrees and remotes.
+  - **Effort:** 3-4 hours (completed 2025-01-06)
+  - **Files:** `src-go/main.go`, `src-rust/src/main.rs`, `Justfile.cross`, `test/015_prune.sh`
+  - **Implementation:**
+    - ✅ Justfile.cross (lines 230-303): Full interactive prune with confirmation
+    - ✅ Go (src-go/main.go): Cobra command with same logic
+    - ✅ Rust (src-rust/src/main.rs): Clap command with same logic
+    - ✅ Test coverage (test/015_prune.sh): 3 test scenarios
+  - **Behavior:**
+    - `cross prune`: Finds unused remotes, asks for confirmation, removes them, prunes stale worktrees
+    - `cross prune <remote>`: Removes all patches for that remote, then removes the remote itself
+  - **Status:** COMPLETE - Ready for v0.2.1 release
 
 ### P2: Lower Priority
 - [ ] **Refactor `cross cd`** - Target local patched folder and output path (no subshell), supporting fzf. Enable pattern: `cd $(cross cd <patch>)`

@@ -67,6 +67,11 @@ enum Commands {
         /// Local path of the patch to remove
         path: String,
     },
+    /// Prune unused remotes and worktrees, or remove all patches for a specific remote
+    Prune {
+        /// Optional remote name to prune all its patches
+        remote: Option<String>,
+    },
     /// Push changes back to upstream
     Push {
         #[arg(default_value = "")]
@@ -1075,6 +1080,116 @@ fn main() -> Result<()> {
             }
 
             log_success("Patch removed successfully.");
+        }
+        Commands::Prune { remote } => {
+            let mut metadata = load_metadata()?;
+            
+            if let Some(remote_name) = remote {
+                // Prune specific remote: remove all its patches
+                log_info(&format!("Pruning all patches for remote: {}...", remote_name));
+                
+                // Find all patches for this remote
+                let patches_to_remove: Vec<Patch> = metadata
+                    .patches
+                    .iter()
+                    .filter(|p| p.remote == *remote_name)
+                    .cloned()
+                    .collect();
+                
+                if patches_to_remove.is_empty() {
+                    log_info(&format!("No patches found for remote: {}", remote_name));
+                } else {
+                    // Remove each patch
+                    for patch in patches_to_remove {
+                        log_info(&format!("Removing patch: {}", patch.local_path));
+                        
+                        // Remove worktree
+                        if Path::new(&patch.worktree).exists() {
+                            let _ = run_cmd(&["git", "worktree", "remove", "--force", &patch.worktree]);
+                        }
+                        
+                        // Remove from Crossfile
+                        if let Ok(cross_path) = get_crossfile_path() {
+                            if let Ok(content) = fs::read_to_string(&cross_path) {
+                                let lines: Vec<String> = content
+                                    .lines()
+                                    .filter(|l| !l.contains("patch") || !l.contains(&patch.local_path))
+                                    .map(|l| l.to_string())
+                                    .collect();
+                                let mut new_content = lines.join("\n");
+                                if !new_content.is_empty() {
+                                    new_content.push('\n');
+                                }
+                                let _ = fs::write(&cross_path, new_content);
+                            }
+                        }
+                        
+                        // Remove from metadata
+                        metadata.patches.retain(|p| p.local_path != patch.local_path);
+                        
+                        // Remove local directory
+                        let _ = fs::remove_dir_all(&patch.local_path);
+                    }
+                    save_metadata(&metadata)?;
+                }
+                
+                // Remove the remote itself
+                if let Ok(remotes) = run_cmd(&["git", "remote"]) {
+                    if remotes.lines().any(|r| r.trim() == remote_name) {
+                        log_info(&format!("Removing git remote: {}", remote_name));
+                        let _ = run_cmd(&["git", "remote", "remove", remote_name]);
+                    }
+                }
+                
+                log_success(&format!("Remote {} and all its patches pruned successfully.", remote_name));
+            } else {
+                // Prune all unused remotes (no active patches)
+                log_info("Finding unused remotes...");
+                
+                // Get all remotes used by patches
+                let used_remotes: std::collections::HashSet<String> = 
+                    metadata.patches.iter().map(|p| p.remote.clone()).collect();
+                
+                // Get all git remotes
+                let all_remotes = run_cmd(&["git", "remote"])?;
+                let all_remotes: Vec<String> = all_remotes
+                    .lines()
+                    .map(|s| s.trim().to_string())
+                    .filter(|r| !r.is_empty() && r != "origin" && r != "git-cross")
+                    .collect();
+                
+                // Find unused remotes
+                let unused_remotes: Vec<String> = all_remotes
+                    .into_iter()
+                    .filter(|r| !used_remotes.contains(r))
+                    .collect();
+                
+                if unused_remotes.is_empty() {
+                    log_info("No unused remotes found.");
+                } else {
+                    log_info(&format!("Unused remotes: {}", unused_remotes.join(", ")));
+                    print!("Remove these remotes? [y/N]: ");
+                    std::io::stdout().flush()?;
+                    
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    
+                    if input.trim().to_lowercase() == "y" {
+                        for remote in unused_remotes {
+                            log_info(&format!("Removing remote: {}", remote));
+                            let _ = run_cmd(&["git", "remote", "remove", &remote]);
+                        }
+                        log_success("Unused remotes removed.");
+                    } else {
+                        log_info("Pruning cancelled.");
+                    }
+                }
+                
+                // Always prune stale worktrees
+                log_info("Pruning stale worktrees...");
+                let _ = run_cmd(&["git", "worktree", "prune", "--verbose"]);
+                log_success("Worktree pruning complete.");
+            }
         }
         Commands::Diff { path } => {
             let metadata = load_metadata()?;

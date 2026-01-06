@@ -227,6 +227,82 @@ remove path: check-deps
         just cross _log success "Patch removed successfully."
     popd
 
+# Prune unused remotes and worktrees, or remove all patches for a specific remote
+prune remote_name="": check-deps
+    #!/usr/bin/env fish
+    set remote "{{remote_name}}"
+    pushd "{{REPO_DIR}}"
+        if not test -f {{METADATA}}
+            just cross _log error "No metadata found."
+            exit 1
+        end
+
+        if test -n "$remote"
+            # Prune specific remote: remove all its patches
+            just cross _log info "Pruning all patches for remote: $remote..."
+            
+            # Get all patches for this remote
+            set patches (jq -r --arg remote "$remote" '.patches[] | select(.remote == $remote) | .local_path' {{METADATA}})
+            
+            if test -z "$patches"
+                just cross _log warn "No patches found for remote: $remote"
+            else
+                # Remove each patch
+                for patch_path in $patches
+                    just cross _log info "Removing patch: $patch_path"
+                    just cross remove "$patch_path"
+                end
+            end
+            
+            # Remove the remote itself
+            if git remote | grep -q "^$remote\$"
+                just cross _log info "Removing git remote: $remote"
+                git remote remove "$remote"
+            end
+            
+            just cross _log success "Remote $remote and all its patches pruned successfully."
+        else
+            # Prune all unused remotes (no active patches)
+            just cross _log info "Finding unused remotes..."
+            
+            # Get all remotes used by patches
+            set used_remotes (jq -r '.patches[].remote' {{METADATA}} | sort -u)
+            
+            # Get all git remotes (except origin and git-cross)
+            set all_remotes (git remote | grep -v "^origin\$" | grep -v "^git-cross\$")
+            
+            # Find unused remotes
+            set unused_remotes
+            for remote in $all_remotes
+                if not contains $remote $used_remotes
+                    set unused_remotes $unused_remotes $remote
+                end
+            end
+            
+            if test -z "$unused_remotes"
+                just cross _log info "No unused remotes found."
+            else
+                just cross _log info "Unused remotes: $unused_remotes"
+                read -P "Remove these remotes? [y/N]: " confirm
+                
+                if test "$confirm" = "y"; or test "$confirm" = "Y"
+                    for remote in $unused_remotes
+                        just cross _log info "Removing remote: $remote"
+                        git remote remove "$remote"
+                    end
+                    just cross _log success "Unused remotes removed."
+                else
+                    just cross _log info "Pruning cancelled."
+                end
+            end
+            
+            # Always prune stale worktrees
+            just cross _log info "Pruning stale worktrees..."
+            git worktree prune --verbose
+            just cross _log success "Worktree pruning complete."
+        end
+    popd
+
 # AICONTEXT: "patch" will do sparse checkout of specified branch of remote repository into local path. "remote_spec" is in format "remote_name:branch", where "branch" is optional. local_path is the same are remote_path if not provided. Command shall firs use `git ls-remote --heads ` to identify whether remote is having main or master as default branch if not provided - no more evaluation needed, simply grep "refs/heads" with regexp. Tool shall configure sparse checkout and use `git worktree add` and use `".git/cross/worktrees/$remote"_"$hash"` as working directory. Hash shall be short, but shall be created from path and branch name and humans shall ideally read it. checkout either only need maximum of 1 git history (last commmit version). When the checkout is done, "sync" target is called, to sync just this specific "patch" git worktree into main repository to local_path. Then a placeholder is required for post_sync_hook function to run. Finally call `git add` on local_path in top level repo.
 # AICONTEXT: for implementation, use "fish" keep it simple, shell comamnds shall be readable. Ideally keep bellow 30 lines. User interaction shall be kept minimal. Debug statements are not needed. Document in comments major logical blocks.
 # Patch a directory from a remote into a local path
