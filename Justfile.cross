@@ -431,7 +431,31 @@ sync *path="": check-initialized
         # 4. Sync back to local - ensure directory exists
         just cross _log info "Syncing back to $local_path..."
         mkdir -p $local_path
+        
+        # 4.1. Remove files from local_path that don't exist in worktree
         pushd $worktree/$remote_path
+          # Get list of tracked files in worktree
+          set worktree_files (git ls-files .)
+          
+          # Create temp file with worktree files list
+          set temp_list (mktemp)
+          echo "$worktree_files" > $temp_list
+          
+          # Find files in local_path that should be deleted
+          if test -d {{REPO_DIR}}/$local_path
+            for local_file in (find {{REPO_DIR}}/$local_path -type f -not -path '*/\.git/*')
+              set rel_file (realpath --relative-to={{REPO_DIR}}/$local_path $local_file 2>/dev/null || echo $local_file)
+              # Check if this file exists in worktree
+              if not grep -qF "$rel_file" $temp_list 2>/dev/null
+                just cross _log info "Removing deleted file: $rel_file"
+                rm -f $local_file
+              end
+            end
+          end
+          
+          rm -f $temp_list
+          
+          # 4.2. Rsync tracked files from worktree to local
           git ls-files . -z | rsync -0 --files-from=- -av --relative --exclude .git {{REPO_DIR}}/$worktree/$remote_path {{REPO_DIR}}/$local_path 
         popd
 
