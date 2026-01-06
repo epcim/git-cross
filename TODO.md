@@ -63,23 +63,36 @@
 **Fix Applied (2025-01-06):**
 - ✅ Go implementation (`src-go/main.go`): Added complete stash/restore workflow
 - ✅ Rust implementation (`src-rust/src/main.rs`): Added complete stash/restore workflow  
-- ✅ Justfile implementation (`Justfile.cross`): Added explicit stash/restore workflow
+- ✅ Justfile implementation (`Justfile.cross`): Added explicit stash/restore workflow with file deletion detection
 - ✅ Test coverage enhanced (`test/004_sync.sh`): 6 comprehensive test scenarios
+- ✅ Added cleanup logic between tests to handle conflicted worktree states
+- ✅ Added file deletion detection: removes local files that were deleted upstream
 
 **Workflow Now:**
 ```
-1. Detect and stash uncommitted changes in local_path
-2. Rsync git-tracked files: local_path → worktree
-3. Commit changes in worktree
-4. Pull --rebase from upstream
-5. Handle conflicts (exit if detected)
-6. Rsync worktree → local_path
-7. Restore stashed changes
-8. Detect and report merge conflicts
+1. Detect uncommitted changes (including untracked files) in local_path
+2. Rsync git-tracked files WITH current uncommitted content: local_path → worktree
+3. Stash uncommitted changes in local_path (with --include-untracked)
+4. Commit changes in worktree
+5. Check worktree state (recover from detached HEAD, abort in-progress operations)
+6. Pull --rebase from upstream
+7. Handle conflicts (exit if detected)
+8. Detect and remove local files that were deleted upstream
+9. Rsync worktree → local_path
+10. Restore stashed changes
+11. Detect and report merge conflicts
 ```
 
-**Testing:** Run `./test/004_sync.sh` to validate all scenarios
-**Impact:** Data loss risk eliminated  
+**Test Scenarios Covered:**
+1. ✅ Basic sync with no local changes
+2. ✅ Sync with uncommitted local changes (preserves them)
+3. ✅ Sync with committed local changes
+4. ✅ Sync with conflicting changes (graceful failure)
+5. ✅ Sync with deleted upstream file (removes locally)
+6. ✅ Sync with new upstream file (adds locally)
+
+**Testing:** Run `just cross-test 004` to validate all scenarios  
+**Impact:** Data loss risk eliminated, file synchronization complete  
 **Status:** FIXED - Ready for v0.2.1 release
 - [x] Updates to Crossfile can create duplicit lines (especially if user add spaces between remote_spec and local_spec.) Ideally we shall only check whether the local/path is already specified, and if yes then avoid update and avoid patch (as path exist.)
 - [x] Extend the tests, start using <https://github.com/runtipi/runtipi-appstore/> and sub-path apps/ for "patches". Document this in test-case design.
