@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/epcim/git-cross/workflows/CI/badge.svg)](https://github.com/epcim/git-cross/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](https://github.com/epcim/git-cross/blob/main/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.2.1-blue.svg)](https://github.com/epcim/git-cross/blob/main/CHANGELOG.md)
 
 **Git's CRISPR.** Minimalist approach for mixing "parts" of git repositories using `git worktree` + `rsync`.
 

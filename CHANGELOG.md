@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-01-06
+
+### Added
+- **`prune` command** - Clean up unused remotes and stale worktrees
+  - `cross prune`: Interactive removal of remotes with no active patches
+  - `cross prune <remote>`: Remove all patches for a specific remote
+  - Excludes 'origin' and 'git-cross' from cleanup
+  - Runs `git worktree prune` to clean stale worktrees
+  - Implemented across all three implementations (Just, Go, Rust)
+  - Full test coverage in `test/015_prune.sh`
+
+### Fixed
+- **Sync command file deletion logic** - Only delete tracked files removed upstream
+  - Previously would delete ALL files including user's untracked customizations
+  - Now uses `git ls-files` to only check tracked files
+  - Preserves untracked local files (config files, notes, etc.)
+  - Fixes data loss risk for local customizations in patched directories
+- **Sync command data preservation** - Complete stash/restore workflow
+  - Preserves uncommitted changes during sync operations
+  - Handles untracked files properly with `--include-untracked`
+  - Detects and removes files deleted upstream
+  - Graceful conflict handling with user feedback
+
+### Changed
+- **Agent guidelines** - Added critical implementation requirements in AGENTS.md
+  - All three implementations must be updated together
+  - No partial commits allowed
+  - Test coverage required for all features
+  - Command parity must be maintained
+
+### Testing
+- Enhanced `test/004_sync.sh` with 6 comprehensive scenarios
+- Added `test/015_prune.sh` with 3 test scenarios
+- All tests pass for Just, Go, and Rust implementations
+
 ## [0.2.0] - 2025-12-01
 
 ### Added

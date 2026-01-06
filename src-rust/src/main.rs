@@ -10,7 +10,7 @@ use tabled::{Table, Tabled};
 
 #[derive(Parser)]
 #[command(name = "git-cross-rust")]
-#[command(version = "0.1.0")]
+#[command(version = "0.2.1")]
 #[command(
     about = "A tool for vendoring git directories using worktrees [EXPERIMENTAL/WIP]",
     long_about = "Note: The Rust implementation of git-cross is currently EXPERIMENTAL and WORK IN PROGRESS. The Go implementation is the primary focus and recommended for production use."

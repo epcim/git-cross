@@ -364,7 +364,10 @@ func selectPatchInteractive(meta *Metadata) (*Patch, error) {
 
 func main() {
 	var dry string
-	rootCmd := &cobra.Command{Use: "git-cross"}
+	rootCmd := &cobra.Command{
+		Use:     "git-cross",
+		Version: "0.2.1",
+	}
 	rootCmd.PersistentFlags().StringVar(&dry, "dry", "", "Dry run command (e.g. echo)")
 
 	useCmd := &cobra.Command{

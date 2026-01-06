@@ -2,9 +2,9 @@
 
 ## Summary
 
-**Status:** v0.2.0 released with feature parity across implementations  
-**Critical Issues:** 1 (sync data loss)  
-**Pending Enhancements:** 4 (prune, cd, single-file patch, fzf improvements)
+**Status:** v0.2.1 released with prune command and sync fixes  
+**Critical Issues:** 0 (all P0 issues resolved)  
+**Pending Enhancements:** 3 (cd refactor, single-file patch, fzf improvements)
 
 ## Core Implementation Status
 
@@ -60,6 +60,71 @@
   
 - [ ] **Improve interactive `fzf` selection** in native implementations - Better UI, preview panes, multi-select for batch operations.
   - **Effort:** 3-5 hours
+
+### P3: Low Priority (UX Improvements)
+
+- [ ] **Context-aware `cross diff` command** - Smart diff behavior based on current working directory
+  - **Issue:** Currently `cross diff` shows diffs for ALL patches regardless of PWD
+  - **Desired Behavior:**
+    - When executed inside a patched local_path: Show diff only for that specific patch
+    - When executed outside any patch (anywhere in repo): Show diffs for all patches
+    - When given explicit path argument: Show diff for that specific patch with informative header
+  - **Effort:** 4-6 hours (includes complexity analysis and implementation)
+  - **Files:** `Justfile.cross`, `src-go/main.go`, `src-rust/src/main.rs`, `test/016_diff_context.sh`
+  - **Complexity Analysis Required:**
+    - **Current Implementation:**
+      - Justfile: Uses `_resolve_context2` to resolve patch from path/PWD (lines 578-592)
+      - Go: Iterates all patches, filters by explicit path arg only (lines 880-911)
+      - Rust: Same as Go - no PWD detection (lines 1194-1214)
+    - **Required Changes:**
+      - **Low complexity** for Justfile (already has PWD resolution via `_resolve_context2`)
+      - **Medium complexity** for Go/Rust (need to add PWD detection logic)
+      - Need to add: Get PWD → Check if inside patch → Filter patches accordingly
+    - **Implementation Strategy:**
+      1. Detect current working directory relative to repo root
+      2. Check if CWD is within any patch's local_path
+      3. Filter patches based on context:
+         - If inside patch + no explicit arg → show only that patch
+         - If outside patches + no explicit arg → show all patches
+         - If explicit arg provided → show only that patch (current behavior)
+      4. Add informative header: "Diff for patch: {local_path}" when contextual
+    - **Impact Assessment:**
+      - **User Experience:** HIGH - More intuitive, reduces noise
+      - **Breaking Changes:** NONE - Backwards compatible (explicit args work same)
+      - **Code Complexity:** LOW to MEDIUM
+        - Justfile: ~10-15 lines (reuse existing `_resolve_context2`)
+        - Go: ~20-30 lines (add `getCurrentPath()` helper)
+        - Rust: ~20-30 lines (add `get_current_path()` helper)
+      - **Testing:** MEDIUM - Need scenarios for:
+        1. Diff from inside patch (should show only that patch)
+        2. Diff from outside patches (should show all)
+        3. Diff with explicit arg (should show specified patch)
+        4. Diff from nested subdirectory within patch (should resolve parent patch)
+    - **Edge Cases:**
+      - CWD inside nested subdirectory of patch (needs parent resolution)
+      - Multiple patches in nested directories (resolve closest parent)
+      - Symlinked directories (should follow symlinks)
+  - **Priority Rationale:** Low priority - UX improvement, not a bug
+  - **Status:** Documented for future implementation
+
+- [ ] **Add `cross cd` to local_path capability** - Currently only changes to worktree
+  - **Issue:** `cross cd` currently opens a shell in the WORKTREE (hidden `.git/cross/worktrees/`)
+  - **Desired Behavior:**
+    - Provide ability to change directory to LOCAL_PATH (the actual patched directory in main repo)
+    - Options:
+      1. Add `--local` flag: `cross cd --local [patch]` → changes to local_path
+      2. Add separate command: `cross path [patch]` → outputs local_path for use with shell `cd $(cross path patch)`
+      3. Make `cd` default to local_path, add `--worktree` flag for old behavior
+  - **Current Implementation:**
+    - Justfile (lines 761-797): `cd` target opens shell in worktree directory
+    - Go (lines 681-730): Same behavior - opens shell in worktree
+    - Rust: Similar behavior
+  - **Effort:** 2-3 hours
+  - **Files:** `Justfile.cross`, `src-go/main.go`, `src-rust/src/main.rs`, `test/017_cd_local.sh`
+  - **Complexity:** LOW - Just need to add path resolution and output logic
+  - **Impact:** MEDIUM - Improves workflow for users editing patched files
+  - **Priority Rationale:** Low priority - workaround exists (manually navigate to patch), but UX improvement
+  - **Status:** Not yet implemented, documented for future consideration
 
 ### Completed Enhancements
 
