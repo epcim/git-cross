@@ -324,7 +324,7 @@ patch remote_spec local_path="": check-deps
     cd {{REPO_DIR}} && test -d {{CROSSDIR}}/worktrees && test -f {{METADATA}} \
         || { just cross _log warn "No patches to sync"; exit 0; }
 
-# AICONTEXT: "sync" will sync all or the provided local_path with upstream. Two modes, implemented as sub-sync commands to keep them short. First identify whether local_path has changes. stash them first. Then take the local_path, rsync it to .git/cross/workingtree/ tracking directory. Autogenerate an commit based on git logs for local_path for given range. Commit. Git pull -r from upstream. If coonflicts, cd to $wt and let user to resolve. If not then rsycn WT to local_path, and unstash. Second mode is assumes there are no changes in local_path, so update from remote can happen any time, still some conflict shall happen and user must resolve, so the local_path is still copied to WT before upstream pull -r.
+# AICONTEXT: "sync" will sync all or the provided local_path with upstream. Workflow: 1. Stash uncommitted changes in local_path. 2. Rsync git-tracked files from local_path to worktree. 3. Commit changes in worktree. 4. Pull rebase from upstream. 5. If conflicts, exit and ask user to resolve. 6. Rsync worktree back to local_path. 7. Restore stashed changes. 8. Check for conflicts in restored changes.
 # Sync all patches from upstream
 [no-cd]
 sync *path="": check-initialized
@@ -336,14 +336,40 @@ sync *path="": check-initialized
     pushd "{{REPO_DIR}}"
         just cross _log info "Syncing $local_path with $worktree..."
         
-        # 1. Check for local changes in local_path vs worktree
+        # 0. Ensure local_path exists
+        mkdir -p $local_path
+        
+        # 0.5. Check for uncommitted changes in local_path (detect but don't stash yet)
+        set stashed false
+        set has_changes (git status --porcelain $local_path 2>/dev/null | wc -l | tr -d ' ')
+        if test "$has_changes" -gt 0
+            just cross _log info "Detected uncommitted changes in $local_path..."
+            set stashed true
+        end
+        
+        # 1. Rsync current state (including uncommitted) from local_path to worktree
         # AICONTEXT: the rsync need to sync only git tracked files in $local_path to $worktree/$remote_path
-        pushd $local_path
-          git ls-files . -z | rsync -0 --files-from=- -av --relative --exclude .git {{REPO_DIR}}/$local_path {{REPO_DIR}}/$worktree/$remote_path
-          # FIXME: shall we either use --delete?
-        popd 
+        just cross _log info "Syncing local changes to worktree..."
+        if test -d $local_path
+            pushd $local_path
+              # Get tracked files (includes files with uncommitted changes)
+              set tracked (git ls-files .)
+              if test -n "$tracked"
+                  # Rsync tracked files (with their current content, including uncommitted changes)
+                  git ls-files . -z | rsync -0 --files-from=- -av --relative --exclude .git {{REPO_DIR}}/$local_path {{REPO_DIR}}/$worktree/$remote_path
+              end
+            popd
+        end
+        
+        # 1.5. NOW stash uncommitted changes (after copying them to worktree)
+        if test "$stashed" = "true"
+            just cross _log info "Stashing uncommitted changes in $local_path..."
+            # Stash including untracked files, only in local_path
+            git stash push --include-untracked -m "cross-sync-auto-stash: $local_path" -- $local_path
+        end
+ 
 
-        # 2. Commit local changes in WT
+        # 2. Commit local changes in worktree
         set dirty (git -C $worktree status --porcelain)
         if test -n "$dirty"
             just cross _log info "Committing local changes in $worktree..."
@@ -351,20 +377,88 @@ sync *path="": check-initialized
             git -C $worktree commit -m "Sync local changes"
         end
         
+        # 2.5. Check if worktree is in a good state (not detached HEAD, not mid-rebase)
+        pushd $worktree
+            # Check for ongoing rebase/merge FIRST (before anything else)
+            # For worktrees, rebase-merge can be in multiple locations
+            set worktree_name (basename $worktree)
+            set rebase_dirs .git/rebase-merge .git/rebase-apply {{REPO_DIR}}/.git/worktrees/$worktree_name/rebase-merge {{REPO_DIR}}/.git/worktrees/$worktree_name/rebase-apply
+            
+            set needs_cleanup false
+            for dir in $rebase_dirs
+                if test -d $dir
+                    set needs_cleanup true
+                    break
+                end
+            end
+            
+            if test "$needs_cleanup" = "true"
+                just cross _log warn "Worktree has an in-progress operation. Cleaning up..."
+                git rebase --abort 2>/dev/null || true
+                git merge --abort 2>/dev/null || true
+                # Force remove all possible rebase dirs
+                for dir in $rebase_dirs
+                    rm -rf $dir 2>/dev/null || true
+                end
+            end
+            
+            # Check for detached HEAD
+            if not git symbolic-ref -q HEAD >/dev/null 2>&1
+                just cross _log warn "Worktree is in detached HEAD state. Attempting to recover..."
+                # Find the worktree's branch name
+                set branch_name (git for-each-ref --format='%(refname:short)' refs/heads/ | grep -E 'cross/' | head -1)
+                if test -n "$branch_name"
+                    just cross _log info "Checking out branch: $branch_name"
+                    git checkout -B $branch_name 2>/dev/null || true
+                    # Reset to clean state
+                    git fetch $remote 2>/dev/null || true
+                    git reset --hard $remote/$remote_branch 2>/dev/null || true
+                end
+            end
+        popd
+        
         # 3. Pull rebase from upstream
         just cross _log info "Pulling from upstream..."
         if not git -C $worktree pull --rebase
             just cross _log error "Conflict detected in $worktree. Please resolve manually."
-            just cross _log info "cd $$worktree"
+            just cross _log info "cd $worktree"
+            if test "$stashed" = "true"
+                just cross _log warn "Note: Local changes are stashed. Run 'git stash pop' in $local_path after resolving."
+            end
             exit 1
         end
         
-        # 4. Sync back to local
+        # 4. Sync back to local - ensure directory exists
         just cross _log info "Syncing back to $local_path..."
+        mkdir -p $local_path
         pushd $worktree/$remote_path
           git ls-files . -z | rsync -0 --files-from=- -av --relative --exclude .git {{REPO_DIR}}/$worktree/$remote_path {{REPO_DIR}}/$local_path 
         popd
 
+        # 5. Restore stashed changes if they exist
+        if test "$stashed" = "true"
+            just cross _log info "Restoring stashed local changes..."
+            # First, add any new files that came from worktree sync
+            git add $local_path 2>/dev/null || true
+            # Now try to pop the stash (might have conflicts if same files were modified upstream)
+            if git stash pop
+                # Success - check for conflicts
+                set conflicts (git diff --name-only --diff-filter=U -- $local_path 2>/dev/null | wc -l | tr -d ' ')
+                if test "$conflicts" -gt 0
+                    just cross _log error "Conflicts detected after restoring local changes in $local_path:"
+                    git diff --name-only --diff-filter=U -- $local_path
+                    just cross _log info "Resolve conflicts, then run 'git add' and continue."
+                end
+            else
+                # Stash pop failed - likely due to conflicts
+                just cross _log warn "Could not automatically restore stashed changes."
+                just cross _log info "Your changes are preserved in the stash."
+                just cross _log info "Run 'git stash list' to see them, 'git stash show' to view, 'git stash pop' to retry."
+                just cross _log info "Or run 'git stash drop' if you want to discard them."
+            end
+        end
+
+        just cross _log success "Sync completed for $local_path"
     popd  
         
 

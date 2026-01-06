@@ -1,5 +1,11 @@
 # TODO - git-cross
 
+## Summary
+
+**Status:** v0.2.0 released with feature parity across implementations  
+**Critical Issues:** 1 (sync data loss)  
+**Pending Enhancements:** 4 (prune, cd, single-file patch, fzf improvements)
+
 ## Core Implementation Status
 
 - [x] Go Implementation (Primary) - Feature parity achieved.
@@ -31,16 +37,50 @@
 
 ## Future Enhancements / Backlog
 
-- [x] `cross list` comand shall either print all cross remote repositories (REMOTE (alias), GIT URL) in separate table above the table with patches. Or directly inline with each patch.
-- [x] Implement `cross remove` patch, to remove local_pathch patch and it's worktree. Finally clean up the Metadata an Crossfile. Once physically removed, `git worktree prune` will clenaup git itself.
-- [ ] Implement `cross prune [remote name]` to remove git remote repo registration from "cross use" command and ask user whether either remove all git remotes without active cross patches (like after: cross remove), then `git worktree prune` to remove all worktrees. optional argument (an remote repo alias/name would enforce either removal of all it's patches altogther with worktrees and remotes)
-- [x] Re-implement `wt` (worktree) command in Go and Rust with full test coverage (align logic with Justfile).
-- [ ] Refactor `cross cd` to target local patched folder and output path (no subshell), supporting fzf.
-- [ ] Review and propose implementation (tool and test) to be able patch even single file. If not easily possible without major refactoring, then evaluate new command "patch-file".
-- [ ] Improve interactive `fzf` selection in native implementations.
+### P1: High Priority
+- [ ] **Implement `cross prune [remote name]`** - Remove git remote registration from "cross use" command and ask user whether to remove all git remotes without active cross patches (like after: cross remove), then `git worktree prune` to remove all worktrees. Optional argument (a remote repo alias/name) would enforce removal of all its patches together with worktrees and remotes.
+  - **Effort:** 3-4 hours
+  - **Files:** `src-go/main.go`, `src-rust/`, `Justfile.cross`, `test/015_prune.sh`
+
+### P2: Lower Priority
+- [ ] **Refactor `cross cd`** - Target local patched folder and output path (no subshell), supporting fzf. Enable pattern: `cd $(cross cd <patch>)`
+  - **Effort:** 2-3 hours
+  
+- [ ] **Single file patch capability** - Review and propose implementation (tool and test) to be able to patch even single file. If not easily possible without major refactoring, evaluate new command "patch-file".
+  - **Effort:** 4-6 hours (includes research)
+  
+- [ ] **Improve interactive `fzf` selection** in native implementations - Better UI, preview panes, multi-select for batch operations.
+  - **Effort:** 3-5 hours
+
+### Completed Enhancements
 
 ## Known Issues (To FIX)
 
+### ✅ P0: Sync Command Data Loss (FIXED)
+
+- [x] **Issue:** The `cross sync` command in Go (and Rust) did not preserve local uncommitted changes. When users modified files in patched directory and ran sync, changes were lost/reverted.
+
+**Fix Applied (2025-01-06):**
+- ✅ Go implementation (`src-go/main.go`): Added complete stash/restore workflow
+- ✅ Rust implementation (`src-rust/src/main.rs`): Added complete stash/restore workflow  
+- ✅ Justfile implementation (`Justfile.cross`): Added explicit stash/restore workflow
+- ✅ Test coverage enhanced (`test/004_sync.sh`): 6 comprehensive test scenarios
+
+**Workflow Now:**
+```
+1. Detect and stash uncommitted changes in local_path
+2. Rsync git-tracked files: local_path → worktree
+3. Commit changes in worktree
+4. Pull --rebase from upstream
+5. Handle conflicts (exit if detected)
+6. Rsync worktree → local_path
+7. Restore stashed changes
+8. Detect and report merge conflicts
+```
+
+**Testing:** Run `./test/004_sync.sh` to validate all scenarios
+**Impact:** Data loss risk eliminated  
+**Status:** FIXED - Ready for v0.2.1 release
 - [x] Updates to Crossfile can create duplicit lines (especially if user add spaces between remote_spec and local_spec.) Ideally we shall only check whether the local/path is already specified, and if yes then avoid update and avoid patch (as path exist.)
 - [x] Extend the tests, start using <https://github.com/runtipi/runtipi-appstore/> and sub-path apps/ for "patches". Document this in test-case design.
 - [x] Looks like the worktree created dont have any more "sparse checkout". Extend the validation, ie: that no other top-level files present in checkouts (assuming sub-path is used on remote repo)

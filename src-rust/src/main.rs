@@ -607,6 +607,9 @@ fn main() -> Result<()> {
         }
         Commands::Sync { path } => {
             let metadata = load_metadata()?;
+            let repo_root = run_cmd(&["git", "rev-parse", "--show-toplevel"])?;
+            let repo_root = repo_root.trim();
+
             let patches_to_sync = if path.is_empty() {
                 metadata.patches.clone()
             } else {
@@ -634,7 +637,79 @@ fn main() -> Result<()> {
                     continue;
                 }
 
-                run_cmd(&[
+                let local_abs_path = format!("{}/{}", repo_root, patch.local_path);
+
+                // Step 1: Check for uncommitted changes and stash if needed
+                let mut stashed = false;
+                match run_cmd(&["git", "-C", &local_abs_path, "status", "--porcelain"]) {
+                    Ok(status) if !status.trim().is_empty() => {
+                        log_info("Stashing uncommitted changes...");
+                        if let Err(e) = run_cmd(&[
+                            "git",
+                            "-C",
+                            &local_abs_path,
+                            "stash",
+                            "push",
+                            "-m",
+                            "cross-sync-auto-stash",
+                        ]) {
+                            log_error(&format!("Failed to stash changes: {}", e));
+                            continue;
+                        }
+                        stashed = true;
+                    }
+                    _ => {}
+                }
+
+                // Step 2: Rsync git-tracked files from local_path to worktree
+                log_info("Syncing local changes to worktree...");
+                let git_files = run_cmd(&["git", "-C", &local_abs_path, "ls-files", "-z"]);
+                if let Ok(files) = git_files {
+                    if !files.trim().is_empty() {
+                        let wt_remote_path = format!("{}/{}", patch.worktree, patch.remote_path);
+                        let rsync_result = duct::cmd!(
+                            "rsync",
+                            "-av0",
+                            "--files-from=-",
+                            "--relative",
+                            "--exclude",
+                            ".git",
+                            &format!("{}/", local_abs_path),
+                            &format!("{}/", wt_remote_path)
+                        )
+                        .stdin_bytes(files.as_bytes())
+                        .run();
+
+                        if let Err(e) = rsync_result {
+                            log_error(&format!("Failed to rsync local to worktree: {}", e));
+                            if stashed {
+                                let _ = run_cmd(&["git", "-C", &local_abs_path, "stash", "pop"]);
+                            }
+                            continue;
+                        }
+                    }
+                }
+
+                // Step 3: Commit local changes in worktree
+                match run_cmd(&["git", "-C", &patch.worktree, "status", "--porcelain"]) {
+                    Ok(wt_status) if !wt_status.trim().is_empty() => {
+                        log_info("Committing local changes in worktree...");
+                        let _ = run_cmd(&["git", "-C", &patch.worktree, "add", "."]);
+                        let _ = run_cmd(&[
+                            "git",
+                            "-C",
+                            &patch.worktree,
+                            "commit",
+                            "-m",
+                            "Sync local changes",
+                        ]);
+                    }
+                    _ => {}
+                }
+
+                // Step 4: Pull rebase from upstream
+                log_info("Pulling updates from upstream...");
+                if let Err(e) = run_cmd(&[
                     "git",
                     "-C",
                     &patch.worktree,
@@ -642,14 +717,56 @@ fn main() -> Result<()> {
                     "--rebase",
                     &patch.remote,
                     &patch.branch,
-                ])?;
+                ]) {
+                    log_error(&format!("Failed to pull: {}", e));
+                    log_error("Please resolve conflicts manually in worktree:");
+                    log_error(&format!("  cd {}", patch.worktree));
+                    if stashed {
+                        log_info("Note: Local changes are stashed. Run 'git stash pop' in local_path after resolving.");
+                    }
+                    continue;
+                }
 
+                // Step 5: Rsync worktree back to local_path
                 log_info(&format!("Syncing files to {}...", patch.local_path));
                 let src = format!("{}/{}/", patch.worktree, patch.remote_path);
                 let dst = format!("{}/", patch.local_path);
-                run_cmd(&["rsync", "-av", "--delete", "--exclude", ".git", &src, &dst])?;
+                if let Err(e) = run_cmd(&["rsync", "-av", "--delete", "--exclude", ".git", &src, &dst]) {
+                    log_error(&format!("Failed to sync files: {}", e));
+                    if stashed {
+                        let _ = run_cmd(&["git", "-C", &local_abs_path, "stash", "pop"]);
+                    }
+                    continue;
+                }
+
+                // Step 6: Restore stashed changes
+                if stashed {
+                    log_info("Restoring stashed local changes...");
+                    if let Err(e) = run_cmd(&["git", "-C", &local_abs_path, "stash", "pop"]) {
+                        log_error("Failed to restore stashed changes. Conflicts may exist.");
+                        log_error(&format!("Resolve manually in: {}", patch.local_path));
+                        log_info("Run 'git status' to see conflicts, then 'git stash drop' when resolved.");
+                    } else {
+                        // Check for conflicts after pop
+                        if let Ok(conflicts) = run_cmd(&[
+                            "git",
+                            "-C",
+                            &local_abs_path,
+                            "diff",
+                            "--name-only",
+                            "--diff-filter=U",
+                        ]) {
+                            if !conflicts.trim().is_empty() {
+                                log_error("Conflicts detected after restoring local changes:");
+                                println!("{}", conflicts);
+                                log_info("Resolve conflicts, then run 'git add' and continue.");
+                            }
+                        }
+                    }
+                }
+
+                log_success(&format!("Sync completed for {}", patch.local_path));
             }
-            log_success("Sync completed.");
         }
         Commands::Cd { path } | Commands::Wt { path } => {
             let metadata = load_metadata()?;

@@ -524,32 +524,121 @@ func main() {
 				path = args[0]
 			}
 			meta, _ := loadMetadata()
+			root, err := getRepoRoot()
+			if err != nil {
+				return err
+			}
+
 			for _, p := range meta.Patches {
 				if path != "" && p.LocalPath != path {
 					continue
 				}
 				logInfo(fmt.Sprintf("Syncing %s...", p.LocalPath))
 
-				wtRepo, err := git.Open(p.Worktree)
+				localAbsPath := filepath.Join(root, p.LocalPath)
+
+				// Step 1: Check for uncommitted changes in local_path
+				stashed := false
+				checkCmd := exec.Command("git", "-C", localAbsPath, "status", "--porcelain")
+				if statusOut, err := checkCmd.Output(); err == nil && len(statusOut) > 0 {
+					logInfo("Stashing local uncommitted changes...")
+					stashCmd := exec.Command("git", "-C", localAbsPath, "stash", "push", "-m", "cross-sync-auto-stash")
+					if err := stashCmd.Run(); err != nil {
+						logError(fmt.Sprintf("Failed to stash changes in %s: %v", p.LocalPath, err))
+						continue
+					}
+					stashed = true
+				}
+
+				// Step 2: Rsync git-tracked files from local_path → worktree
+				logInfo(fmt.Sprintf("Syncing local changes to worktree %s...", p.Worktree))
+				lsFilesCmd := exec.Command("git", "-C", localAbsPath, "ls-files", "-z")
+				filesOut, err := lsFilesCmd.Output()
 				if err != nil {
-					logError(fmt.Sprintf("Failed to open worktree %s: %v", p.Worktree, err))
+					logError(fmt.Sprintf("Failed to list git files in %s: %v", p.LocalPath, err))
+					if stashed {
+						exec.Command("git", "-C", localAbsPath, "stash", "pop").Run()
+					}
 					continue
 				}
 
+				if len(filesOut) > 0 {
+					rsyncCmd := exec.Command("rsync", "-av0", "--files-from=-", "--relative", "--exclude", ".git",
+						localAbsPath+"/", filepath.Join(p.Worktree, p.RemotePath)+"/")
+					rsyncCmd.Stdin = strings.NewReader(string(filesOut))
+					if err := rsyncCmd.Run(); err != nil {
+						logError(fmt.Sprintf("Failed to rsync local to worktree: %v", err))
+						if stashed {
+							exec.Command("git", "-C", localAbsPath, "stash", "pop").Run()
+						}
+						continue
+					}
+				}
+
+				// Step 3: Commit local changes in worktree
+				wtRepo, err := git.Open(p.Worktree)
+				if err != nil {
+					logError(fmt.Sprintf("Failed to open worktree %s: %v", p.Worktree, err))
+					if stashed {
+						exec.Command("git", "-C", localAbsPath, "stash", "pop").Run()
+					}
+					continue
+				}
+
+				statusCmd := git.NewCommand("status", "--porcelain")
+				if wtStatus, err := statusCmd.RunInDir(p.Worktree); err == nil && len(wtStatus) > 0 {
+					logInfo("Committing local changes in worktree...")
+					git.NewCommand("add", ".").RunInDir(p.Worktree)
+					git.NewCommand("commit", "-m", "Sync local changes").RunInDir(p.Worktree)
+				}
+
+				// Step 4: Pull rebase from upstream
+				logInfo("Pulling updates from upstream...")
 				if err := wtRepo.Pull(git.PullOptions{
 					Remote: p.Remote,
 					Branch: p.Branch,
 					Rebase: true,
 				}); err != nil {
 					logError(fmt.Sprintf("Failed to pull for %s: %v", p.LocalPath, err))
+					logError("Please resolve conflicts manually in worktree:")
+					logError(fmt.Sprintf("  cd %s", p.Worktree))
+					if stashed {
+						logInfo("Note: Local changes are stashed. Run 'git stash pop' in local_path after resolving.")
+					}
 					continue
 				}
 
+				// Step 5: Rsync worktree → local_path
+				logInfo("Syncing updates back to local directory...")
 				if err := runSync(p.Worktree+"/"+p.RemotePath+"/", p.LocalPath+"/"); err != nil {
 					logError(fmt.Sprintf("Failed to sync files for %s: %v", p.LocalPath, err))
+					if stashed {
+						exec.Command("git", "-C", localAbsPath, "stash", "pop").Run()
+					}
+					continue
 				}
+
+				// Step 6: Restore stashed changes
+				if stashed {
+					logInfo("Restoring stashed local changes...")
+					popCmd := exec.Command("git", "-C", localAbsPath, "stash", "pop")
+					if err := popCmd.Run(); err != nil {
+						logError("Failed to restore stashed changes. Conflicts may exist.")
+						logError(fmt.Sprintf("Resolve manually in: %s", p.LocalPath))
+						logInfo("Run 'git status' to see conflicts, then 'git stash drop' when resolved.")
+					} else {
+						// Check if there are conflicts after pop
+						conflictCheck := exec.Command("git", "-C", localAbsPath, "diff", "--name-only", "--diff-filter=U")
+						if conflictOut, err := conflictCheck.Output(); err == nil && len(conflictOut) > 0 {
+							logError("Conflicts detected after restoring local changes:")
+							fmt.Println(string(conflictOut))
+							logInfo("Resolve conflicts, then run 'git add' and continue.")
+						}
+					}
+				}
+
+				logSuccess(fmt.Sprintf("Sync completed for %s", p.LocalPath))
 			}
-			logSuccess("Sync completed.")
 			return nil
 		},
 	}

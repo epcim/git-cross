@@ -53,6 +53,8 @@ Testing is modular and targets each implementation:
 - **Rust**: `test/008_rust_cli.sh` verifies the Rust port.
 - **Go**: `test/009_go_cli.sh` verifies the Go implementation.
 
+For known issues and planned enhancements, see [TODO.md](TODO.md).
+
 ## Agent Guidelines
 
 - **Consistency**: When adding features, ensure logic parity across `Justfile.cross`, Rust, and Go versions.
