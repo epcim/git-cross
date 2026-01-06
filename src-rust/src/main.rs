@@ -727,11 +727,40 @@ fn main() -> Result<()> {
                     continue;
                 }
 
-                // Step 5: Rsync worktree back to local_path
+                // Step 5: Delete tracked files in local_path that were removed upstream
+                log_info("Checking for files deleted upstream...");
+                let wt_remote_path = format!("{}/{}", patch.worktree, patch.remote_path);
+                
+                // Get tracked files in worktree
+                if let Ok(wt_files_str) = run_cmd(&["git", "-C", &wt_remote_path, "ls-files"]) {
+                    let wt_files: std::collections::HashSet<String> = 
+                        wt_files_str.lines().map(|s| s.to_string()).collect();
+                    
+                    // Get tracked files in local_path from main repo
+                    if let Ok(local_files_str) = run_cmd(&["git", "ls-files", &patch.local_path]) {
+                        for local_file in local_files_str.lines() {
+                            if local_file.is_empty() {
+                                continue;
+                            }
+                            // Get relative path (remove local_path prefix)
+                            let rel_file = local_file.strip_prefix(&format!("{}/", patch.local_path))
+                                .unwrap_or(local_file);
+                            
+                            // Check if this tracked file no longer exists in worktree
+                            if !wt_files.contains(rel_file) {
+                                log_info(&format!("Removing deleted file: {}", rel_file));
+                                let full_path = format!("{}/{}", env::current_dir()?.display(), local_file);
+                                let _ = std::fs::remove_file(&full_path);
+                            }
+                        }
+                    }
+                }
+                
+                // Step 6: Rsync worktree → local_path (without --delete, we handle deletions above)
                 log_info(&format!("Syncing files to {}...", patch.local_path));
                 let src = format!("{}/{}/", patch.worktree, patch.remote_path);
                 let dst = format!("{}/", patch.local_path);
-                if let Err(e) = run_cmd(&["rsync", "-av", "--delete", "--exclude", ".git", &src, &dst]) {
+                if let Err(e) = run_cmd(&["rsync", "-av", "--exclude", ".git", &src, &dst]) {
                     log_error(&format!("Failed to sync files: {}", e));
                     if stashed {
                         let _ = run_cmd(&["git", "-C", &local_abs_path, "stash", "pop"]);
@@ -739,7 +768,7 @@ fn main() -> Result<()> {
                     continue;
                 }
 
-                // Step 6: Restore stashed changes
+                // Step 7: Restore stashed changes
                 if stashed {
                     log_info("Restoring stashed local changes...");
                     if let Err(e) = run_cmd(&["git", "-C", &local_abs_path, "stash", "pop"]) {

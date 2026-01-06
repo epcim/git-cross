@@ -608,7 +608,39 @@ func main() {
 					continue
 				}
 
-				// Step 5: Rsync worktree → local_path
+				// Step 5: Delete tracked files in local_path that were removed upstream
+				logInfo("Checking for files deleted upstream...")
+				wtLsCmd := exec.Command("git", "-C", filepath.Join(p.Worktree, p.RemotePath), "ls-files")
+				wtFilesOut, err := wtLsCmd.Output()
+				if err == nil {
+					wtFiles := make(map[string]bool)
+					for _, f := range strings.Split(string(wtFilesOut), "\n") {
+						if f != "" {
+							wtFiles[f] = true
+						}
+					}
+
+					// Get tracked files in local_path from main repo
+					localLsCmd := exec.Command("git", "-C", root, "ls-files", p.LocalPath)
+					localFilesOut, err := localLsCmd.Output()
+					if err == nil {
+						for _, localFile := range strings.Split(string(localFilesOut), "\n") {
+							if localFile == "" {
+								continue
+							}
+							// Get relative path (remove local_path prefix)
+							relFile := strings.TrimPrefix(localFile, p.LocalPath+"/")
+							// Check if this tracked file no longer exists in worktree
+							if !wtFiles[relFile] {
+								fullPath := filepath.Join(root, localFile)
+								logInfo(fmt.Sprintf("Removing deleted file: %s", relFile))
+								os.Remove(fullPath)
+							}
+						}
+					}
+				}
+
+				// Step 6: Rsync worktree → local_path
 				logInfo("Syncing updates back to local directory...")
 				if err := runSync(p.Worktree+"/"+p.RemotePath+"/", p.LocalPath+"/"); err != nil {
 					logError(fmt.Sprintf("Failed to sync files for %s: %v", p.LocalPath, err))
@@ -618,7 +650,7 @@ func main() {
 					continue
 				}
 
-				// Step 6: Restore stashed changes
+				// Step 7: Restore stashed changes
 				if stashed {
 					logInfo("Restoring stashed local changes...")
 					popCmd := exec.Command("git", "-C", localAbsPath, "stash", "pop")
