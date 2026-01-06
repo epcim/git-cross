@@ -227,6 +227,82 @@ remove path: check-deps
         just cross _log success "Patch removed successfully."
     popd
 
+# Prune unused remotes and worktrees, or remove all patches for a specific remote
+prune remote_name="": check-deps
+    #!/usr/bin/env fish
+    set remote "{{remote_name}}"
+    pushd "{{REPO_DIR}}"
+        if not test -f {{METADATA}}
+            just cross _log error "No metadata found."
+            exit 1
+        end
+
+        if test -n "$remote"
+            # Prune specific remote: remove all its patches
+            just cross _log info "Pruning all patches for remote: $remote..."
+            
+            # Get all patches for this remote
+            set patches (jq -r --arg remote "$remote" '.patches[] | select(.remote == $remote) | .local_path' {{METADATA}})
+            
+            if test -z "$patches"
+                just cross _log warn "No patches found for remote: $remote"
+            else
+                # Remove each patch
+                for patch_path in $patches
+                    just cross _log info "Removing patch: $patch_path"
+                    just cross remove "$patch_path"
+                end
+            end
+            
+            # Remove the remote itself
+            if git remote | grep -q "^$remote\$"
+                just cross _log info "Removing git remote: $remote"
+                git remote remove "$remote"
+            end
+            
+            just cross _log success "Remote $remote and all its patches pruned successfully."
+        else
+            # Prune all unused remotes (no active patches)
+            just cross _log info "Finding unused remotes..."
+            
+            # Get all remotes used by patches
+            set used_remotes (jq -r '.patches[].remote' {{METADATA}} | sort -u)
+            
+            # Get all git remotes (except origin and git-cross)
+            set all_remotes (git remote | grep -v "^origin\$" | grep -v "^git-cross\$")
+            
+            # Find unused remotes
+            set unused_remotes
+            for remote in $all_remotes
+                if not contains $remote $used_remotes
+                    set unused_remotes $unused_remotes $remote
+                end
+            end
+            
+            if test -z "$unused_remotes"
+                just cross _log info "No unused remotes found."
+            else
+                just cross _log info "Unused remotes: $unused_remotes"
+                read -P "Remove these remotes? [y/N]: " confirm
+                
+                if test "$confirm" = "y"; or test "$confirm" = "Y"
+                    for remote in $unused_remotes
+                        just cross _log info "Removing remote: $remote"
+                        git remote remove "$remote"
+                    end
+                    just cross _log success "Unused remotes removed."
+                else
+                    just cross _log info "Pruning cancelled."
+                end
+            end
+            
+            # Always prune stale worktrees
+            just cross _log info "Pruning stale worktrees..."
+            git worktree prune --verbose
+            just cross _log success "Worktree pruning complete."
+        end
+    popd
+
 # AICONTEXT: "patch" will do sparse checkout of specified branch of remote repository into local path. "remote_spec" is in format "remote_name:branch", where "branch" is optional. local_path is the same are remote_path if not provided. Command shall firs use `git ls-remote --heads ` to identify whether remote is having main or master as default branch if not provided - no more evaluation needed, simply grep "refs/heads" with regexp. Tool shall configure sparse checkout and use `git worktree add` and use `".git/cross/worktrees/$remote"_"$hash"` as working directory. Hash shall be short, but shall be created from path and branch name and humans shall ideally read it. checkout either only need maximum of 1 git history (last commmit version). When the checkout is done, "sync" target is called, to sync just this specific "patch" git worktree into main repository to local_path. Then a placeholder is required for post_sync_hook function to run. Finally call `git add` on local_path in top level repo.
 # AICONTEXT: for implementation, use "fish" keep it simple, shell comamnds shall be readable. Ideally keep bellow 30 lines. User interaction shall be kept minimal. Debug statements are not needed. Document in comments major logical blocks.
 # Patch a directory from a remote into a local path
@@ -324,7 +400,7 @@ patch remote_spec local_path="": check-deps
     cd {{REPO_DIR}} && test -d {{CROSSDIR}}/worktrees && test -f {{METADATA}} \
         || { just cross _log warn "No patches to sync"; exit 0; }
 
-# AICONTEXT: "sync" will sync all or the provided local_path with upstream. Two modes, implemented as sub-sync commands to keep them short. First identify whether local_path has changes. stash them first. Then take the local_path, rsync it to .git/cross/workingtree/ tracking directory. Autogenerate an commit based on git logs for local_path for given range. Commit. Git pull -r from upstream. If coonflicts, cd to $wt and let user to resolve. If not then rsycn WT to local_path, and unstash. Second mode is assumes there are no changes in local_path, so update from remote can happen any time, still some conflict shall happen and user must resolve, so the local_path is still copied to WT before upstream pull -r.
+# AICONTEXT: "sync" will sync all or the provided local_path with upstream. Workflow: 1. Stash uncommitted changes in local_path. 2. Rsync git-tracked files from local_path to worktree. 3. Commit changes in worktree. 4. Pull rebase from upstream. 5. If conflicts, exit and ask user to resolve. 6. Rsync worktree back to local_path. 7. Restore stashed changes. 8. Check for conflicts in restored changes.
 # Sync all patches from upstream
 [no-cd]
 sync *path="": check-initialized
@@ -336,14 +412,40 @@ sync *path="": check-initialized
     pushd "{{REPO_DIR}}"
         just cross _log info "Syncing $local_path with $worktree..."
         
-        # 1. Check for local changes in local_path vs worktree
+        # 0. Ensure local_path exists
+        mkdir -p $local_path
+        
+        # 0.5. Check for uncommitted changes in local_path (detect but don't stash yet)
+        set stashed false
+        set has_changes (git status --porcelain $local_path 2>/dev/null | wc -l | tr -d ' ')
+        if test "$has_changes" -gt 0
+            just cross _log info "Detected uncommitted changes in $local_path..."
+            set stashed true
+        end
+        
+        # 1. Rsync current state (including uncommitted) from local_path to worktree
         # AICONTEXT: the rsync need to sync only git tracked files in $local_path to $worktree/$remote_path
-        pushd $local_path
-          git ls-files . -z | rsync -0 --files-from=- -av --relative --exclude .git {{REPO_DIR}}/$local_path {{REPO_DIR}}/$worktree/$remote_path
-          # FIXME: shall we either use --delete?
-        popd 
+        just cross _log info "Syncing local changes to worktree..."
+        if test -d $local_path
+            pushd $local_path
+              # Get tracked files (includes files with uncommitted changes)
+              set tracked (git ls-files .)
+              if test -n "$tracked"
+                  # Rsync tracked files (with their current content, including uncommitted changes)
+                  git ls-files . -z | rsync -0 --files-from=- -av --relative --exclude .git {{REPO_DIR}}/$local_path {{REPO_DIR}}/$worktree/$remote_path
+              end
+            popd
+        end
+        
+        # 1.5. NOW stash uncommitted changes (after copying them to worktree)
+        if test "$stashed" = "true"
+            just cross _log info "Stashing uncommitted changes in $local_path..."
+            # Stash including untracked files, only in local_path
+            git stash push --include-untracked -m "cross-sync-auto-stash: $local_path" -- $local_path
+        end
+ 
 
-        # 2. Commit local changes in WT
+        # 2. Commit local changes in worktree
         set dirty (git -C $worktree status --porcelain)
         if test -n "$dirty"
             just cross _log info "Committing local changes in $worktree..."
@@ -351,20 +453,121 @@ sync *path="": check-initialized
             git -C $worktree commit -m "Sync local changes"
         end
         
+        # 2.5. Check if worktree is in a good state (not detached HEAD, not mid-rebase)
+        pushd $worktree
+            # Check for ongoing rebase/merge FIRST (before anything else)
+            # For worktrees, rebase-merge can be in multiple locations
+            set worktree_name (basename $worktree)
+            set rebase_dirs .git/rebase-merge .git/rebase-apply {{REPO_DIR}}/.git/worktrees/$worktree_name/rebase-merge {{REPO_DIR}}/.git/worktrees/$worktree_name/rebase-apply
+            
+            set needs_cleanup false
+            for dir in $rebase_dirs
+                if test -d $dir
+                    set needs_cleanup true
+                    break
+                end
+            end
+            
+            if test "$needs_cleanup" = "true"
+                just cross _log warn "Worktree has an in-progress operation. Cleaning up..."
+                git rebase --abort 2>/dev/null || true
+                git merge --abort 2>/dev/null || true
+                # Force remove all possible rebase dirs
+                for dir in $rebase_dirs
+                    rm -rf $dir 2>/dev/null || true
+                end
+            end
+            
+            # Check for detached HEAD
+            if not git symbolic-ref -q HEAD >/dev/null 2>&1
+                just cross _log warn "Worktree is in detached HEAD state. Attempting to recover..."
+                # Find the worktree's branch name
+                set branch_name (git for-each-ref --format='%(refname:short)' refs/heads/ | grep -E 'cross/' | head -1)
+                if test -n "$branch_name"
+                    just cross _log info "Checking out branch: $branch_name"
+                    git checkout -B $branch_name 2>/dev/null || true
+                    # Reset to clean state
+                    git fetch $remote 2>/dev/null || true
+                    git reset --hard $remote/$remote_branch 2>/dev/null || true
+                end
+            end
+        popd
+        
         # 3. Pull rebase from upstream
         just cross _log info "Pulling from upstream..."
         if not git -C $worktree pull --rebase
             just cross _log error "Conflict detected in $worktree. Please resolve manually."
-            just cross _log info "cd $$worktree"
+            just cross _log info "cd $worktree"
+            if test "$stashed" = "true"
+                just cross _log warn "Note: Local changes are stashed. Run 'git stash pop' in $local_path after resolving."
+            end
             exit 1
         end
         
-        # 4. Sync back to local
+        # 4. Sync back to local - ensure directory exists
         just cross _log info "Syncing back to $local_path..."
+        mkdir -p $local_path
+        
+        # 4.1. Remove files from local_path that were deleted upstream
+        # Only delete files that are:
+        # - Tracked in the main repo (in local_path)
+        # - No longer exist in the worktree
         pushd $worktree/$remote_path
+          # Get list of tracked files in worktree
+          set worktree_files (git ls-files .)
+          
+          # Create temp file with worktree files list
+          set temp_list (mktemp)
+          echo "$worktree_files" > $temp_list
+          
+          # Get list of tracked files in local_path (from main repo)
+          pushd {{REPO_DIR}}
+            set local_tracked (git ls-files $local_path 2>/dev/null || echo "")
+          popd
+          
+          # Only check tracked files for deletion
+          if test -n "$local_tracked"
+            for tracked_file in $local_tracked
+              # Get just the filename relative to local_path
+              set rel_file (string replace -r "^$local_path/" "" $tracked_file)
+              # Check if this tracked file no longer exists in worktree
+              if not grep -qF "$rel_file" $temp_list 2>/dev/null
+                just cross _log info "Removing deleted file: $rel_file"
+                rm -f {{REPO_DIR}}/$tracked_file
+              end
+            end
+          end
+          
+          rm -f $temp_list
+          
+          # 4.2. Rsync tracked files from worktree to local
           git ls-files . -z | rsync -0 --files-from=- -av --relative --exclude .git {{REPO_DIR}}/$worktree/$remote_path {{REPO_DIR}}/$local_path 
         popd
 
+        # 5. Restore stashed changes if they exist
+        if test "$stashed" = "true"
+            just cross _log info "Restoring stashed local changes..."
+            # First, add any new files that came from worktree sync
+            git add $local_path 2>/dev/null || true
+            # Now try to pop the stash (might have conflicts if same files were modified upstream)
+            if git stash pop
+                # Success - check for conflicts
+                set conflicts (git diff --name-only --diff-filter=U -- $local_path 2>/dev/null | wc -l | tr -d ' ')
+                if test "$conflicts" -gt 0
+                    just cross _log error "Conflicts detected after restoring local changes in $local_path:"
+                    git diff --name-only --diff-filter=U -- $local_path
+                    just cross _log info "Resolve conflicts, then run 'git add' and continue."
+                end
+            else
+                # Stash pop failed - likely due to conflicts
+                just cross _log warn "Could not automatically restore stashed changes."
+                just cross _log info "Your changes are preserved in the stash."
+                just cross _log info "Run 'git stash list' to see them, 'git stash show' to view, 'git stash pop' to retry."
+                just cross _log info "Or run 'git stash drop' if you want to discard them."
+            end
+        end
+
+        just cross _log success "Sync completed for $local_path"
     popd  
         
 
@@ -549,49 +752,68 @@ list: check-deps
 [no-cd]
 worktree path="":
     just cross cd "{{path}}" dry="{{dry}}"
-    
+
+# Internal: Copy text to clipboard (cross-platform)
+[no-cd]
+_copy_to_clipboard text:
+    #!/usr/bin/env bash
+    if command -v pbcopy >/dev/null 2>&1; then
+        # macOS
+        echo "{{text}}" | pbcopy
+    elif command -v xclip >/dev/null 2>&1; then
+        # Linux with xclip
+        echo "{{text}}" | xclip -selection clipboard
+    elif command -v xsel >/dev/null 2>&1; then
+        # Linux with xsel
+        echo "{{text}}" | xsel --clipboard --input
+    else
+        echo "Error: No clipboard tool found (pbcopy/xclip/xsel)"
+        exit 1
+    fi
+
+# Internal: Open shell in target directory
+# target: "local_path" or "worktree"
+# path: must be provided (non-empty)
+[no-cd]
+_open_shell target path:
+    #!/usr/bin/env fish
+    just cross _resolve_context2 "{{path}}" | source || exit 1
+    set -l dir (test "{{target}}" = "local_path" && echo $local_path || echo $worktree)
+    cd {{REPO_DIR}}/$dir && exec $SHELL
+
+# Go to worktree directory (for working with git history)
+# With path: opens subshell
+# Without path: uses fzf selection and copies to clipboard
 [no-cd]
 wt path="":
-    just cross cd "{{path}}" dry="{{dry}}"
+    #!/usr/bin/env fish
+    if test -n "{{path}}"
+        just cross _open_shell worktree "{{path}}"
+    else
+        set -l selected (just cross list | tail -n +3 | fzf --height 40% 2>/dev/null | awk '{print $NF}')
+        test -z "$selected" && exit 0
+        just cross _resolve_context2 "$selected" | source || exit 1
+        set -l rel_dir (realpath -m --relative-to=$PWD {{REPO_DIR}}/$worktree)
+        just cross _copy_to_clipboard $rel_dir
+        just cross _log success "Path copied: $rel_dir"
+    end
 
+# Go to local_path directory (for editing patched files)
+# With path: opens subshell
+# Without path: uses fzf selection and copies to clipboard
 [no-cd]
 cd path="":
     #!/usr/bin/env fish
-
-    # if not initialized, exit
-    just cross check-initialized | grep "No patches" && exit 1;
-
-    # try to resolve context (uses "{{path}}" if provided, else CWD)
-    just cross _resolve_context2 (string trim -r -c / {{path}}) 2>/dev/null | source || true;
-
-    # if "worktree" is not provided and we are not in a patch, use fzf or just list
-    if test -z "$worktree"
-        if not command -v fzf >/dev/null
-            just cross list
-            exit 0
-        end
-
-        if test -z "{{dry}}"
-            set -l selection (just cross list | tail -n +3 | fzf --select-1 --header "Select patch worktree" --height 40% 2>/dev/null)
-            set -l selected_path (echo "$selection" | awk '{print $NF}')
-            if test -n "$selected_path"
-                just cross cd "$selected_path" dry="{{dry}}"
-            end
-            exit 0
-        else
-            just cross list
-            exit 0
-        end
+    if test -n "{{path}}"
+        just cross _open_shell local_path "{{path}}"
+    else
+        set -l selected (just cross list | tail -n +3 | fzf --height 40% 2>/dev/null | awk '{print $NF}')
+        test -z "$selected" && exit 0
+        just cross _resolve_context2 "$selected" | source || exit 1
+        set -l rel_dir (realpath -m --relative-to=$PWD {{REPO_DIR}}/$local_path)
+        just cross _copy_to_clipboard $rel_dir
+        just cross _log success "Path copied: $rel_dir"
     end
-
-    just cross _log info "Entering worktree at $worktree, use 'CTRL+D' to return..."
-    test -d "{{REPO_DIR}}/$worktree" > /dev/null || exit 1
-    set shell "{{SHELL}}"
-    if test -z "$shell"
-        set shell /bin/sh
-    end
-    {{dry}} cd "{{REPO_DIR}}/$worktree"
-    {{dry}} exec $shell
 
 
 # AICONTEXT: "status" shows status of current local_path patch vs. WT, and WT upstream. Input argument is local_path (or understand user stand in the under git-cross'ed local_path and call this comand). It shall be called to get status of local_path from "list" command. Either the status of remote WT upstream (as resource consuming, shall be optional or only ocasional)

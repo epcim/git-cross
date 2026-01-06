@@ -10,7 +10,7 @@ use tabled::{Table, Tabled};
 
 #[derive(Parser)]
 #[command(name = "git-cross-rust")]
-#[command(version = "0.1.0")]
+#[command(version = "0.2.1")]
 #[command(
     about = "A tool for vendoring git directories using worktrees [EXPERIMENTAL/WIP]",
     long_about = "Note: The Rust implementation of git-cross is currently EXPERIMENTAL and WORK IN PROGRESS. The Go implementation is the primary focus and recommended for production use."
@@ -66,6 +66,11 @@ enum Commands {
     Remove {
         /// Local path of the patch to remove
         path: String,
+    },
+    /// Prune unused remotes and worktrees, or remove all patches for a specific remote
+    Prune {
+        /// Optional remote name to prune all its patches
+        remote: Option<String>,
     },
     /// Push changes back to upstream
     Push {
@@ -417,6 +422,105 @@ fn select_patch_interactive(metadata: &Metadata) -> Result<Option<Patch>> {
         .map(Some)
 }
 
+fn copy_to_clipboard(text: &str) -> Result<()> {
+    // Detect platform and use appropriate command
+    if which::which("pbcopy").is_ok() {
+        // macOS
+        duct::cmd!("pbcopy").stdin_bytes(text).run()?;
+    } else if which::which("xclip").is_ok() {
+        // Linux with xclip
+        duct::cmd!("xclip", "-selection", "clipboard").stdin_bytes(text).run()?;
+    } else if which::which("xsel").is_ok() {
+        // Linux with xsel
+        duct::cmd!("xsel", "--clipboard", "--input").stdin_bytes(text).run()?;
+    } else {
+        return Err(anyhow!("No clipboard tool found (pbcopy/xclip/xsel)"));
+    }
+    Ok(())
+}
+
+fn get_relative_path(target_path: &str) -> String {
+    use std::path::PathBuf;
+    
+    // Get current working directory
+    let Ok(pwd) = env::current_dir() else {
+        return target_path.to_string();
+    };
+    
+    // Convert target to absolute path (don't use canonicalize - it requires file to exist)
+    let target = PathBuf::from(target_path);
+    
+    // Manual computation: try strip_prefix first (if target is subpath of pwd)
+    if let Ok(rel) = target.strip_prefix(&pwd) {
+        return rel.to_string_lossy().to_string();
+    }
+    
+    // Otherwise compute relative path by finding common prefix
+    let pwd_components: Vec<_> = pwd.components().collect();
+    let target_components: Vec<_> = target.components().collect();
+    
+    // Find common prefix
+    let common = pwd_components.iter()
+        .zip(target_components.iter())
+        .take_while(|(a, b)| a == b)
+        .count();
+    
+    // Build relative path: ../ for each level up, then remaining target components
+    let ups = pwd_components.len() - common;
+    let mut rel_path = PathBuf::new();
+    for _ in 0..ups {
+        rel_path.push("..");
+    }
+    for comp in &target_components[common..] {
+        rel_path.push(comp);
+    }
+    
+    rel_path.to_string_lossy().to_string()
+}
+
+fn open_shell_in_dir(path: &str, target_type: &str) -> Result<()> {
+    let metadata = load_metadata()?;
+    if metadata.patches.is_empty() {
+        println!("No patches configured.");
+        return Ok(());
+    }
+
+    // Find patch for provided path
+    let path = path.trim();
+    let target_patch = find_patch_for_path(&metadata, path)
+        .or_else(|| metadata.patches.iter().find(|p| p.local_path == path).cloned())
+        .ok_or_else(|| anyhow!("Patch not found for path: {}", path))?;
+
+    // Determine target directory
+    let target_dir = if target_type == "worktree" {
+        &target_patch.worktree
+    } else {
+        &target_patch.local_path
+    };
+
+    // Check directory exists
+    if !std::path::Path::new(target_dir).exists() {
+        return Err(anyhow!("{} not found: {}", target_type, target_dir));
+    }
+
+    // Open subshell
+    let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+    log_info(&format!("Opening shell in {}", target_dir));
+
+    let status = Command::new(&shell)
+        .current_dir(target_dir)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()?;
+
+    if !status.success() {
+        return Err(anyhow!("Shell exited with error"));
+    }
+
+    Ok(())
+}
+
 fn repo_relative_path() -> Result<Option<String>> {
     let prefix = run_cmd(&["git", "rev-parse", "--show-prefix"])?;
     if prefix.is_empty() {
@@ -607,6 +711,9 @@ fn main() -> Result<()> {
         }
         Commands::Sync { path } => {
             let metadata = load_metadata()?;
+            let repo_root = run_cmd(&["git", "rev-parse", "--show-toplevel"])?;
+            let repo_root = repo_root.trim();
+
             let patches_to_sync = if path.is_empty() {
                 metadata.patches.clone()
             } else {
@@ -634,7 +741,79 @@ fn main() -> Result<()> {
                     continue;
                 }
 
-                run_cmd(&[
+                let local_abs_path = format!("{}/{}", repo_root, patch.local_path);
+
+                // Step 1: Check for uncommitted changes and stash if needed
+                let mut stashed = false;
+                match run_cmd(&["git", "-C", &local_abs_path, "status", "--porcelain"]) {
+                    Ok(status) if !status.trim().is_empty() => {
+                        log_info("Stashing uncommitted changes...");
+                        if let Err(e) = run_cmd(&[
+                            "git",
+                            "-C",
+                            &local_abs_path,
+                            "stash",
+                            "push",
+                            "-m",
+                            "cross-sync-auto-stash",
+                        ]) {
+                            log_error(&format!("Failed to stash changes: {}", e));
+                            continue;
+                        }
+                        stashed = true;
+                    }
+                    _ => {}
+                }
+
+                // Step 2: Rsync git-tracked files from local_path to worktree
+                log_info("Syncing local changes to worktree...");
+                let git_files = run_cmd(&["git", "-C", &local_abs_path, "ls-files", "-z"]);
+                if let Ok(files) = git_files {
+                    if !files.trim().is_empty() {
+                        let wt_remote_path = format!("{}/{}", patch.worktree, patch.remote_path);
+                        let rsync_result = duct::cmd!(
+                            "rsync",
+                            "-av0",
+                            "--files-from=-",
+                            "--relative",
+                            "--exclude",
+                            ".git",
+                            &format!("{}/", local_abs_path),
+                            &format!("{}/", wt_remote_path)
+                        )
+                        .stdin_bytes(files.as_bytes())
+                        .run();
+
+                        if let Err(e) = rsync_result {
+                            log_error(&format!("Failed to rsync local to worktree: {}", e));
+                            if stashed {
+                                let _ = run_cmd(&["git", "-C", &local_abs_path, "stash", "pop"]);
+                            }
+                            continue;
+                        }
+                    }
+                }
+
+                // Step 3: Commit local changes in worktree
+                match run_cmd(&["git", "-C", &patch.worktree, "status", "--porcelain"]) {
+                    Ok(wt_status) if !wt_status.trim().is_empty() => {
+                        log_info("Committing local changes in worktree...");
+                        let _ = run_cmd(&["git", "-C", &patch.worktree, "add", "."]);
+                        let _ = run_cmd(&[
+                            "git",
+                            "-C",
+                            &patch.worktree,
+                            "commit",
+                            "-m",
+                            "Sync local changes",
+                        ]);
+                    }
+                    _ => {}
+                }
+
+                // Step 4: Pull rebase from upstream
+                log_info("Pulling updates from upstream...");
+                if let Err(e) = run_cmd(&[
                     "git",
                     "-C",
                     &patch.worktree,
@@ -642,87 +821,140 @@ fn main() -> Result<()> {
                     "--rebase",
                     &patch.remote,
                     &patch.branch,
-                ])?;
+                ]) {
+                    log_error(&format!("Failed to pull: {}", e));
+                    log_error("Please resolve conflicts manually in worktree:");
+                    log_error(&format!("  cd {}", patch.worktree));
+                    if stashed {
+                        log_info("Note: Local changes are stashed. Run 'git stash pop' in local_path after resolving.");
+                    }
+                    continue;
+                }
 
+                // Step 5: Delete tracked files in local_path that were removed upstream
+                log_info("Checking for files deleted upstream...");
+                let wt_remote_path = format!("{}/{}", patch.worktree, patch.remote_path);
+                
+                // Get tracked files in worktree
+                if let Ok(wt_files_str) = run_cmd(&["git", "-C", &wt_remote_path, "ls-files"]) {
+                    let wt_files: std::collections::HashSet<String> = 
+                        wt_files_str.lines().map(|s| s.to_string()).collect();
+                    
+                    // Get tracked files in local_path from main repo
+                    if let Ok(local_files_str) = run_cmd(&["git", "ls-files", &patch.local_path]) {
+                        for local_file in local_files_str.lines() {
+                            if local_file.is_empty() {
+                                continue;
+                            }
+                            // Get relative path (remove local_path prefix)
+                            let rel_file = local_file.strip_prefix(&format!("{}/", patch.local_path))
+                                .unwrap_or(local_file);
+                            
+                            // Check if this tracked file no longer exists in worktree
+                            if !wt_files.contains(rel_file) {
+                                log_info(&format!("Removing deleted file: {}", rel_file));
+                                let full_path = format!("{}/{}", env::current_dir()?.display(), local_file);
+                                let _ = std::fs::remove_file(&full_path);
+                            }
+                        }
+                    }
+                }
+                
+                // Step 6: Rsync worktree → local_path (without --delete, we handle deletions above)
                 log_info(&format!("Syncing files to {}...", patch.local_path));
                 let src = format!("{}/{}/", patch.worktree, patch.remote_path);
                 let dst = format!("{}/", patch.local_path);
-                run_cmd(&["rsync", "-av", "--delete", "--exclude", ".git", &src, &dst])?;
+                if let Err(e) = run_cmd(&["rsync", "-av", "--exclude", ".git", &src, &dst]) {
+                    log_error(&format!("Failed to sync files: {}", e));
+                    if stashed {
+                        let _ = run_cmd(&["git", "-C", &local_abs_path, "stash", "pop"]);
+                    }
+                    continue;
+                }
+
+                // Step 7: Restore stashed changes
+                if stashed {
+                    log_info("Restoring stashed local changes...");
+                    if let Err(e) = run_cmd(&["git", "-C", &local_abs_path, "stash", "pop"]) {
+                        log_error("Failed to restore stashed changes. Conflicts may exist.");
+                        log_error(&format!("Resolve manually in: {}", patch.local_path));
+                        log_info("Run 'git status' to see conflicts, then 'git stash drop' when resolved.");
+                    } else {
+                        // Check for conflicts after pop
+                        if let Ok(conflicts) = run_cmd(&[
+                            "git",
+                            "-C",
+                            &local_abs_path,
+                            "diff",
+                            "--name-only",
+                            "--diff-filter=U",
+                        ]) {
+                            if !conflicts.trim().is_empty() {
+                                log_error("Conflicts detected after restoring local changes:");
+                                println!("{}", conflicts);
+                                log_info("Resolve conflicts, then run 'git add' and continue.");
+                            }
+                        }
+                    }
+                }
+
+                log_success(&format!("Sync completed for {}", patch.local_path));
             }
-            log_success("Sync completed.");
         }
-        Commands::Cd { path } | Commands::Wt { path } => {
+        Commands::Cd { path } => {
             let metadata = load_metadata()?;
             if metadata.patches.is_empty() {
                 println!("No patches configured.");
                 return Ok(());
             }
 
-            let target_patch = if !path.is_empty() {
-                let mut patch = find_patch_for_path(&metadata, path).or_else(|| {
-                    metadata
-                        .patches
-                        .iter()
-                        .find(|p| p.local_path == *path)
-                        .cloned()
-                });
-                patch
-                    .take()
-                    .context(format!("Patch not found for path: {}", path))?
+            if !path.is_empty() {
+                // Path provided: open shell
+                open_shell_in_dir(path, "local_path")?;
             } else {
+                // No path: use fzf and copy to clipboard
                 match select_patch_interactive(&metadata) {
-                    Ok(Some(patch)) => patch,
+                    Ok(Some(patch)) => {
+                        let rel_path = get_relative_path(&patch.local_path);
+                        copy_to_clipboard(&rel_path)?;
+                        log_success(&format!("Path copied to clipboard: {}", rel_path));
+                    }
                     Ok(None) => {
                         log_info("No selection made.");
-                        return Ok(());
                     }
-                    Err(err) => {
-                        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
-                            if io_err.kind() == ErrorKind::NotFound {
-                                log_info(
-                                    "fzf not available. Showing patch list; rerun with a path to enter a worktree.",
-                                );
-                                println!("{}", Table::new(metadata.patches.clone()));
-                                return Ok(());
-                            }
-                        }
-                        if err.to_string() == "fzf not found" {
-                            log_info(
-                                "fzf not available. Showing patch list; rerun with a path to enter a worktree.",
-                            );
-                            println!("{}", Table::new(metadata.patches.clone()));
-                            return Ok(());
-                        }
-                        return Err(err);
+                    Err(_) => {
+                        log_info("fzf not available. Showing patch list; rerun with a path.");
+                        println!("{}", Table::new(metadata.patches));
                     }
                 }
-            };
-
-            if !Path::new(&target_patch.worktree).exists() {
-                return Err(anyhow!(
-                    "Worktree not found for {}",
-                    target_patch.local_path
-                ));
             }
-
-            let shell = env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-
-            if !cli.dry.is_empty() {
-                println!("{} cd {}", cli.dry, target_patch.worktree);
-                println!("{} exec {}", cli.dry, shell);
+        }
+        Commands::Wt { path } => {
+            let metadata = load_metadata()?;
+            if metadata.patches.is_empty() {
+                println!("No patches configured.");
                 return Ok(());
             }
 
-            log_info(&format!("Opening shell in {}", target_patch.worktree));
-            let status = Command::new(&shell)
-                .stdin(Stdio::inherit())
-                .stdout(Stdio::inherit())
-                .stderr(Stdio::inherit())
-                .current_dir(&target_patch.worktree)
-                .status()?;
-
-            if !status.success() {
-                return Err(anyhow!("Shell exited with error"));
+            if !path.is_empty() {
+                // Path provided: open shell
+                open_shell_in_dir(path, "worktree")?;
+            } else {
+                // No path: use fzf and copy to clipboard
+                match select_patch_interactive(&metadata) {
+                    Ok(Some(patch)) => {
+                        let rel_path = get_relative_path(&patch.worktree);
+                        copy_to_clipboard(&rel_path)?;
+                        log_success(&format!("Path copied to clipboard: {}", rel_path));
+                    }
+                    Ok(None) => {
+                        log_info("No selection made.");
+                    }
+                    Err(_) => {
+                        log_info("fzf not available. Showing patch list; rerun with a path.");
+                        println!("{}", Table::new(metadata.patches));
+                    }
+                }
             }
         }
         Commands::List => {
@@ -929,6 +1161,116 @@ fn main() -> Result<()> {
             }
 
             log_success("Patch removed successfully.");
+        }
+        Commands::Prune { remote } => {
+            let mut metadata = load_metadata()?;
+            
+            if let Some(remote_name) = remote {
+                // Prune specific remote: remove all its patches
+                log_info(&format!("Pruning all patches for remote: {}...", remote_name));
+                
+                // Find all patches for this remote
+                let patches_to_remove: Vec<Patch> = metadata
+                    .patches
+                    .iter()
+                    .filter(|p| p.remote == *remote_name)
+                    .cloned()
+                    .collect();
+                
+                if patches_to_remove.is_empty() {
+                    log_info(&format!("No patches found for remote: {}", remote_name));
+                } else {
+                    // Remove each patch
+                    for patch in patches_to_remove {
+                        log_info(&format!("Removing patch: {}", patch.local_path));
+                        
+                        // Remove worktree
+                        if Path::new(&patch.worktree).exists() {
+                            let _ = run_cmd(&["git", "worktree", "remove", "--force", &patch.worktree]);
+                        }
+                        
+                        // Remove from Crossfile
+                        if let Ok(cross_path) = get_crossfile_path() {
+                            if let Ok(content) = fs::read_to_string(&cross_path) {
+                                let lines: Vec<String> = content
+                                    .lines()
+                                    .filter(|l| !l.contains("patch") || !l.contains(&patch.local_path))
+                                    .map(|l| l.to_string())
+                                    .collect();
+                                let mut new_content = lines.join("\n");
+                                if !new_content.is_empty() {
+                                    new_content.push('\n');
+                                }
+                                let _ = fs::write(&cross_path, new_content);
+                            }
+                        }
+                        
+                        // Remove from metadata
+                        metadata.patches.retain(|p| p.local_path != patch.local_path);
+                        
+                        // Remove local directory
+                        let _ = fs::remove_dir_all(&patch.local_path);
+                    }
+                    save_metadata(&metadata)?;
+                }
+                
+                // Remove the remote itself
+                if let Ok(remotes) = run_cmd(&["git", "remote"]) {
+                    if remotes.lines().any(|r| r.trim() == remote_name) {
+                        log_info(&format!("Removing git remote: {}", remote_name));
+                        let _ = run_cmd(&["git", "remote", "remove", remote_name]);
+                    }
+                }
+                
+                log_success(&format!("Remote {} and all its patches pruned successfully.", remote_name));
+            } else {
+                // Prune all unused remotes (no active patches)
+                log_info("Finding unused remotes...");
+                
+                // Get all remotes used by patches
+                let used_remotes: std::collections::HashSet<String> = 
+                    metadata.patches.iter().map(|p| p.remote.clone()).collect();
+                
+                // Get all git remotes
+                let all_remotes = run_cmd(&["git", "remote"])?;
+                let all_remotes: Vec<String> = all_remotes
+                    .lines()
+                    .map(|s| s.trim().to_string())
+                    .filter(|r| !r.is_empty() && r != "origin" && r != "git-cross")
+                    .collect();
+                
+                // Find unused remotes
+                let unused_remotes: Vec<String> = all_remotes
+                    .into_iter()
+                    .filter(|r| !used_remotes.contains(r))
+                    .collect();
+                
+                if unused_remotes.is_empty() {
+                    log_info("No unused remotes found.");
+                } else {
+                    log_info(&format!("Unused remotes: {}", unused_remotes.join(", ")));
+                    print!("Remove these remotes? [y/N]: ");
+                    std::io::stdout().flush()?;
+                    
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    
+                    if input.trim().to_lowercase() == "y" {
+                        for remote in unused_remotes {
+                            log_info(&format!("Removing remote: {}", remote));
+                            let _ = run_cmd(&["git", "remote", "remove", &remote]);
+                        }
+                        log_success("Unused remotes removed.");
+                    } else {
+                        log_info("Pruning cancelled.");
+                    }
+                }
+                
+                // Always prune stale worktrees
+                log_info("Pruning stale worktrees...");
+                let _ = run_cmd(&["git", "worktree", "prune", "--verbose"]);
+                log_success("Worktree pruning complete.");
+            }
         }
         Commands::Diff { path } => {
             let metadata = load_metadata()?;

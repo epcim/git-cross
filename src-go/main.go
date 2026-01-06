@@ -364,7 +364,10 @@ func selectPatchInteractive(meta *Metadata) (*Patch, error) {
 
 func main() {
 	var dry string
-	rootCmd := &cobra.Command{Use: "git-cross"}
+	rootCmd := &cobra.Command{
+		Use:     "git-cross",
+		Version: "0.2.1",
+	}
 	rootCmd.PersistentFlags().StringVar(&dry, "dry", "", "Dry run command (e.g. echo)")
 
 	useCmd := &cobra.Command{
@@ -524,39 +527,254 @@ func main() {
 				path = args[0]
 			}
 			meta, _ := loadMetadata()
+			root, err := getRepoRoot()
+			if err != nil {
+				return err
+			}
+
 			for _, p := range meta.Patches {
 				if path != "" && p.LocalPath != path {
 					continue
 				}
 				logInfo(fmt.Sprintf("Syncing %s...", p.LocalPath))
 
-				wtRepo, err := git.Open(p.Worktree)
+				localAbsPath := filepath.Join(root, p.LocalPath)
+
+				// Step 1: Check for uncommitted changes in local_path
+				stashed := false
+				checkCmd := exec.Command("git", "-C", localAbsPath, "status", "--porcelain")
+				if statusOut, err := checkCmd.Output(); err == nil && len(statusOut) > 0 {
+					logInfo("Stashing local uncommitted changes...")
+					stashCmd := exec.Command("git", "-C", localAbsPath, "stash", "push", "-m", "cross-sync-auto-stash")
+					if err := stashCmd.Run(); err != nil {
+						logError(fmt.Sprintf("Failed to stash changes in %s: %v", p.LocalPath, err))
+						continue
+					}
+					stashed = true
+				}
+
+				// Step 2: Rsync git-tracked files from local_path → worktree
+				logInfo(fmt.Sprintf("Syncing local changes to worktree %s...", p.Worktree))
+				lsFilesCmd := exec.Command("git", "-C", localAbsPath, "ls-files", "-z")
+				filesOut, err := lsFilesCmd.Output()
 				if err != nil {
-					logError(fmt.Sprintf("Failed to open worktree %s: %v", p.Worktree, err))
+					logError(fmt.Sprintf("Failed to list git files in %s: %v", p.LocalPath, err))
+					if stashed {
+						exec.Command("git", "-C", localAbsPath, "stash", "pop").Run()
+					}
 					continue
 				}
 
+				if len(filesOut) > 0 {
+					rsyncCmd := exec.Command("rsync", "-av0", "--files-from=-", "--relative", "--exclude", ".git",
+						localAbsPath+"/", filepath.Join(p.Worktree, p.RemotePath)+"/")
+					rsyncCmd.Stdin = strings.NewReader(string(filesOut))
+					if err := rsyncCmd.Run(); err != nil {
+						logError(fmt.Sprintf("Failed to rsync local to worktree: %v", err))
+						if stashed {
+							exec.Command("git", "-C", localAbsPath, "stash", "pop").Run()
+						}
+						continue
+					}
+				}
+
+				// Step 3: Commit local changes in worktree
+				wtRepo, err := git.Open(p.Worktree)
+				if err != nil {
+					logError(fmt.Sprintf("Failed to open worktree %s: %v", p.Worktree, err))
+					if stashed {
+						exec.Command("git", "-C", localAbsPath, "stash", "pop").Run()
+					}
+					continue
+				}
+
+				statusCmd := git.NewCommand("status", "--porcelain")
+				if wtStatus, err := statusCmd.RunInDir(p.Worktree); err == nil && len(wtStatus) > 0 {
+					logInfo("Committing local changes in worktree...")
+					git.NewCommand("add", ".").RunInDir(p.Worktree)
+					git.NewCommand("commit", "-m", "Sync local changes").RunInDir(p.Worktree)
+				}
+
+				// Step 4: Pull rebase from upstream
+				logInfo("Pulling updates from upstream...")
 				if err := wtRepo.Pull(git.PullOptions{
 					Remote: p.Remote,
 					Branch: p.Branch,
 					Rebase: true,
 				}); err != nil {
 					logError(fmt.Sprintf("Failed to pull for %s: %v", p.LocalPath, err))
+					logError("Please resolve conflicts manually in worktree:")
+					logError(fmt.Sprintf("  cd %s", p.Worktree))
+					if stashed {
+						logInfo("Note: Local changes are stashed. Run 'git stash pop' in local_path after resolving.")
+					}
 					continue
 				}
 
+				// Step 5: Delete tracked files in local_path that were removed upstream
+				logInfo("Checking for files deleted upstream...")
+				wtLsCmd := exec.Command("git", "-C", filepath.Join(p.Worktree, p.RemotePath), "ls-files")
+				wtFilesOut, err := wtLsCmd.Output()
+				if err == nil {
+					wtFiles := make(map[string]bool)
+					for _, f := range strings.Split(string(wtFilesOut), "\n") {
+						if f != "" {
+							wtFiles[f] = true
+						}
+					}
+
+					// Get tracked files in local_path from main repo
+					localLsCmd := exec.Command("git", "-C", root, "ls-files", p.LocalPath)
+					localFilesOut, err := localLsCmd.Output()
+					if err == nil {
+						for _, localFile := range strings.Split(string(localFilesOut), "\n") {
+							if localFile == "" {
+								continue
+							}
+							// Get relative path (remove local_path prefix)
+							relFile := strings.TrimPrefix(localFile, p.LocalPath+"/")
+							// Check if this tracked file no longer exists in worktree
+							if !wtFiles[relFile] {
+								fullPath := filepath.Join(root, localFile)
+								logInfo(fmt.Sprintf("Removing deleted file: %s", relFile))
+								os.Remove(fullPath)
+							}
+						}
+					}
+				}
+
+				// Step 6: Rsync worktree → local_path
+				logInfo("Syncing updates back to local directory...")
 				if err := runSync(p.Worktree+"/"+p.RemotePath+"/", p.LocalPath+"/"); err != nil {
 					logError(fmt.Sprintf("Failed to sync files for %s: %v", p.LocalPath, err))
+					if stashed {
+						exec.Command("git", "-C", localAbsPath, "stash", "pop").Run()
+					}
+					continue
 				}
+
+				// Step 7: Restore stashed changes
+				if stashed {
+					logInfo("Restoring stashed local changes...")
+					popCmd := exec.Command("git", "-C", localAbsPath, "stash", "pop")
+					if err := popCmd.Run(); err != nil {
+						logError("Failed to restore stashed changes. Conflicts may exist.")
+						logError(fmt.Sprintf("Resolve manually in: %s", p.LocalPath))
+						logInfo("Run 'git status' to see conflicts, then 'git stash drop' when resolved.")
+					} else {
+						// Check if there are conflicts after pop
+						conflictCheck := exec.Command("git", "-C", localAbsPath, "diff", "--name-only", "--diff-filter=U")
+						if conflictOut, err := conflictCheck.Output(); err == nil && len(conflictOut) > 0 {
+							logError("Conflicts detected after restoring local changes:")
+							fmt.Println(string(conflictOut))
+							logInfo("Resolve conflicts, then run 'git add' and continue.")
+						}
+					}
+				}
+
+				logSuccess(fmt.Sprintf("Sync completed for %s", p.LocalPath))
 			}
-			logSuccess("Sync completed.")
 			return nil
 		},
 	}
 
+	// Helper: Copy text to clipboard (cross-platform)
+	copyToClipboard := func(text string) error {
+		var cmd *exec.Cmd
+
+		// Detect platform and use appropriate command
+		if _, err := exec.LookPath("pbcopy"); err == nil {
+			// macOS
+			cmd = exec.Command("pbcopy")
+		} else if _, err := exec.LookPath("xclip"); err == nil {
+			// Linux with xclip
+			cmd = exec.Command("xclip", "-selection", "clipboard")
+		} else if _, err := exec.LookPath("xsel"); err == nil {
+			// Linux with xsel
+			cmd = exec.Command("xsel", "--clipboard", "--input")
+		} else {
+			return fmt.Errorf("no clipboard tool found (pbcopy/xclip/xsel)")
+		}
+
+		cmd.Stdin = strings.NewReader(text)
+		return cmd.Run()
+	}
+
+	// Helper: Get relative path from PWD to target
+	getRelativePath := func(targetPath string) string {
+		pwd, err := os.Getwd()
+		if err != nil {
+			return targetPath // fallback to absolute
+		}
+		relPath, err := filepath.Rel(pwd, targetPath)
+		if err != nil {
+			return targetPath // fallback to absolute
+		}
+		return relPath
+	}
+
+	// Helper: Open shell in target directory (path must be provided)
+	openShellInDir := func(path string, targetType string) error {
+		meta, _ := loadMetadata()
+		if len(meta.Patches) == 0 {
+			fmt.Println("No patches configured.")
+			return nil
+		}
+
+		// Find patch for provided path
+		patch := findPatchForPath(meta, path)
+		if patch == nil {
+			for i := range meta.Patches {
+				if meta.Patches[i].LocalPath == path {
+					patch = &meta.Patches[i]
+					break
+				}
+			}
+		}
+		if patch == nil {
+			return fmt.Errorf("patch not found for path: %s", path)
+		}
+
+		// Determine target directory
+		var targetDir string
+		if targetType == "worktree" {
+			targetDir = patch.Worktree
+		} else {
+			targetDir = patch.LocalPath
+		}
+
+		if _, err := os.Stat(targetDir); os.IsNotExist(err) {
+			return fmt.Errorf("%s not found: %s", targetType, targetDir)
+		}
+
+		// Open subshell
+		shell := os.Getenv("SHELL")
+		if shell == "" {
+			shell = "/bin/sh"
+		}
+
+		if dry != "" {
+			fmt.Printf("%s cd %s\n", dry, targetDir)
+			fmt.Printf("%s exec %s\n", dry, shell)
+			return nil
+		}
+
+		logInfo(fmt.Sprintf("Opening shell in %s", targetDir))
+		c := exec.Command(shell)
+		c.Dir = targetDir
+		c.Stdin = os.Stdin
+		c.Stdout = os.Stdout
+		c.Stderr = os.Stderr
+		return c.Run()
+	}
+
 	cdCmd := &cobra.Command{
 		Use:   "cd [path]",
-		Short: "Open a shell in the patch worktree",
+		Short: "Open a shell in the patch local_path (for editing files)",
+		Long: `Open a shell in the patch local_path (for editing files).
+
+With path: opens subshell in the specified local_path directory.
+Without path: uses fzf to select a patch, then copies the path to clipboard.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			meta, _ := loadMetadata()
 			if len(meta.Patches) == 0 {
@@ -564,25 +782,14 @@ func main() {
 				return nil
 			}
 
-			var patch *Patch
 			if len(args) > 0 {
-				path := strings.TrimSpace(args[0])
-				patch = findPatchForPath(meta, path)
-				if patch == nil {
-					for i := range meta.Patches {
-						if meta.Patches[i].LocalPath == path {
-							patch = &meta.Patches[i]
-							break
-						}
-					}
-				}
-				if patch == nil {
-					return fmt.Errorf("patch not found for path: %s", path)
-				}
+				// Path provided: open shell
+				return openShellInDir(strings.TrimSpace(args[0]), "local_path")
 			} else {
+				// No path: use fzf and copy to clipboard
 				selected, err := selectPatchInteractive(&meta)
 				if err != nil {
-					logInfo("fzf not available. Showing patch list; rerun with a path to enter a worktree.")
+					logInfo("fzf not available. Showing patch list; rerun with a path.")
 					table := tablewriter.NewWriter(os.Stdout)
 					table.Header("REMOTE", "REMOTE PATH", "LOCAL PATH")
 					for _, p := range meta.Patches {
@@ -595,35 +802,57 @@ func main() {
 					logInfo("No selection made.")
 					return nil
 				}
-				patch = selected
+				relPath := getRelativePath(selected.LocalPath)
+				if err := copyToClipboard(relPath); err != nil {
+					return fmt.Errorf("failed to copy to clipboard: %v", err)
+				}
+				logSuccess(fmt.Sprintf("Path copied to clipboard: %s", relPath))
+				return nil
 			}
+		},
+	}
 
-			if patch == nil {
+	wtCmd := &cobra.Command{
+		Use:   "wt [path]",
+		Short: "Open a shell in the patch worktree (for working with git history)",
+		Long: `Open a shell in the patch worktree (for working with git history).
+
+With path: opens subshell in the specified worktree directory.
+Without path: uses fzf to select a patch, then copies the path to clipboard.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			meta, _ := loadMetadata()
+			if len(meta.Patches) == 0 {
+				fmt.Println("No patches configured.")
 				return nil
 			}
 
-			if _, err := os.Stat(patch.Worktree); os.IsNotExist(err) {
-				return fmt.Errorf("worktree not found for %s", patch.LocalPath)
-			}
-
-			shell := os.Getenv("SHELL")
-			if shell == "" {
-				shell = "/bin/sh"
-			}
-
-			if dry != "" {
-				fmt.Printf("%s cd %s\n", dry, patch.Worktree)
-				fmt.Printf("%s exec %s\n", dry, shell)
+			if len(args) > 0 {
+				// Path provided: open shell
+				return openShellInDir(strings.TrimSpace(args[0]), "worktree")
+			} else {
+				// No path: use fzf and copy to clipboard
+				selected, err := selectPatchInteractive(&meta)
+				if err != nil {
+					logInfo("fzf not available. Showing patch list; rerun with a path.")
+					table := tablewriter.NewWriter(os.Stdout)
+					table.Header("REMOTE", "REMOTE PATH", "LOCAL PATH")
+					for _, p := range meta.Patches {
+						table.Append(p.Remote, p.RemotePath, p.LocalPath)
+					}
+					table.Render()
+					return nil
+				}
+				if selected == nil {
+					logInfo("No selection made.")
+					return nil
+				}
+				relPath := getRelativePath(selected.Worktree)
+				if err := copyToClipboard(relPath); err != nil {
+					return fmt.Errorf("failed to copy to clipboard: %v", err)
+				}
+				logSuccess(fmt.Sprintf("Path copied to clipboard: %s", relPath))
 				return nil
 			}
-
-			logInfo(fmt.Sprintf("Opening shell in %s", patch.Worktree))
-			c := exec.Command(shell)
-			c.Dir = patch.Worktree
-			c.Stdin = os.Stdin
-			c.Stdout = os.Stdout
-			c.Stderr = os.Stderr
-			return c.Run()
 		},
 	}
 
@@ -943,12 +1172,6 @@ func main() {
 		},
 	}
 
-	wtCmd := &cobra.Command{
-		Use:   "wt [path]",
-		Short: "Alias for cd",
-		RunE:  cdCmd.RunE,
-	}
-
 	removeCmd := &cobra.Command{
 		Use:   "remove [path]",
 		Short: "Remove a patch and its worktree",
@@ -1015,7 +1238,145 @@ func main() {
 		},
 	}
 
-	rootCmd.AddCommand(useCmd, patchCmd, syncCmd, removeCmd, cdCmd, wtCmd, listCmd, statusCmd, diffCmd, replayCmd, pushCmd, execCmd, initCmd)
+	pruneCmd := &cobra.Command{
+		Use:   "prune [remote]",
+		Short: "Prune unused remotes and worktrees, or remove all patches for a specific remote",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			meta, _ := loadMetadata()
+
+			if len(args) == 1 {
+				// Prune specific remote: remove all its patches
+				remoteName := args[0]
+				logInfo(fmt.Sprintf("Pruning all patches for remote: %s...", remoteName))
+
+				// Find all patches for this remote
+				var patchesToRemove []string
+				for _, p := range meta.Patches {
+					if p.Remote == remoteName {
+						patchesToRemove = append(patchesToRemove, p.LocalPath)
+					}
+				}
+
+				if len(patchesToRemove) == 0 {
+					logInfo(fmt.Sprintf("No patches found for remote: %s", remoteName))
+				} else {
+					// Remove each patch
+					for _, patchPath := range patchesToRemove {
+						logInfo(fmt.Sprintf("Removing patch: %s", patchPath))
+						// Call remove logic directly
+						localPath := filepath.Clean(patchPath)
+						meta, _ := loadMetadata()
+						var patch *Patch
+						patchIdx := -1
+						for i, p := range meta.Patches {
+							if p.LocalPath == localPath {
+								patch = &meta.Patches[i]
+								patchIdx = i
+								break
+							}
+						}
+
+						if patch != nil {
+							// Remove worktree
+							if _, err := os.Stat(patch.Worktree); err == nil {
+								git.NewCommand("worktree", "remove", "--force", patch.Worktree).RunInDir(".")
+							}
+
+							// Remove from Crossfile
+							path, err := getCrossfilePath()
+							if err == nil {
+								data, err := os.ReadFile(path)
+								if err == nil {
+									lines := strings.Split(string(data), "\n")
+									var newLines []string
+									for _, line := range lines {
+										if !strings.Contains(line, "patch") || !strings.Contains(line, localPath) {
+											newLines = append(newLines, line)
+										}
+									}
+									os.WriteFile(path, []byte(strings.Join(newLines, "\n")), 0o644)
+								}
+							}
+
+							// Remove from metadata
+							meta.Patches = append(meta.Patches[:patchIdx], meta.Patches[patchIdx+1:]...)
+							saveMetadata(meta)
+
+							// Remove local directory
+							os.RemoveAll(localPath)
+						}
+					}
+				}
+
+				// Remove the remote itself
+				out, _ := git.NewCommand("remote").RunInDir(".")
+				remotes := strings.Split(strings.TrimSpace(string(out)), "\n")
+				for _, r := range remotes {
+					if strings.TrimSpace(r) == remoteName {
+						logInfo(fmt.Sprintf("Removing git remote: %s", remoteName))
+						git.NewCommand("remote", "remove", remoteName).RunInDir(".")
+						break
+					}
+				}
+
+				logSuccess(fmt.Sprintf("Remote %s and all its patches pruned successfully.", remoteName))
+			} else {
+				// Prune all unused remotes (no active patches)
+				logInfo("Finding unused remotes...")
+
+				// Get all remotes used by patches
+				usedRemotes := make(map[string]bool)
+				for _, p := range meta.Patches {
+					usedRemotes[p.Remote] = true
+				}
+
+				// Get all git remotes
+				out, _ := git.NewCommand("remote").RunInDir(".")
+				allRemotes := strings.Split(strings.TrimSpace(string(out)), "\n")
+
+				// Find unused remotes (excluding origin and git-cross)
+				var unusedRemotes []string
+				for _, remote := range allRemotes {
+					remote = strings.TrimSpace(remote)
+					if remote == "" || remote == "origin" || remote == "git-cross" {
+						continue
+					}
+					if !usedRemotes[remote] {
+						unusedRemotes = append(unusedRemotes, remote)
+					}
+				}
+
+				if len(unusedRemotes) == 0 {
+					logInfo("No unused remotes found.")
+				} else {
+					logInfo(fmt.Sprintf("Unused remotes: %s", strings.Join(unusedRemotes, ", ")))
+					fmt.Print("Remove these remotes? [y/N]: ")
+					var confirm string
+					fmt.Scanln(&confirm)
+
+					if confirm == "y" || confirm == "Y" {
+						for _, remote := range unusedRemotes {
+							logInfo(fmt.Sprintf("Removing remote: %s", remote))
+							git.NewCommand("remote", "remove", remote).RunInDir(".")
+						}
+						logSuccess("Unused remotes removed.")
+					} else {
+						logInfo("Pruning cancelled.")
+					}
+				}
+
+				// Always prune stale worktrees
+				logInfo("Pruning stale worktrees...")
+				git.NewCommand("worktree", "prune", "--verbose").RunInDir(".")
+				logSuccess("Worktree pruning complete.")
+			}
+
+			return nil
+		},
+	}
+
+	rootCmd.AddCommand(useCmd, patchCmd, syncCmd, removeCmd, pruneCmd, cdCmd, wtCmd, listCmd, statusCmd, diffCmd, replayCmd, pushCmd, execCmd, initCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

@@ -1,3 +1,5 @@
+import? "git.just"
+
 # Delegate all invocations to the full recipe set
 [no-cd]
 @cross *ARGS:

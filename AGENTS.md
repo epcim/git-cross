@@ -53,7 +53,29 @@ Testing is modular and targets each implementation:
 - **Rust**: `test/008_rust_cli.sh` verifies the Rust port.
 - **Go**: `test/009_go_cli.sh` verifies the Go implementation.
 
+For known issues and planned enhancements, see [TODO.md](TODO.md).
+
 ## Agent Guidelines
+
+### CRITICAL: Complete Implementation Requirement
+
+**When implementing any feature or bug fix:**
+1. **ALL THREE implementations MUST be updated** - Justfile.cross, Go (src-go/), and Rust (src-rust/)
+2. **NO partial commits** - All implementations must land in the same commit or commit series
+3. **Test coverage required** - Each new feature/fix MUST have test coverage in test/XXX_*.sh
+4. **All implementations tested** - Tests must verify behavior across Just, Go, and Rust implementations
+5. **Command parity maintained** - All implementations must provide identical functionality and behavior
+
+**Workflow:**
+- Implement in Justfile.cross first (reference implementation)
+- Port to Go (primary production implementation)
+- Port to Rust (experimental implementation)
+- Create/update test case (test/XXX_*.sh)
+- Verify all three implementations pass the same test
+- Document in TODO.md and commit message
+- Only then commit
+
+### Other Guidelines
 
 - **Consistency**: When adding features, ensure logic parity across `Justfile.cross`, Rust, and Go versions.
 - **Command Parity**: All implementations (Just, Go, Rust) **MUST** implement the same set of core commands to ensure a consistent user experience regardless of the implementation layer used. 
