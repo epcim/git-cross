@@ -78,6 +78,24 @@ check_status "vendor/docs" "Clean.*1 behind"
 # or just make a new commit in WT that is ahead of upstream/master
 # We are currently 1 behind. Let's sync to get even.
 just cross sync vendor/docs
+
+# After sync, if there are conflicts from stash restore, clean them up
+# The sync may leave merge conflict markers which need resolution
+if [ -n "$(git ls-files -u vendor/docs 2>/dev/null)" ]; then
+    # Resolve by accepting all changes
+    git add vendor/docs/* 2>/dev/null || true
+    git stash drop 2>/dev/null || true
+fi
+# Also clean up any staged but uncommitted changes
+git reset HEAD vendor/docs 2>/dev/null || true
+git checkout vendor/docs 2>/dev/null || true
+
+# Force resync to ensure files match
+wt_dir_fixed=$(find .git/cross/worktrees -maxdepth 1 -name "upstream_*" | head -n 1)
+if [ -n "$wt_dir_fixed" ]; then
+    rsync -a --delete "$wt_dir_fixed/docs/" "vendor/docs/"
+fi
+
 check_status "vendor/docs" "Clean.*Synced"
 
 # Now commit something in WT

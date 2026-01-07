@@ -303,6 +303,72 @@ func findPatchForPath(meta Metadata, rel string) *Patch {
 	return selected
 }
 
+// resolvePathToRepoRelative converts any path (relative, absolute, or repo-relative)
+// to a repo-relative path for matching against metadata
+func resolvePathToRepoRelative(inputPath string) (string, error) {
+	if inputPath == "" {
+		return "", nil
+	}
+
+	// Get repo root
+	root, err := getRepoRoot()
+	if err != nil {
+		return "", err
+	}
+
+	// Get current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+
+	// Resolve input path to absolute
+	var absPath string
+	if filepath.IsAbs(inputPath) {
+		absPath = inputPath
+	} else {
+		absPath = filepath.Join(cwd, inputPath)
+	}
+
+	// Clean the path (resolves . and ..)
+	absPath = filepath.Clean(absPath)
+
+	// Evaluate symlinks to handle /tmp -> /private/tmp on macOS
+	absPath, err = filepath.EvalSymlinks(absPath)
+	if err != nil {
+		// If EvalSymlinks fails (path doesn't exist), continue with cleaned path
+		// This allows diff to work even if path doesn't exist yet
+		absPath = filepath.Clean(absPath)
+	}
+
+	// Also evaluate symlinks for root to ensure consistent comparison
+	rootResolved, err := filepath.EvalSymlinks(root)
+	if err == nil {
+		root = rootResolved
+	}
+
+	// Get relative path from repo root
+	relPath, err := filepath.Rel(root, absPath)
+	if err != nil {
+		return "", err
+	}
+
+	// Convert to forward slashes for consistency
+	relPath = filepath.ToSlash(relPath)
+
+	// If the path is outside the repo, return error
+	if strings.HasPrefix(relPath, "..") {
+		return "", fmt.Errorf("path is outside repository: %s", inputPath)
+	}
+
+	// Normalize: remove . and trim slashes
+	if relPath == "." {
+		return "", nil
+	}
+
+	return strings.Trim(relPath, "/"), nil
+}
+
 func selectPatchInteractive(meta *Metadata) (*Patch, error) {
 	if _, err := exec.LookPath("fzf"); err != nil {
 		return nil, err
@@ -944,6 +1010,13 @@ Without path: uses fzf to select a patch, then copies the path to clipboard.`,
 				fmt.Println("No patches configured.")
 				return nil
 			}
+
+			// Get repo root for resolving relative paths
+			root, err := getRepoRoot()
+			if err != nil {
+				return fmt.Errorf("failed to get repo root: %w", err)
+			}
+
 			table := tablewriter.NewWriter(os.Stdout)
 			table.Header("LOCAL PATH", "DIFF", "UPSTREAM", "CONFLICTS")
 			for _, p := range meta.Patches {
@@ -951,17 +1024,21 @@ Without path: uses fzf to select a patch, then copies the path to clipboard.`,
 				upstream := "Synced"
 				conflicts := "No"
 
-				if _, err := os.Stat(p.Worktree); os.IsNotExist(err) {
+				// Resolve worktree path relative to repo root
+				worktreePath := filepath.Join(root, p.Worktree)
+				if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
 					diff = "Missing WT"
 				} else {
-					// Quick diff check
-					c := exec.Command("git", "diff", "--no-index", "--quiet", p.Worktree+"/"+p.RemotePath, p.LocalPath)
+					// Quick diff check - use absolute paths
+					upstreamPath := filepath.Join(worktreePath, p.RemotePath)
+					localPath := filepath.Join(root, p.LocalPath)
+					c := exec.Command("git", "diff", "--no-index", "--quiet", upstreamPath, localPath)
 					if err := c.Run(); err != nil {
 						diff = "Modified"
 					}
 
-					behindOut, _ := git.NewCommand("rev-list", "--count", "HEAD..@{upstream}").RunInDir(p.Worktree)
-					aheadOut, _ := git.NewCommand("rev-list", "--count", "@{upstream}..HEAD").RunInDir(p.Worktree)
+					behindOut, _ := git.NewCommand("rev-list", "--count", "HEAD..@{upstream}").RunInDir(worktreePath)
+					aheadOut, _ := git.NewCommand("rev-list", "--count", "@{upstream}..HEAD").RunInDir(worktreePath)
 
 					behind := strings.TrimSpace(string(behindOut))
 					ahead := strings.TrimSpace(string(aheadOut))
@@ -972,7 +1049,13 @@ Without path: uses fzf to select a patch, then copies the path to clipboard.`,
 						upstream = ahead + " ahead"
 					}
 
-					if out, _ := git.NewCommand("ls-files", "-u").RunInDir(p.Worktree); len(out) > 0 {
+					if out, _ := git.NewCommand("ls-files", "-u").RunInDir(worktreePath); len(out) > 0 {
+						conflicts = "YES"
+					}
+
+					// Also check conflicts in local path (from failed stash restore)
+					localAbsPath := filepath.Join(root, p.LocalPath)
+					if out, _ := git.NewCommand("ls-files", "-u", localAbsPath).RunInDir(root); len(out) > 0 {
 						conflicts = "YES"
 					}
 				}
@@ -988,8 +1071,20 @@ Without path: uses fzf to select a patch, then copies the path to clipboard.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := ""
 			if len(args) > 0 {
-				path = args[0]
+				// Resolve relative/absolute path to repo-relative
+				resolved, err := resolvePathToRepoRelative(args[0])
+				if err != nil {
+					return fmt.Errorf("failed to resolve path: %w", err)
+				}
+				path = resolved
 			}
+
+			// Get repo root for resolving relative paths in metadata
+			root, err := getRepoRoot()
+			if err != nil {
+				return fmt.Errorf("failed to get repo root: %w", err)
+			}
+
 			meta, _ := loadMetadata()
 			found := false
 			for _, p := range meta.Patches {
@@ -997,12 +1092,19 @@ Without path: uses fzf to select a patch, then copies the path to clipboard.`,
 					continue
 				}
 				found = true
-				if _, err := os.Stat(p.Worktree); os.IsNotExist(err) {
+
+				// Resolve worktree path relative to repo root
+				worktreePath := filepath.Join(root, p.Worktree)
+				if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
 					logError(fmt.Sprintf("Worktree not found for %s", p.LocalPath))
 					continue
 				}
+
 				// Use git diff --no-index to compare directories
-				c := exec.Command("git", "diff", "--no-index", filepath.Join(p.Worktree, p.RemotePath), p.LocalPath)
+				// Both paths must be resolved relative to repo root
+				upstreamPath := filepath.Join(worktreePath, p.RemotePath)
+				localPath := filepath.Join(root, p.LocalPath)
+				c := exec.Command("git", "diff", "--no-index", upstreamPath, localPath)
 				c.Stdout = os.Stdout
 				c.Stderr = os.Stderr
 				// git diff --no-index returns 1 if there are differences, which cobra might treat as error

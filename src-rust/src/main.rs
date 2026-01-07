@@ -530,6 +530,64 @@ fn repo_relative_path() -> Result<Option<String>> {
     }
 }
 
+// resolvePathToRepoRelative converts any path (relative, absolute, or repo-relative)
+// to a repo-relative path for matching against metadata
+fn resolve_path_to_repo_relative(input_path: &str) -> Result<String> {
+    if input_path.is_empty() {
+        return Ok(String::new());
+    }
+
+    // Get repo root
+    let repo_root = get_repo_root()?;
+    let repo_root_path = std::path::Path::new(&repo_root);
+
+    // Get current directory
+    let cwd = std::env::current_dir()?;
+
+    // Resolve input to absolute path
+    let abs_path = if std::path::Path::new(input_path).is_absolute() {
+        std::path::PathBuf::from(input_path)
+    } else {
+        cwd.join(input_path)
+    };
+
+    // Canonicalize/clean the path (resolves . and ..)
+    let abs_path = abs_path
+        .canonicalize()
+        .unwrap_or_else(|_| {
+            // If canonicalize fails (path doesn't exist), manually clean it
+            let mut cleaned = std::path::PathBuf::new();
+            for component in abs_path.components() {
+                match component {
+                    std::path::Component::ParentDir => {
+                        cleaned.pop();
+                    }
+                    std::path::Component::CurDir => {}
+                    _ => cleaned.push(component),
+                }
+            }
+            cleaned
+        });
+
+    // Get relative path from repo root
+    let rel_path = abs_path
+        .strip_prefix(repo_root_path)
+        .map_err(|_| anyhow!("path is outside repository: {}", input_path))?;
+
+    // Convert to string and use forward slashes
+    let rel_path_str = rel_path
+        .to_str()
+        .ok_or_else(|| anyhow!("invalid UTF-8 in path"))?
+        .replace('\\', "/");
+
+    // Normalize: if it's just ".", return empty string
+    if rel_path_str == "." {
+        return Ok(String::new());
+    }
+
+    Ok(rel_path_str.trim_matches('/').to_string())
+}
+
 fn load_metadata() -> Result<Metadata> {
     let path = get_metadata_path()?;
     if path.exists() {
@@ -1036,6 +1094,9 @@ fn main() -> Result<()> {
                 return Ok(());
             }
 
+            // Get repo root for resolving relative paths
+            let root = get_repo_root()?;
+
             #[derive(Tabled)]
             struct StatusRow {
                 #[tabled(rename = "LOCAL PATH")]
@@ -1057,17 +1118,23 @@ fn main() -> Result<()> {
                     conflicts: "No".to_string(),
                 };
 
-                if !Path::new(&patch.worktree).exists() {
+                // Resolve worktree path relative to repo root
+                let worktree_path = Path::new(&root).join(&patch.worktree);
+                if !worktree_path.exists() {
                     row.diff = "Missing WT".to_string();
                 } else {
+                    // Both paths must be resolved relative to repo root
+                    let upstream_path = worktree_path.join(&patch.remote_path);
+                    let local_path = Path::new(&root).join(&patch.local_path);
+                    
                     let diff_check = duct::cmd(
                         "git",
                         [
                             "diff",
                             "--no-index",
                             "--quiet",
-                            &format!("{}/{}", patch.worktree, patch.remote_path),
-                            &patch.local_path,
+                            &upstream_path.to_string_lossy(),
+                            &local_path.to_string_lossy(),
                         ],
                     )
                     .unchecked()
@@ -1079,7 +1146,7 @@ fn main() -> Result<()> {
                     let behind = run_cmd(&[
                         "git",
                         "-C",
-                        &patch.worktree,
+                        &worktree_path.to_string_lossy(),
                         "rev-list",
                         "--count",
                         "HEAD..@{upstream}",
@@ -1088,7 +1155,7 @@ fn main() -> Result<()> {
                     let ahead = run_cmd(&[
                         "git",
                         "-C",
-                        &patch.worktree,
+                        &worktree_path.to_string_lossy(),
                         "rev-list",
                         "--count",
                         "@{upstream}..HEAD",
@@ -1101,7 +1168,14 @@ fn main() -> Result<()> {
                         row.upstream = format!("{} ahead", ahead);
                     }
 
-                    match run_cmd(&["git", "-C", &patch.worktree, "ls-files", "-u"]) {
+                    match run_cmd(&["git", "-C", &worktree_path.to_string_lossy(), "ls-files", "-u"]) {
+                        Ok(c) if !c.is_empty() => row.conflicts = "YES".to_string(),
+                        _ => (),
+                    }
+                    
+                    // Also check conflicts in local path (from failed stash restore)
+                    let local_abs_path = Path::new(&root).join(&patch.local_path);
+                    match run_cmd(&["git", "-C", &root, "ls-files", "-u", &local_abs_path.to_string_lossy()]) {
                         Ok(c) if !c.is_empty() => row.conflicts = "YES".to_string(),
                         _ => (),
                     }
@@ -1273,24 +1347,42 @@ fn main() -> Result<()> {
             }
         }
         Commands::Diff { path } => {
+            // Resolve relative/absolute path to repo-relative
+            let resolved_path = if !path.is_empty() {
+                resolve_path_to_repo_relative(path)?
+            } else {
+                path.clone()
+            };
+
+            // Get repo root for resolving relative paths in metadata
+            let root = get_repo_root()?;
+
             let metadata = load_metadata()?;
             let mut found = false;
             for patch in metadata.patches {
-                if !path.is_empty() && patch.local_path != *path {
+                if !resolved_path.is_empty() && patch.local_path != resolved_path {
                     continue;
                 }
                 found = true;
-                if !Path::new(&patch.worktree).exists() {
+                
+                // Resolve worktree path relative to repo root
+                let worktree_path = Path::new(&root).join(&patch.worktree);
+                if !worktree_path.exists() {
                     log_error(&format!("Worktree not found for {}", patch.local_path));
                     continue;
                 }
 
-                let wt_path = format!("{}/{}", patch.worktree, patch.remote_path);
+                // Both paths must be resolved relative to repo root
+                let upstream_path = worktree_path.join(&patch.remote_path);
+                let local_path = Path::new(&root).join(&patch.local_path);
+                
                 // git diff --no-index returns 1 on differences, duct handles it via unchecked() if we want to ignore exit code
-                let _ = duct::cmd("git", ["diff", "--no-index", &wt_path, &patch.local_path]).run();
+                let _ = duct::cmd("git", ["diff", "--no-index", 
+                    &upstream_path.to_string_lossy(), 
+                    &local_path.to_string_lossy()]).run();
             }
-            if !found && !path.is_empty() {
-                return Err(anyhow!("Patch not found for path: {}", path));
+            if !found && !resolved_path.is_empty() {
+                return Err(anyhow!("Patch not found for path: {}", resolved_path));
             }
         }
         Commands::Replay => {

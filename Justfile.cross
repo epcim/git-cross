@@ -577,10 +577,32 @@ sync *path="": check-initialized
 [no-cd]
 diff path="": check-initialized
     #!/usr/bin/env fish
+    
+    set resolved_path "{{path}}"
+    
+    # If path provided, resolve to repo-relative
+    if test -n "$resolved_path"
+        pushd "{{REPO_DIR}}" >/dev/null
+            # Check if path is a directory or file
+            if test -e "$resolved_path"
+                # cd to the path (or its directory) and get repo-relative location
+                if test -d "$resolved_path"
+                    set resolved_path (cd "$resolved_path" && git rev-parse --show-prefix | sed 's,/$,,')
+                else
+                    # Handle file path - get directory
+                    set dir (dirname "$resolved_path")
+                    set resolved_path (cd "$dir" && git rev-parse --show-prefix | sed 's,/$,,')
+                end
+            else
+                just cross _log error "Error: Path does not exist: $resolved_path"
+                exit 1
+            end
+        popd >/dev/null
+    end
 
     # Query metadata.json
-    just cross _resolve_context2 "{{path}}" | source \
-        || { just cross _log error "Error: Could not resolve metadata for '$path'."; exit 1; }
+    just cross _resolve_context2 "$resolved_path" | source \
+        || { just cross _log error "Error: Could not resolve metadata for '$resolved_path'."; exit 1; }
 
     pushd "{{REPO_DIR}}"  
         if test -d $worktree
@@ -850,8 +872,13 @@ status: check-deps
                     set upstream_stat "$ahead ahead"
                 end
                 
-                # Check conflicts
+                # Check conflicts in worktree
                 if git -C $wt ls-files -u | grep -q .
+                    set conflict_stat "YES"
+                end
+                
+                # Also check conflicts in local path (from failed stash restore)
+                if git ls-files -u $local_path | grep -q .
                     set conflict_stat "YES"
                 end
             else
