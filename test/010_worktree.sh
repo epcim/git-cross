@@ -3,6 +3,13 @@ set -euo pipefail
 
 source "$(dirname "$0")/common.sh"
 
+# The cd/wt commands are only implemented in Go and Rust, not in Justfile/shell
+# Skip this test when using Justfile implementation
+if [ "${TEST_USE_IMPL:-}" != "go" ] && [ "${TEST_USE_IMPL:-}" != "rust" ]; then
+    echo "Skipping test 010: cd/wt commands only available in Go/Rust implementations"
+    exit 0
+fi
+
 setup_sandbox
 cd "$SANDBOX"
 
