@@ -40,16 +40,18 @@
 ### P1: High Priority
 - [x] **Implement `cross prune [remote name]`** - Remove git remote registration from "cross use" command and ask user whether to remove all git remotes without active cross patches (like after: cross remove), then `git worktree prune` to remove all worktrees. Optional argument (a remote repo alias/name) would enforce removal of all its patches together with worktrees and remotes.
   - **Effort:** 3-4 hours (completed 2025-01-06)
-  - **Files:** `src-go/main.go`, `src-rust/src/main.rs`, `Justfile.cross`, `test/015_prune.sh`
+  - **Files:** `src-go/main.go`, `src-rust/src/main.rs`, `Justfile.cross`, `test/030_prune.sh`
   - **Implementation:**
     - ✅ Justfile.cross (lines 230-303): Full interactive prune with confirmation
     - ✅ Go (src-go/main.go): Cobra command with same logic
     - ✅ Rust (src-rust/src/main.rs): Clap command with same logic
-    - ✅ Test coverage (test/015_prune.sh): 3 test scenarios
+    - ✅ Test coverage (test/030_prune.sh): 3 test scenarios
   - **Behavior:**
     - `cross prune`: Finds unused remotes, asks for confirmation, removes them, prunes stale worktrees
     - `cross prune <remote>`: Removes all patches for that remote, then removes the remote itself
   - **Status:** COMPLETE - Ready for v0.2.1 release
+
+- [ ] Extend patch test. Create git repo. Create a new branch `featA`. Create a new independent git worktree in new working directory by `git worktree add $PWD-featA`; cd there; on this featA start testing `cross patch`.
 
 ### P2: Medium Priority
 - [x] **Fix `cross cd` and `cross wt` commands** - Correct behavior for navigation
@@ -136,6 +138,29 @@
 ### ✅ P0: Sync Command Data Loss (FIXED)
 
 - [x] **Issue:** The `cross sync` command in Go (and Rust) did not preserve local uncommitted changes. When users modified files in patched directory and ran sync, changes were lost/reverted.
+
+- [ ] Issue to patch some directories not exist. Crossfile not updated. .git/cross not created. This happened while working on non-main branch in independent git worktree (not a `cross worktree`).
+```
+    git cross patch this:f5cs-dnsFromXc-deploy-lib:ongoing/f5xc-tenants/ves-sre/f5cs-dns ongoing/f5xc-tenants/ves-sre/f5cs-dns
+    ==> Patching this:f5cs-dnsFromXc-deploy-lib:ongoing/f5xc-tenants/ves-sre/f5cs-dns to ongoing/f5xc-tenants/ves-sre/f5cs-dns
+    ==> Syncing files to ongoing/f5xc-tenants/ves-sre/f5cs-dns...
+    Error: rsync failed: exit status 23
+    Log: {rsync: [sender] change_dir "/Users/p.michalec/Work/gitlab-f5-xc/f5/volterra/ves.io/sre/xc-deploy-lib-release-ntt/.git/cross/worktrees/this_3aa5f4ff/ongoing/f5xc-tenants/ves-sre/f5cs-dns" failed: Not a directory (20)
+    rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1358) [sender=3.4.1]
+    sending incremental file list
+
+    sent 19 bytes  received 12 bytes  62.00 bytes/sec
+    total size is 0  speedup is 0.00
+    }
+    Usage:
+      git-cross patch [spec] [local_path] [flags]
+
+    Flags:
+      -h, --help   help for patch
+
+    Global Flags:
+          --dry string   Dry run command (e.g. echo)
+```
 
 **Fix Applied (2025-01-06):**
 - ✅ Go implementation (`src-go/main.go`): Added complete stash/restore workflow

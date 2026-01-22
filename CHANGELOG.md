@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Excludes 'origin' and 'git-cross' from cleanup
   - Runs `git worktree prune` to clean stale worktrees
   - Implemented across all three implementations (Just, Go, Rust)
-  - Full test coverage in `test/015_prune.sh`
+  - Full test coverage in `test/030_prune.sh`
 
 ### Fixed
 - **Sync command file deletion logic** - Only delete tracked files removed upstream
@@ -39,7 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Testing
 - Enhanced `test/004_sync.sh` with 6 comprehensive scenarios
-- Added `test/015_prune.sh` with 3 test scenarios
+- Added `test/030_prune.sh` with 3 test scenarios
 - All tests pass for Just, Go, and Rust implementations
 
 ## [0.2.0] - 2025-12-01

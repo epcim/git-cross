@@ -70,7 +70,7 @@ localPath := filepath.Join(root, p.LocalPath)
 - Commands only exist in Go/Rust
 - Test correctly skips for Justfile
 
-#### test/015_prune.sh ✅
+#### test/030_prune.sh ✅
 **Fixed**: Complete rewrite to actually test prune functionality
 - Test 1: Prune specific remote with patches
 - Test 2: Setup validation for interactive prune
@@ -89,7 +89,7 @@ All modified tests now pass:
 ✅ test/007_status.sh - Status with conflict cleanup
 ✅ test/008_rust_cli.sh - Rust output handling
 ✅ test/010_worktree.sh - Correctly skips for Justfile
-✅ test/015_prune.sh - Complete prune functionality
+✅ test/030_prune.sh - Complete prune functionality
 ```
 
 ## Files Changed (Ready for Commit)
@@ -101,7 +101,7 @@ modified:   test/003_diff.sh
 modified:   test/007_status.sh
 modified:   test/008_rust_cli.sh
 modified:   test/010_worktree.sh
-modified:   test/015_prune.sh
+ modified:   test/030_prune.sh
 ```
 
 ## Untracked Files (Can be ignored)
@@ -141,7 +141,7 @@ git commit -m "feat: Add relative path resolution for diff/status commands and f
   - test/007: Fix stash conflict cleanup
   - test/008: Handle Rust output format variations
   - test/010: Skip for Justfile (cd/wt not implemented)
-  - test/015: Complete rewrite with 3 prune test scenarios
+  - test/030: Complete rewrite with 3 prune test scenarios
 
 All three implementations (Justfile, Go, Rust) now support:
 - cd vendor/lib && git cross diff .

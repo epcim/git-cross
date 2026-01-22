@@ -3,6 +3,7 @@ import? "git.just"
 # Delegate all invocations to the full recipe set
 [no-cd]
 @cross *ARGS:
+  echo "{{source_dir()}}/Justfile.cross"; \
   REPO_DIR=$(git rev-parse --show-toplevel) \
   just --justfile "{{source_dir()}}/Justfile.cross" {{ARGS}}
 
