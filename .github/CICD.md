@@ -59,8 +59,8 @@ Added to README.md header:
 ### Creating a Release
 ```bash
 # Tag and push
-git tag v0.2.1
-git push origin v0.2.1
+git tag v0.2.2
+git push origin v0.2.2
 
 # GitHub Actions will automatically:
 # 1. Create a release

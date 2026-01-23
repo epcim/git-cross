@@ -4,13 +4,19 @@ import? "git.just"
 [no-cd]
 @cross *ARGS:
   echo "{{source_dir()}}/Justfile.cross"; \
-  REPO_DIR=$(git rev-parse --show-toplevel) \
+  REPO_DIR=$(git rev-parse --show-toplevel); \
+  CROSSDIR="$(git rev-parse --path-format=absolute --git-common-dir)/cross"; \
+  METADATA="$CROSSDIR/metadata.json"; \
+  export REPO_DIR CROSSDIR METADATA; \
   just --justfile "{{source_dir()}}/Justfile.cross" {{ARGS}}
 
 # keep compatibility with `just test-cross`
 [no-cd]
 @cross-test *ARGS:
-  REPO_DIR=$(git rev-parse --show-toplevel) \
+  REPO_DIR=$(git rev-parse --show-toplevel); \
+  CROSSDIR="$(git rev-parse --path-format=absolute --git-common-dir)/cross"; \
+  METADATA="$CROSSDIR/metadata.json"; \
+  export REPO_DIR CROSSDIR METADATA; \
   just --justfile "{{source_dir()}}/Justfile.cross" test "{{ARGS}}"
 
 # Run the Rust implementation

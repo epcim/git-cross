@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-01-22
+
+### Added
+- **Independent worktree support** across Just, Go, and Rust implementations
+  - Automatically resolves the shared `.git` directory when running from `git worktree` checkouts
+  - Honors `CROSSDIR` / `METADATA` environment overrides for automation and tests
+  - Synchronizes metadata and worktrees into the primary repository rather than the linked worktree
+- **Historical coverage** for worktree usage via `test/019_patch_worktree.sh`, executed for all implementations
+
+### Fixed
+- `git cross patch` (Go/Rust) now builds worktree paths from the shared git directory instead of assuming `.git/`
+- `Justfile.cross` sync, diff, and push targets normalize paths to absolute locations, eliminating rsync failures inside worktrees
+
+### Documentation
+- README highlights worktree support and environment overrides introduced in v0.2.2
+- Updated release instructions and agent docs to reference v0.2.2
+
+### Testing
+- Reworked `test/019_patch_worktree.sh` to provision branches safely, reuse helper utilities, and validate all three implementations from independent worktrees
+
 ## [0.2.1] - 2026-01-06
 
 ### Added

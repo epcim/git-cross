@@ -2,9 +2,9 @@
 
 ## Summary
 
-**Status:** v0.2.1 released with prune command and sync fixes  
+**Status:** v0.2.2 released with independent worktree support  
 **Critical Issues:** 0 (all P0 issues resolved)  
-**Pending Enhancements:** 2 (single-file patch, fzf improvements)
+**Pending Enhancements:** 4 (single-file patch, fzf improvements, context-aware diff, linked worktree edge case)
 
 ## Core Implementation Status
 
@@ -49,9 +49,9 @@
   - **Behavior:**
     - `cross prune`: Finds unused remotes, asks for confirmation, removes them, prunes stale worktrees
     - `cross prune <remote>`: Removes all patches for that remote, then removes the remote itself
-  - **Status:** COMPLETE - Ready for v0.2.1 release
+  - **Status:** COMPLETE - Shipped in v0.2.1
 
-- [ ] Extend patch test. Create git repo. Create a new branch `featA`. Create a new independent git worktree in new working directory by `git worktree add $PWD-featA`; cd there; on this featA start testing `cross patch`.
+- [x] Extend patch test to cover linked worktrees (test/019). Create git repo, create branch `featA`, add independent git worktree, and run `cross patch` across Just, Go, and Rust implementations.
 
 ### P2: Medium Priority
 - [x] **Fix `cross cd` and `cross wt` commands** - Correct behavior for navigation
@@ -195,7 +195,7 @@
 
 **Testing:** Run `just cross-test 004` to validate all scenarios  
 **Impact:** Data loss risk eliminated, file synchronization complete  
-**Status:** FIXED - Ready for v0.2.1 release
+**Status:** FIXED - Shipped in v0.2.1
 - [x] Updates to Crossfile can create duplicit lines (especially if user add spaces between remote_spec and local_spec.) Ideally we shall only check whether the local/path is already specified, and if yes then avoid update and avoid patch (as path exist.)
 - [x] Extend the tests, start using <https://github.com/runtipi/runtipi-appstore/> and sub-path apps/ for "patches". Document this in test-case design.
 - [x] Looks like the worktree created dont have any more "sparse checkout". Extend the validation, ie: that no other top-level files present in checkouts (assuming sub-path is used on remote repo)
