@@ -52,6 +52,7 @@ Testing is modular and targets each implementation:
 - **Bash/Fish**: `test/run-all.sh` executes legacy shell tests.
 - **Rust**: `test/008_rust_cli.sh` verifies the Rust port.
 - **Go**: `test/009_go_cli.sh` verifies the Go implementation.
+- **Integration Coverage**: Every new test must execute against all implementations (Justfile.cross, Go CLI, Rust CLI). Use the `just cross-test <id>` harness and mirror the multi-implementation pattern from tests like `test/019_patch_worktree.sh`.
 
 For known issues and planned enhancements, see [TODO.md](TODO.md).
 

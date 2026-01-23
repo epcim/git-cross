@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/epcim/git-cross/workflows/CI/badge.svg)](https://github.com/epcim/git-cross/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-0.2.1-blue.svg)](https://github.com/epcim/git-cross/blob/main/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.2.2-blue.svg)](https://github.com/epcim/git-cross/blob/main/CHANGELOG.md)
 
 **Git's CRISPR.** Minimalist approach for mixing "parts" of git repositories using `git worktree` + `rsync`.
 
@@ -144,6 +144,13 @@ cross exec "npm install && npm run build"
 ```
 
 > **Note**: While `cross` is the standard prefix for `Crossfile` entries (ensuring portability), you can also use `git cross` or `just cross` if you prefer specific implementation behavior.
+
+### Independent worktree support *(new in v0.2.2)*
+`git-cross` now detects the shared Git directory even when you operate from a linked worktree (`git worktree add …`).
+
+- **Just**, **Go**, and **Rust** CLIs honour the `CROSSDIR`/`METADATA` environment overrides used in tests and automation.
+- When no overrides are set, the CLIs resolve `.git/commondir` so patches, syncs, and metadata land in the correct parent repository.
+- Automated tests (`just cross-test 019`) cover patching from an independent worktree across all implementations.
 
 ### Just Integration
 If using `just`, you can override targets to add pre/post hooks:

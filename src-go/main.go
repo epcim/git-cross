@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/fatih/color"
 	"github.com/gogs/git-module"
@@ -18,9 +19,47 @@ import (
 )
 
 const (
-	MetadataRelPath  = ".git/cross/metadata.json"
+	MetadataRelPath  = "cross/metadata.json"
 	CrossfileRelPath = "Crossfile"
 )
+
+var (
+	gitDirOnce sync.Once
+	gitDir     string
+	gitDirErr  error
+)
+
+func getGitCommonDir() (string, error) {
+	gitDirOnce.Do(func() {
+		if envCross := os.Getenv("CROSSDIR"); envCross != "" {
+			gitDir = filepath.Dir(filepath.Clean(envCross))
+			return
+		}
+		out, err := exec.Command("git", "rev-parse", "--path-format=absolute", "--git-dir").Output()
+		if err != nil {
+			gitDirErr = err
+			return
+		}
+		absGitDir := filepath.Clean(strings.TrimSpace(string(out)))
+		commondirPath := filepath.Join(absGitDir, "commondir")
+		if data, readErr := os.ReadFile(commondirPath); readErr == nil {
+			rel := strings.TrimSpace(string(data))
+			if rel != "" {
+				candidate := filepath.Clean(filepath.Join(absGitDir, rel))
+				gitDir = candidate
+				return
+			}
+		} else if !os.IsNotExist(readErr) {
+			gitDirErr = readErr
+			return
+		}
+		gitDir = absGitDir
+	})
+	if gitDirErr != nil {
+		return "", gitDirErr
+	}
+	return gitDir, nil
+}
 
 func getRepoRoot() (string, error) {
 	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
@@ -31,11 +70,14 @@ func getRepoRoot() (string, error) {
 }
 
 func getMetadataPath() (string, error) {
-	root, err := getRepoRoot()
+	if envMeta := os.Getenv("METADATA"); envMeta != "" {
+		return filepath.Clean(envMeta), nil
+	}
+	gitDir, err := getGitCommonDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(root, MetadataRelPath), nil
+	return filepath.Join(gitDir, MetadataRelPath), nil
 }
 
 func getCrossfilePath() (string, error) {
@@ -432,7 +474,7 @@ func main() {
 	var dry string
 	rootCmd := &cobra.Command{
 		Use:     "git-cross",
-		Version: "0.2.1",
+		Version: "0.2.2",
 	}
 	rootCmd.PersistentFlags().StringVar(&dry, "dry", "", "Dry run command (e.g. echo)")
 
@@ -535,7 +577,12 @@ func main() {
 			h.Write([]byte(spec.Remote + spec.RemotePath + spec.Branch))
 			hash := hex.EncodeToString(h.Sum(nil))[:8]
 
-			wtDir := fmt.Sprintf(".git/cross/worktrees/%s_%s", spec.Remote, hash)
+			gitDir, err := getGitCommonDir()
+			if err != nil {
+				return err
+			}
+
+			wtDir := filepath.Join(gitDir, "cross", "worktrees", fmt.Sprintf("%s_%s", spec.Remote, hash))
 			if _, err := os.Stat(wtDir); os.IsNotExist(err) {
 				logInfo(fmt.Sprintf("Setting up worktree at %s...", wtDir))
 				if err := os.MkdirAll(wtDir, 0o755); err != nil {

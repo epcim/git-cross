@@ -13,3 +13,4 @@ cross sync
 
 cross use khue https://github.com/khuedoan/homelab
 cross patch khue:master:/metal deploy/metal
+cross patch this:f5cs-dnsFromXc-deploy-lib:ongoing/f5xc-tenants/ves-sre/f5cs-dns ongoing/f5xc-tenants/ves-sre/f5cs-dns

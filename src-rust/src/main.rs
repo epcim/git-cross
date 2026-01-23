@@ -4,13 +4,13 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::io::{ErrorKind, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use tabled::{Table, Tabled};
 
 #[derive(Parser)]
 #[command(name = "git-cross-rust")]
-#[command(version = "0.2.1")]
+#[command(version = "0.2.2")]
 #[command(
     about = "A tool for vendoring git directories using worktrees [EXPERIMENTAL/WIP]",
     long_about = "Note: The Rust implementation of git-cross is currently EXPERIMENTAL and WORK IN PROGRESS. The Go implementation is the primary focus and recommended for production use."
@@ -116,16 +116,46 @@ struct PatchSpec {
     branch_provided: bool,
 }
 
-const METADATA_REL_PATH: &str = ".git/cross/metadata.json";
 const CROSSFILE_REL_PATH: &str = "Crossfile";
+
+fn git_common_dir() -> Result<PathBuf> {
+    if let Ok(cross_env) = env::var("CROSSDIR") {
+        let cross_path = Path::new(&cross_env)
+            .canonicalize()
+            .unwrap_or_else(|_| Path::new(&cross_env).to_path_buf());
+        if let Some(parent) = cross_path.parent() {
+            return Ok(parent.to_path_buf());
+        }
+        return Ok(cross_path);
+    }
+
+    let abs_git_dir = run_cmd(&["git", "rev-parse", "--path-format=absolute", "--git-dir"])?;
+    let abs_git_path = Path::new(&abs_git_dir)
+        .canonicalize()
+        .unwrap_or_else(|_| Path::new(&abs_git_dir).to_path_buf());
+
+    let commondir_path = abs_git_path.join("commondir");
+    if let Ok(rel) = fs::read_to_string(&commondir_path) {
+        let joined = abs_git_path.join(rel.trim());
+        let resolved = joined.canonicalize().unwrap_or(joined);
+        return Ok(resolved);
+    }
+
+    Ok(abs_git_path)
+}
 
 fn get_repo_root() -> Result<String> {
     run_cmd(&["git", "rev-parse", "--show-toplevel"])
 }
 
 fn get_metadata_path() -> Result<std::path::PathBuf> {
-    let root = get_repo_root()?;
-    Ok(Path::new(&root).join(METADATA_REL_PATH))
+    if let Ok(meta_env) = env::var("METADATA") {
+        return Ok(Path::new(&meta_env)
+            .canonicalize()
+            .unwrap_or_else(|_| Path::new(&meta_env).to_path_buf()));
+    }
+    let git_dir = git_common_dir()?;
+    Ok(git_dir.join("cross/metadata.json"))
 }
 
 fn get_crossfile_path() -> Result<std::path::PathBuf> {
@@ -429,10 +459,14 @@ fn copy_to_clipboard(text: &str) -> Result<()> {
         duct::cmd!("pbcopy").stdin_bytes(text).run()?;
     } else if which::which("xclip").is_ok() {
         // Linux with xclip
-        duct::cmd!("xclip", "-selection", "clipboard").stdin_bytes(text).run()?;
+        duct::cmd!("xclip", "-selection", "clipboard")
+            .stdin_bytes(text)
+            .run()?;
     } else if which::which("xsel").is_ok() {
         // Linux with xsel
-        duct::cmd!("xsel", "--clipboard", "--input").stdin_bytes(text).run()?;
+        duct::cmd!("xsel", "--clipboard", "--input")
+            .stdin_bytes(text)
+            .run()?;
     } else {
         return Err(anyhow!("No clipboard tool found (pbcopy/xclip/xsel)"));
     }
@@ -441,30 +475,31 @@ fn copy_to_clipboard(text: &str) -> Result<()> {
 
 fn get_relative_path(target_path: &str) -> String {
     use std::path::PathBuf;
-    
+
     // Get current working directory
     let Ok(pwd) = env::current_dir() else {
         return target_path.to_string();
     };
-    
+
     // Convert target to absolute path (don't use canonicalize - it requires file to exist)
     let target = PathBuf::from(target_path);
-    
+
     // Manual computation: try strip_prefix first (if target is subpath of pwd)
     if let Ok(rel) = target.strip_prefix(&pwd) {
         return rel.to_string_lossy().to_string();
     }
-    
+
     // Otherwise compute relative path by finding common prefix
     let pwd_components: Vec<_> = pwd.components().collect();
     let target_components: Vec<_> = target.components().collect();
-    
+
     // Find common prefix
-    let common = pwd_components.iter()
+    let common = pwd_components
+        .iter()
         .zip(target_components.iter())
         .take_while(|(a, b)| a == b)
         .count();
-    
+
     // Build relative path: ../ for each level up, then remaining target components
     let ups = pwd_components.len() - common;
     let mut rel_path = PathBuf::new();
@@ -474,7 +509,7 @@ fn get_relative_path(target_path: &str) -> String {
     for comp in &target_components[common..] {
         rel_path.push(comp);
     }
-    
+
     rel_path.to_string_lossy().to_string()
 }
 
@@ -488,7 +523,13 @@ fn open_shell_in_dir(path: &str, target_type: &str) -> Result<()> {
     // Find patch for provided path
     let path = path.trim();
     let target_patch = find_patch_for_path(&metadata, path)
-        .or_else(|| metadata.patches.iter().find(|p| p.local_path == path).cloned())
+        .or_else(|| {
+            metadata
+                .patches
+                .iter()
+                .find(|p| p.local_path == path)
+                .cloned()
+        })
         .ok_or_else(|| anyhow!("Patch not found for path: {}", path))?;
 
     // Determine target directory
@@ -552,22 +593,20 @@ fn resolve_path_to_repo_relative(input_path: &str) -> Result<String> {
     };
 
     // Canonicalize/clean the path (resolves . and ..)
-    let abs_path = abs_path
-        .canonicalize()
-        .unwrap_or_else(|_| {
-            // If canonicalize fails (path doesn't exist), manually clean it
-            let mut cleaned = std::path::PathBuf::new();
-            for component in abs_path.components() {
-                match component {
-                    std::path::Component::ParentDir => {
-                        cleaned.pop();
-                    }
-                    std::path::Component::CurDir => {}
-                    _ => cleaned.push(component),
+    let abs_path = abs_path.canonicalize().unwrap_or_else(|_| {
+        // If canonicalize fails (path doesn't exist), manually clean it
+        let mut cleaned = std::path::PathBuf::new();
+        for component in abs_path.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    cleaned.pop();
                 }
+                std::path::Component::CurDir => {}
+                _ => cleaned.push(component),
             }
-            cleaned
-        });
+        }
+        cleaned
+    });
 
     // Get relative path from repo root
     let rel_path = abs_path
@@ -622,7 +661,9 @@ fn update_crossfile(line: &str) -> Result<()> {
 
     let already_exists = content.lines().any(|l| {
         let trimmed_l = l.trim();
-        trimmed_l == line || trimmed_l == format!("cross {}", line) || trimmed_l == line_without_prefix
+        trimmed_l == line
+            || trimmed_l == format!("cross {}", line)
+            || trimmed_l == line_without_prefix
     });
 
     if !already_exists {
@@ -704,11 +745,16 @@ fn main() -> Result<()> {
             let hash = format!("{:016x}", hasher.finish());
             let hash = &hash[..8];
 
-            let wt_dir = format!(".git/cross/worktrees/{}_{}", spec.remote, hash);
+            let cross_worktrees = git_common_dir()?.join("cross/worktrees");
+            fs::create_dir_all(&cross_worktrees)?;
+            let wt_dir_path = cross_worktrees.join(format!("{}_{}", spec.remote, hash));
+            let wt_dir = wt_dir_path.to_string_lossy().to_string();
 
-            if !Path::new(&wt_dir).exists() {
+            if !wt_dir_path.exists() {
                 log_info(&format!("Setting up worktree at {}...", wt_dir));
-                fs::create_dir_all(&wt_dir)?;
+                if let Some(parent) = wt_dir_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
 
                 run_cmd(&[
                     "git",
@@ -884,7 +930,9 @@ fn main() -> Result<()> {
                     log_error("Please resolve conflicts manually in worktree:");
                     log_error(&format!("  cd {}", patch.worktree));
                     if stashed {
-                        log_info("Note: Local changes are stashed. Run 'git stash pop' in local_path after resolving.");
+                        log_info(
+                            "Note: Local changes are stashed. Run 'git stash pop' in local_path after resolving.",
+                        );
                     }
                     continue;
                 }
@@ -892,12 +940,12 @@ fn main() -> Result<()> {
                 // Step 5: Delete tracked files in local_path that were removed upstream
                 log_info("Checking for files deleted upstream...");
                 let wt_remote_path = format!("{}/{}", patch.worktree, patch.remote_path);
-                
+
                 // Get tracked files in worktree
                 if let Ok(wt_files_str) = run_cmd(&["git", "-C", &wt_remote_path, "ls-files"]) {
-                    let wt_files: std::collections::HashSet<String> = 
+                    let wt_files: std::collections::HashSet<String> =
                         wt_files_str.lines().map(|s| s.to_string()).collect();
-                    
+
                     // Get tracked files in local_path from main repo
                     if let Ok(local_files_str) = run_cmd(&["git", "ls-files", &patch.local_path]) {
                         for local_file in local_files_str.lines() {
@@ -905,19 +953,21 @@ fn main() -> Result<()> {
                                 continue;
                             }
                             // Get relative path (remove local_path prefix)
-                            let rel_file = local_file.strip_prefix(&format!("{}/", patch.local_path))
+                            let rel_file = local_file
+                                .strip_prefix(&format!("{}/", patch.local_path))
                                 .unwrap_or(local_file);
-                            
+
                             // Check if this tracked file no longer exists in worktree
                             if !wt_files.contains(rel_file) {
                                 log_info(&format!("Removing deleted file: {}", rel_file));
-                                let full_path = format!("{}/{}", env::current_dir()?.display(), local_file);
+                                let full_path =
+                                    format!("{}/{}", env::current_dir()?.display(), local_file);
                                 let _ = std::fs::remove_file(&full_path);
                             }
                         }
                     }
                 }
-                
+
                 // Step 6: Rsync worktree → local_path (without --delete, we handle deletions above)
                 log_info(&format!("Syncing files to {}...", patch.local_path));
                 let src = format!("{}/{}/", patch.worktree, patch.remote_path);
@@ -936,7 +986,9 @@ fn main() -> Result<()> {
                     if let Err(e) = run_cmd(&["git", "-C", &local_abs_path, "stash", "pop"]) {
                         log_error("Failed to restore stashed changes. Conflicts may exist.");
                         log_error(&format!("Resolve manually in: {}", patch.local_path));
-                        log_info("Run 'git status' to see conflicts, then 'git stash drop' when resolved.");
+                        log_info(
+                            "Run 'git status' to see conflicts, then 'git stash drop' when resolved.",
+                        );
                     } else {
                         // Check for conflicts after pop
                         if let Ok(conflicts) = run_cmd(&[
@@ -1042,7 +1094,9 @@ fn main() -> Result<()> {
                                     continue;
                                 }
 
-                                let entry = remote_map.entry(name.to_string()).or_insert_with(|| (String::new(), String::new()));
+                                let entry = remote_map
+                                    .entry(name.to_string())
+                                    .or_insert_with(|| (String::new(), String::new()));
                                 if rtype.contains("fetch") {
                                     entry.0 = url.to_string();
                                 } else if rtype.contains("push") {
@@ -1126,7 +1180,7 @@ fn main() -> Result<()> {
                     // Both paths must be resolved relative to repo root
                     let upstream_path = worktree_path.join(&patch.remote_path);
                     let local_path = Path::new(&root).join(&patch.local_path);
-                    
+
                     let diff_check = duct::cmd(
                         "git",
                         [
@@ -1168,14 +1222,27 @@ fn main() -> Result<()> {
                         row.upstream = format!("{} ahead", ahead);
                     }
 
-                    match run_cmd(&["git", "-C", &worktree_path.to_string_lossy(), "ls-files", "-u"]) {
+                    match run_cmd(&[
+                        "git",
+                        "-C",
+                        &worktree_path.to_string_lossy(),
+                        "ls-files",
+                        "-u",
+                    ]) {
                         Ok(c) if !c.is_empty() => row.conflicts = "YES".to_string(),
                         _ => (),
                     }
-                    
+
                     // Also check conflicts in local path (from failed stash restore)
                     let local_abs_path = Path::new(&root).join(&patch.local_path);
-                    match run_cmd(&["git", "-C", &root, "ls-files", "-u", &local_abs_path.to_string_lossy()]) {
+                    match run_cmd(&[
+                        "git",
+                        "-C",
+                        &root,
+                        "ls-files",
+                        "-u",
+                        &local_abs_path.to_string_lossy(),
+                    ]) {
                         Ok(c) if !c.is_empty() => row.conflicts = "YES".to_string(),
                         _ => (),
                     }
@@ -1202,7 +1269,8 @@ fn main() -> Result<()> {
             // 1. Remove worktree
             if Path::new(&patch.worktree).exists() {
                 log_info(&format!("Removing git worktree at {}...", patch.worktree));
-                if let Err(e) = run_cmd(&["git", "worktree", "remove", "--force", &patch.worktree]) {
+                if let Err(e) = run_cmd(&["git", "worktree", "remove", "--force", &patch.worktree])
+                {
                     log_error(&format!("Failed to remove worktree: {}", e));
                 }
             }
@@ -1238,11 +1306,14 @@ fn main() -> Result<()> {
         }
         Commands::Prune { remote } => {
             let mut metadata = load_metadata()?;
-            
+
             if let Some(remote_name) = remote {
                 // Prune specific remote: remove all its patches
-                log_info(&format!("Pruning all patches for remote: {}...", remote_name));
-                
+                log_info(&format!(
+                    "Pruning all patches for remote: {}...",
+                    remote_name
+                ));
+
                 // Find all patches for this remote
                 let patches_to_remove: Vec<Patch> = metadata
                     .patches
@@ -1250,25 +1321,28 @@ fn main() -> Result<()> {
                     .filter(|p| p.remote == *remote_name)
                     .cloned()
                     .collect();
-                
+
                 if patches_to_remove.is_empty() {
                     log_info(&format!("No patches found for remote: {}", remote_name));
                 } else {
                     // Remove each patch
                     for patch in patches_to_remove {
                         log_info(&format!("Removing patch: {}", patch.local_path));
-                        
+
                         // Remove worktree
                         if Path::new(&patch.worktree).exists() {
-                            let _ = run_cmd(&["git", "worktree", "remove", "--force", &patch.worktree]);
+                            let _ =
+                                run_cmd(&["git", "worktree", "remove", "--force", &patch.worktree]);
                         }
-                        
+
                         // Remove from Crossfile
                         if let Ok(cross_path) = get_crossfile_path() {
                             if let Ok(content) = fs::read_to_string(&cross_path) {
                                 let lines: Vec<String> = content
                                     .lines()
-                                    .filter(|l| !l.contains("patch") || !l.contains(&patch.local_path))
+                                    .filter(|l| {
+                                        !l.contains("patch") || !l.contains(&patch.local_path)
+                                    })
                                     .map(|l| l.to_string())
                                     .collect();
                                 let mut new_content = lines.join("\n");
@@ -1278,16 +1352,18 @@ fn main() -> Result<()> {
                                 let _ = fs::write(&cross_path, new_content);
                             }
                         }
-                        
+
                         // Remove from metadata
-                        metadata.patches.retain(|p| p.local_path != patch.local_path);
-                        
+                        metadata
+                            .patches
+                            .retain(|p| p.local_path != patch.local_path);
+
                         // Remove local directory
                         let _ = fs::remove_dir_all(&patch.local_path);
                     }
                     save_metadata(&metadata)?;
                 }
-                
+
                 // Remove the remote itself
                 if let Ok(remotes) = run_cmd(&["git", "remote"]) {
                     if remotes.lines().any(|r| r.trim() == remote_name) {
@@ -1295,16 +1371,19 @@ fn main() -> Result<()> {
                         let _ = run_cmd(&["git", "remote", "remove", remote_name]);
                     }
                 }
-                
-                log_success(&format!("Remote {} and all its patches pruned successfully.", remote_name));
+
+                log_success(&format!(
+                    "Remote {} and all its patches pruned successfully.",
+                    remote_name
+                ));
             } else {
                 // Prune all unused remotes (no active patches)
                 log_info("Finding unused remotes...");
-                
+
                 // Get all remotes used by patches
-                let used_remotes: std::collections::HashSet<String> = 
+                let used_remotes: std::collections::HashSet<String> =
                     metadata.patches.iter().map(|p| p.remote.clone()).collect();
-                
+
                 // Get all git remotes
                 let all_remotes = run_cmd(&["git", "remote"])?;
                 let all_remotes: Vec<String> = all_remotes
@@ -1312,23 +1391,23 @@ fn main() -> Result<()> {
                     .map(|s| s.trim().to_string())
                     .filter(|r| !r.is_empty() && r != "origin" && r != "git-cross")
                     .collect();
-                
+
                 // Find unused remotes
                 let unused_remotes: Vec<String> = all_remotes
                     .into_iter()
                     .filter(|r| !used_remotes.contains(r))
                     .collect();
-                
+
                 if unused_remotes.is_empty() {
                     log_info("No unused remotes found.");
                 } else {
                     log_info(&format!("Unused remotes: {}", unused_remotes.join(", ")));
                     print!("Remove these remotes? [y/N]: ");
                     std::io::stdout().flush()?;
-                    
+
                     let mut input = String::new();
                     std::io::stdin().read_line(&mut input)?;
-                    
+
                     if input.trim().to_lowercase() == "y" {
                         for remote in unused_remotes {
                             log_info(&format!("Removing remote: {}", remote));
@@ -1339,7 +1418,7 @@ fn main() -> Result<()> {
                         log_info("Pruning cancelled.");
                     }
                 }
-                
+
                 // Always prune stale worktrees
                 log_info("Pruning stale worktrees...");
                 let _ = run_cmd(&["git", "worktree", "prune", "--verbose"]);
@@ -1364,7 +1443,7 @@ fn main() -> Result<()> {
                     continue;
                 }
                 found = true;
-                
+
                 // Resolve worktree path relative to repo root
                 let worktree_path = Path::new(&root).join(&patch.worktree);
                 if !worktree_path.exists() {
@@ -1375,11 +1454,18 @@ fn main() -> Result<()> {
                 // Both paths must be resolved relative to repo root
                 let upstream_path = worktree_path.join(&patch.remote_path);
                 let local_path = Path::new(&root).join(&patch.local_path);
-                
+
                 // git diff --no-index returns 1 on differences, duct handles it via unchecked() if we want to ignore exit code
-                let _ = duct::cmd("git", ["diff", "--no-index", 
-                    &upstream_path.to_string_lossy(), 
-                    &local_path.to_string_lossy()]).run();
+                let _ = duct::cmd(
+                    "git",
+                    [
+                        "diff",
+                        "--no-index",
+                        &upstream_path.to_string_lossy(),
+                        &local_path.to_string_lossy(),
+                    ],
+                )
+                .run();
             }
             if !found && !resolved_path.is_empty() {
                 return Err(anyhow!("Patch not found for path: {}", resolved_path));

@@ -3,8 +3,8 @@ set export := true
 set positional-arguments
 
 CROSSFILE := "Crossfile"
-CROSSDIR := ".git/cross"
-METADATA := "$CROSSDIR/metadata.json"
+CROSSDIR := env("CROSSDIR", ".git/cross")
+METADATA := env("METADATA", "{{CROSSDIR}}/metadata.json")
 JUST_DIR := env("JUST_DIR", source_dir())
 REPO_DIR := env ("REPO_DIR", "$(git rev-parse --show-toplevel)")
 SHELL := env("SHELL")
@@ -93,8 +93,8 @@ check-deps:
         end
     end
     if test (count $missing) -gt 0
-        just cross _log error "Missing: $missing"
-        just cross _log info "Install with: brew install $missing"
+        just --justfile "{{justfile()}}" _log error "Missing: $missing"
+        just --justfile "{{justfile()}}" _log info "Install with: brew install $missing"
         exit 1
     end
 
@@ -110,18 +110,45 @@ _resolve_context2 path="": check-initialized
         set -x path "$(git rev-parse --show-prefix | sed 's,\/$,,')" # cwd, relative to git repo
     end
     if test -z "$path"
-        just cross _log error "Provide path to 'patch' or change directory into it."
+        just --justfile "{{justfile()}}" _log error "Provide path to 'patch' or change directory into it."
         exit 1
     end
     # Query metadata.json and export matching key as env variables
     # Find patch where local_path matches rel_target or is a parent of rel_target
+    set metadata (just --justfile "{{justfile()}}" _metadata_path)
     jq -r --arg path "{{path}}" '
         .patches
         | map(. as $patch | select($patch.local_path | startswith($path)))
         | map(. + {mlen:(.local_path|length)})
         | max_by(.mlen)
         | to_entries | map("set -x \(.key) \(.value|@sh)") | .[]
-        ' "{{REPO_DIR}}/{{METADATA}}"
+        ' "$metadata"
+
+[no-cd]
+_resolve_crossdir:
+    #!/usr/bin/env fish
+    set crossdir "{{CROSSDIR}}"
+    if string match -q '/*' -- "$crossdir"
+        echo $crossdir
+    else
+        echo {{REPO_DIR}}/$crossdir
+    end
+
+[no-cd]
+_metadata_path:
+    #!/usr/bin/env fish
+    set crossdir (just --justfile "{{justfile()}}" _resolve_crossdir)
+    echo "$crossdir/metadata.json"
+
+[no-cd]
+_resolve_patch_path path:
+    #!/usr/bin/env fish
+    set p "{{path}}"
+    if string match -q '/*' -- "$p"
+        echo "$p"
+    else
+        echo {{REPO_DIR}}/$p
+    end
 
 # AICONTEXT: This method updates Crossfile, an configuration file for git-cross. Do not change implementation!
 # Internal: append command to Crossfile (avoiding duplicates)
@@ -159,10 +186,10 @@ exec +CMD:
 init:
     #!/usr/bin/env fish
     if test -f "{{CROSSFILE}}"
-        just cross _log info "Crossfile already exists."
+        just --justfile "{{justfile()}}" _log info "Crossfile already exists."
     else
         echo "# git-cross configuration" > "{{CROSSFILE}}"
-        just cross _log success "Crossfile initialized."
+        just --justfile "{{justfile()}}" _log success "Crossfile initialized."
     end
 
 # AICONTEXT: "use" register remote git repository and update Crossfile with "use" command. Do not change implementation!
@@ -175,7 +202,7 @@ use name url: check-deps
         git remote add {{name}} {{url}}
         # Detect default branch
         git ls-remote --heads {{url}} 2>/dev/null \
-        && just cross update_crossfile "cross use {{name}} {{url}}"
+        && just --justfile "{{justfile()}}" update_crossfile "cross use {{name}} {{url}}"
     end
 
 # Remove a patch and its worktree
@@ -185,28 +212,28 @@ remove path: check-deps
     set l_path "{{path}}"
     pushd "{{REPO_DIR}}"
         if not test -f {{METADATA}}
-            just cross _log error "No metadata found."
+            just --justfile "{{justfile()}}" _log error "No metadata found."
             exit 1
         end
 
         set entry (jq -r --arg lp "$l_path" '.patches[] | select(.local_path == $lp)' {{METADATA}})
         if test -z "$entry"
-            just cross _log error "Patch not found for path: $l_path"
+            just --justfile "{{justfile()}}" _log error "Patch not found for path: $l_path"
             exit 1
         end
 
         set wt (echo "$entry" | jq -r '.worktree')
 
-        just cross _log info "Removing patch at $l_path..."
+        just --justfile "{{justfile()}}" _log info "Removing patch at $l_path..."
 
         # 1. Remove worktree
         if test -d "$wt"
-            just cross _log info "Removing git worktree at $wt..."
+            just --justfile "{{justfile()}}" _log info "Removing git worktree at $wt..."
             git worktree remove --force "$wt"
         end
 
         # 2. Remove from Crossfile
-        just cross _log info "Removing from Crossfile..."
+        just --justfile "{{justfile()}}" _log info "Removing from Crossfile..."
         if test -f "{{CROSSFILE}}"
             set tmp (mktemp)
             grep -v "patch" "{{CROSSFILE}}" > "$tmp"
@@ -215,16 +242,16 @@ remove path: check-deps
         end
 
         # 3. Update metadata
-        just cross _log info "Updating metadata..."
+        just --justfile "{{justfile()}}" _log info "Updating metadata..."
         set tmp_meta (mktemp)
         jq --arg lp "$l_path" '.patches |= map(select(.local_path != $lp))' {{METADATA}} > "$tmp_meta"
         mv "$tmp_meta" {{METADATA}}
 
         # 4. Remove local directory
-        just cross _log info "Deleting local directory $l_path..."
+        just --justfile "{{justfile()}}" _log info "Deleting local directory $l_path..."
         rm -rf "$l_path"
 
-        just cross _log success "Patch removed successfully."
+        just --justfile "{{justfile()}}" _log success "Patch removed successfully."
     popd
 
 # Prune unused remotes and worktrees, or remove all patches for a specific remote
@@ -233,37 +260,37 @@ prune remote_name="": check-deps
     set remote "{{remote_name}}"
     pushd "{{REPO_DIR}}"
         if not test -f {{METADATA}}
-            just cross _log error "No metadata found."
+            just --justfile "{{justfile()}}" _log error "No metadata found."
             exit 1
         end
 
         if test -n "$remote"
             # Prune specific remote: remove all its patches
-            just cross _log info "Pruning all patches for remote: $remote..."
+            just --justfile "{{justfile()}}" _log info "Pruning all patches for remote: $remote..."
             
             # Get all patches for this remote
             set patches (jq -r --arg remote "$remote" '.patches[] | select(.remote == $remote) | .local_path' {{METADATA}})
             
             if test -z "$patches"
-                just cross _log warn "No patches found for remote: $remote"
+                just --justfile "{{justfile()}}" _log warn "No patches found for remote: $remote"
             else
                 # Remove each patch
                 for patch_path in $patches
-                    just cross _log info "Removing patch: $patch_path"
-                    just cross remove "$patch_path"
+                    just --justfile "{{justfile()}}" _log info "Removing patch: $patch_path"
+                    just --justfile "{{justfile()}}" remove "$patch_path"
                 end
             end
             
             # Remove the remote itself
             if git remote | grep -q "^$remote\$"
-                just cross _log info "Removing git remote: $remote"
+                just --justfile "{{justfile()}}" _log info "Removing git remote: $remote"
                 git remote remove "$remote"
             end
             
-            just cross _log success "Remote $remote and all its patches pruned successfully."
+            just --justfile "{{justfile()}}" _log success "Remote $remote and all its patches pruned successfully."
         else
             # Prune all unused remotes (no active patches)
-            just cross _log info "Finding unused remotes..."
+            just --justfile "{{justfile()}}" _log info "Finding unused remotes..."
             
             # Get all remotes used by patches
             set used_remotes (jq -r '.patches[].remote' {{METADATA}} | sort -u)
@@ -280,26 +307,26 @@ prune remote_name="": check-deps
             end
             
             if test -z "$unused_remotes"
-                just cross _log info "No unused remotes found."
+                just --justfile "{{justfile()}}" _log info "No unused remotes found."
             else
-                just cross _log info "Unused remotes: $unused_remotes"
+                just --justfile "{{justfile()}}" _log info "Unused remotes: $unused_remotes"
                 read -P "Remove these remotes? [y/N]: " confirm
                 
                 if test "$confirm" = "y"; or test "$confirm" = "Y"
                     for remote in $unused_remotes
-                        just cross _log info "Removing remote: $remote"
+                        just --justfile "{{justfile()}}" _log info "Removing remote: $remote"
                         git remote remove "$remote"
                     end
-                    just cross _log success "Unused remotes removed."
+                    just --justfile "{{justfile()}}" _log success "Unused remotes removed."
                 else
-                    just cross _log info "Pruning cancelled."
+                    just --justfile "{{justfile()}}" _log info "Pruning cancelled."
                 end
             end
             
             # Always prune stale worktrees
-            just cross _log info "Pruning stale worktrees..."
+            just --justfile "{{justfile()}}" _log info "Pruning stale worktrees..."
             git worktree prune --verbose
-            just cross _log success "Worktree pruning complete."
+            just --justfile "{{justfile()}}" _log success "Worktree pruning complete."
         end
     popd
 
@@ -318,27 +345,27 @@ patch remote_spec local_path="": check-deps
             set remote $parts[1]
             set remote_path $parts[2]
         case '*'
-            just cross _log error "Error: Invalid format Use remote[:branch]:remote_path [local_path]"
+            just --justfile "{{justfile()}}" _log error "Error: Invalid format Use remote[:branch]:remote_path [local_path]"
             exit 1
     end
 
-    # update vars
-    set r_path "$remote_path"
-    set l_path "{{local_path}}"
-    if test -z "$l_path"
-        set l_path "$r_path"
-    end
+        # update vars
+        set r_path "$remote_path"
+        set l_path "{{local_path}}"
+        if test -z "$l_path"
+            set l_path "$r_path"
+        end
 
     pushd "{{REPO_DIR}}"
     
         # validate remote   
         if not git remote show $remote |grep -vq "^$remote\$" 
-            just cross _log error "Error: Remote $remote not found. Run: just use $remote <url>"
+            just --justfile "{{justfile()}}" _log error "Error: Remote $remote not found. Run: just use $remote <url>"
             exit 1
         end
         # validate paths
         if test -z "$l_path"; or test "$l_path" = "/";
-            just cross _log error "Error: Invalid format Use remote[:branch]:remote_path [local_path]"
+            just --justfile "{{justfile()}}" _log error "Error: Invalid format Use remote[:branch]:remote_path [local_path]"
             exit 1
         end
 
@@ -350,34 +377,62 @@ patch remote_spec local_path="": check-deps
             end
         end
         
-        # calculate hash/id
-        set hash (echo $l_path | md5sum | cut -d' ' -f1 | cut -c1-8)
-        set wt ".git/cross/worktrees/$remote"_"$hash"
-        
+        # Determine worktree identity and remote path type
+        git fetch $remote $remote_branch >/dev/null 2>&1
+        set path_info (git ls-tree "$remote/$remote_branch" "$r_path")
+        if test -z "$path_info"
+            just --justfile "{{justfile()}}" _log error "Error: Remote path '$r_path' not found on $remote/$remote_branch"
+            exit 1
+        end
+
+        set remote_type "tree"
+        if string match -qr " blob " -- "$path_info"
+            set remote_type "file"
+        end
+
+        if test "$remote_type" = "file"
+            set wt_hash (echo "$remote:$remote_branch" | md5sum | cut -d' ' -f1 | cut -c1-8)
+        else
+            set wt_hash (echo $l_path | md5sum | cut -d' ' -f1 | cut -c1-8)
+        end
+        set patch_id (echo $l_path | md5sum | cut -d' ' -f1 | cut -c1-8)
+        set wt "{{CROSSDIR}}/worktrees/$remote"_"$wt_hash"
+
         # setup worktree
-        just cross _log info "Setting up worktree at $wt..."
+        just --justfile "{{justfile()}}" _log info "Setting up worktree at $wt..."
         if not test -d $wt
             mkdir -p (dirname $wt)
-            git fetch $remote $remote_branch
-            git worktree add --no-checkout -B "cross/$remote/$remote_branch/$hash" $wt "$remote/$remote_branch" >/dev/null 2>&1
+            git worktree add --no-checkout -B "cross/$remote/$remote_branch/$wt_hash" $wt "$remote/$remote_branch" >/dev/null 2>&1
 
             # Sparse checkout
             git -C $wt sparse-checkout init --no-cone
             git -C $wt sparse-checkout set $r_path
             git -C $wt checkout
+            git -C $wt reset --hard "$remote/$remote_branch" >/dev/null 2>&1
+        else
+            # Ensure sparse checkout includes desired path when reusing worktree
+            git -C $wt fetch $remote $remote_branch >/dev/null 2>&1
+            git -C $wt reset --hard "$remote/$remote_branch" >/dev/null 2>&1
+            git -C $wt sparse-checkout add $r_path >/dev/null 2>&1 || true
         end
 
         # sync to local_path
-        just cross _log info "Syncing files to $l_path..."
-        mkdir -p $l_path
-        rsync -av --delete --exclude .git $wt/$r_path/ $l_path/
+        just --justfile "{{justfile()}}" _log info "Syncing files to $l_path..."
+        if test "$remote_type" = "file"
+            set local_dir (dirname $l_path)
+            mkdir -p $local_dir
+            rsync -av --exclude .git $wt/$r_path $l_path
+        else
+            mkdir -p $l_path
+            rsync -av --delete --exclude .git $wt/$r_path/ $l_path/
+        end
 
         # Add local_path to git
         git add $l_path
         
         # update Crossfile
-        just cross _log info "Update Crossfile"
-        just cross update_crossfile "cross patch $remote:$remote_branch:$r_path $l_path"
+        just --justfile "{{justfile()}}" _log info "Update Crossfile"
+        just --justfile "{{justfile()}}" update_crossfile "cross patch $remote:$remote_branch:$r_path $l_path"
 
         # Initialize metadata.json
         if not test -f {{METADATA}}
@@ -385,20 +440,23 @@ patch remote_spec local_path="": check-deps
             echo '{"patches": []}' > {{METADATA}}
         end
         # Update metadata.json
-        set new_entry "{\"id\": \"$hash\", \"remote\": \"$remote\", \"remote_path\": \"$r_path\", \"local_path\": \"$l_path\", \"worktree\": \"$wt\", \"branch\": \"$remote_branch\"}"
+        set new_entry "{\"id\": \"$patch_id\", \"remote\": \"$remote\", \"remote_path\": \"$r_path\", \"local_path\": \"$l_path\", \"worktree\": \"$wt\", \"branch\": \"$remote_branch\"}"
         # 1. Delete existing entry with same id (if any)
         # 2. Append new entry
         set tmp_file (mktemp)
         ## AICONTEXT: use direct update with jq instead the temp file
-        jq ".patches |= map(select(.id != \"$hash\")) + [$new_entry]" "{{METADATA}}" > "$tmp_file"
+        jq ".patches |= map(select(.id != \"$patch_id\")) + [$new_entry]" "{{METADATA}}" > "$tmp_file"
         mv "$tmp_file" "{{METADATA}}"
         
     popd
 
 [no-cd]
 @check-initialized:
-    cd {{REPO_DIR}} && test -d {{CROSSDIR}}/worktrees && test -f {{METADATA}} \
-        || { just cross _log warn "No patches to sync"; exit 0; }
+    #!/usr/bin/env fish
+    set -l crossdir (just --justfile "{{justfile()}}" _resolve_crossdir)
+    set -l metadata (just --justfile "{{justfile()}}" _metadata_path)
+    test -d $crossdir/worktrees && test -f $metadata \
+        || { just --justfile "{{justfile()}}" _log warn "No patches to sync"; exit 0; }
 
 # AICONTEXT: "sync" will sync all or the provided local_path with upstream. Workflow: 1. Stash uncommitted changes in local_path. 2. Rsync git-tracked files from local_path to worktree. 3. Commit changes in worktree. 4. Pull rebase from upstream. 5. If conflicts, exit and ask user to resolve. 6. Rsync worktree back to local_path. 7. Restore stashed changes. 8. Check for conflicts in restored changes.
 # Sync all patches from upstream
@@ -406,11 +464,14 @@ patch remote_spec local_path="": check-deps
 sync *path="": check-initialized
     #!/usr/bin/env fish
     # Query metadata.json
-    just cross _resolve_context2 {{path}} | source \
-        || { just cross _log error "Error: Could not resolve metadata for $path."; exit 1; }
+    just --justfile "{{justfile()}}" _resolve_context2 {{path}} | source \
+        || { just --justfile "{{justfile()}}" _log error "Error: Could not resolve metadata for $path."; exit 1; }
 
     pushd "{{REPO_DIR}}"
-        just cross _log info "Syncing $local_path with $worktree..."
+        set -l worktree_abs (just --justfile "{{justfile()}}" _resolve_patch_path "$worktree")
+        set -l local_abs (just --justfile "{{justfile()}}" _resolve_patch_path "$local_path")
+        set -l git_common (string replace -r '/cross/?$' '' {{CROSSDIR}})
+        just --justfile "{{justfile()}}" _log info "Syncing $local_path with $worktree..."
         
         # 0. Ensure local_path exists
         mkdir -p $local_path
@@ -419,46 +480,46 @@ sync *path="": check-initialized
         set stashed false
         set has_changes (git status --porcelain $local_path 2>/dev/null | wc -l | tr -d ' ')
         if test "$has_changes" -gt 0
-            just cross _log info "Detected uncommitted changes in $local_path..."
+            just --justfile "{{justfile()}}" _log info "Detected uncommitted changes in $local_path..."
             set stashed true
         end
         
         # 1. Rsync current state (including uncommitted) from local_path to worktree
         # AICONTEXT: the rsync need to sync only git tracked files in $local_path to $worktree/$remote_path
-        just cross _log info "Syncing local changes to worktree..."
+        just --justfile "{{justfile()}}" _log info "Syncing local changes to worktree..."
         if test -d $local_path
             pushd $local_path
               # Get tracked files (includes files with uncommitted changes)
               set tracked (git ls-files .)
               if test -n "$tracked"
                   # Rsync tracked files (with their current content, including uncommitted changes)
-                  git ls-files . -z | rsync -0 --files-from=- -av --relative --exclude .git {{REPO_DIR}}/$local_path {{REPO_DIR}}/$worktree/$remote_path
+                  git ls-files . -z | rsync -0 --files-from=- -av --relative --exclude .git $local_abs $worktree_abs/$remote_path
               end
             popd
         end
         
         # 1.5. NOW stash uncommitted changes (after copying them to worktree)
         if test "$stashed" = "true"
-            just cross _log info "Stashing uncommitted changes in $local_path..."
+            just --justfile "{{justfile()}}" _log info "Stashing uncommitted changes in $local_path..."
             # Stash including untracked files, only in local_path
             git stash push --include-untracked -m "cross-sync-auto-stash: $local_path" -- $local_path
         end
  
 
         # 2. Commit local changes in worktree
-        set dirty (git -C $worktree status --porcelain)
+        set dirty (git -C $worktree_abs status --porcelain)
         if test -n "$dirty"
-            just cross _log info "Committing local changes in $worktree..."
-            git -C $worktree add .
-            git -C $worktree commit -m "Sync local changes"
+            just --justfile "{{justfile()}}" _log info "Committing local changes in $worktree..."
+            git -C $worktree_abs add .
+            git -C $worktree_abs commit -m "Sync local changes"
         end
         
         # 2.5. Check if worktree is in a good state (not detached HEAD, not mid-rebase)
-        pushd $worktree
+        pushd $worktree_abs
             # Check for ongoing rebase/merge FIRST (before anything else)
             # For worktrees, rebase-merge can be in multiple locations
-            set worktree_name (basename $worktree)
-            set rebase_dirs .git/rebase-merge .git/rebase-apply {{REPO_DIR}}/.git/worktrees/$worktree_name/rebase-merge {{REPO_DIR}}/.git/worktrees/$worktree_name/rebase-apply
+            set worktree_name (basename $worktree_abs)
+            set rebase_dirs .git/rebase-merge .git/rebase-apply $git_common/worktrees/$worktree_name/rebase-merge $git_common/worktrees/$worktree_name/rebase-apply
             
             set needs_cleanup false
             for dir in $rebase_dirs
@@ -469,7 +530,7 @@ sync *path="": check-initialized
             end
             
             if test "$needs_cleanup" = "true"
-                just cross _log warn "Worktree has an in-progress operation. Cleaning up..."
+                just --justfile "{{justfile()}}" _log warn "Worktree has an in-progress operation. Cleaning up..."
                 git rebase --abort 2>/dev/null || true
                 git merge --abort 2>/dev/null || true
                 # Force remove all possible rebase dirs
@@ -480,11 +541,11 @@ sync *path="": check-initialized
             
             # Check for detached HEAD
             if not git symbolic-ref -q HEAD >/dev/null 2>&1
-                just cross _log warn "Worktree is in detached HEAD state. Attempting to recover..."
+                just --justfile "{{justfile()}}" _log warn "Worktree is in detached HEAD state. Attempting to recover..."
                 # Find the worktree's branch name
                 set branch_name (git for-each-ref --format='%(refname:short)' refs/heads/ | grep -E 'cross/' | head -1)
                 if test -n "$branch_name"
-                    just cross _log info "Checking out branch: $branch_name"
+                    just --justfile "{{justfile()}}" _log info "Checking out branch: $branch_name"
                     git checkout -B $branch_name 2>/dev/null || true
                     # Reset to clean state
                     git fetch $remote 2>/dev/null || true
@@ -494,25 +555,25 @@ sync *path="": check-initialized
         popd
         
         # 3. Pull rebase from upstream
-        just cross _log info "Pulling from upstream..."
-        if not git -C $worktree pull --rebase
-            just cross _log error "Conflict detected in $worktree. Please resolve manually."
-            just cross _log info "cd $worktree"
+        just --justfile "{{justfile()}}" _log info "Pulling from upstream..."
+        if not git -C $worktree_abs pull --rebase
+            just --justfile "{{justfile()}}" _log error "Conflict detected in $worktree. Please resolve manually."
+            just --justfile "{{justfile()}}" _log info "cd $worktree_abs"
             if test "$stashed" = "true"
-                just cross _log warn "Note: Local changes are stashed. Run 'git stash pop' in $local_path after resolving."
+                just --justfile "{{justfile()}}" _log warn "Note: Local changes are stashed. Run 'git stash pop' in $local_path after resolving."
             end
             exit 1
         end
         
         # 4. Sync back to local - ensure directory exists
-        just cross _log info "Syncing back to $local_path..."
+        just --justfile "{{justfile()}}" _log info "Syncing back to $local_path..."
         mkdir -p $local_path
         
         # 4.1. Remove files from local_path that were deleted upstream
         # Only delete files that are:
         # - Tracked in the main repo (in local_path)
         # - No longer exist in the worktree
-        pushd $worktree/$remote_path
+        pushd $worktree_abs/$remote_path
           # Get list of tracked files in worktree
           set worktree_files (git ls-files .)
           
@@ -532,7 +593,7 @@ sync *path="": check-initialized
               set rel_file (string replace -r "^$local_path/" "" $tracked_file)
               # Check if this tracked file no longer exists in worktree
               if not grep -qF "$rel_file" $temp_list 2>/dev/null
-                just cross _log info "Removing deleted file: $rel_file"
+                just --justfile "{{justfile()}}" _log info "Removing deleted file: $rel_file"
                 rm -f {{REPO_DIR}}/$tracked_file
               end
             end
@@ -541,12 +602,12 @@ sync *path="": check-initialized
           rm -f $temp_list
           
           # 4.2. Rsync tracked files from worktree to local
-          git ls-files . -z | rsync -0 --files-from=- -av --relative --exclude .git {{REPO_DIR}}/$worktree/$remote_path {{REPO_DIR}}/$local_path 
+          git ls-files . -z | rsync -0 --files-from=- -av --relative --exclude .git $worktree_abs/$remote_path $local_abs 
         popd
 
         # 5. Restore stashed changes if they exist
         if test "$stashed" = "true"
-            just cross _log info "Restoring stashed local changes..."
+            just --justfile "{{justfile()}}" _log info "Restoring stashed local changes..."
             # First, add any new files that came from worktree sync
             git add $local_path 2>/dev/null || true
             # Now try to pop the stash (might have conflicts if same files were modified upstream)
@@ -554,20 +615,20 @@ sync *path="": check-initialized
                 # Success - check for conflicts
                 set conflicts (git diff --name-only --diff-filter=U -- $local_path 2>/dev/null | wc -l | tr -d ' ')
                 if test "$conflicts" -gt 0
-                    just cross _log error "Conflicts detected after restoring local changes in $local_path:"
+                    just --justfile "{{justfile()}}" _log error "Conflicts detected after restoring local changes in $local_path:"
                     git diff --name-only --diff-filter=U -- $local_path
-                    just cross _log info "Resolve conflicts, then run 'git add' and continue."
+                    just --justfile "{{justfile()}}" _log info "Resolve conflicts, then run 'git add' and continue."
                 end
             else
                 # Stash pop failed - likely due to conflicts
-                just cross _log warn "Could not automatically restore stashed changes."
-                just cross _log info "Your changes are preserved in the stash."
-                just cross _log info "Run 'git stash list' to see them, 'git stash show' to view, 'git stash pop' to retry."
-                just cross _log info "Or run 'git stash drop' if you want to discard them."
+                just --justfile "{{justfile()}}" _log warn "Could not automatically restore stashed changes."
+                just --justfile "{{justfile()}}" _log info "Your changes are preserved in the stash."
+                just --justfile "{{justfile()}}" _log info "Run 'git stash list' to see them, 'git stash show' to view, 'git stash pop' to retry."
+                just --justfile "{{justfile()}}" _log info "Or run 'git stash drop' if you want to discard them."
             end
         end
 
-        just cross _log success "Sync completed for $local_path"
+        just --justfile "{{justfile()}}" _log success "Sync completed for $local_path"
     popd  
         
 
@@ -594,21 +655,23 @@ diff path="": check-initialized
                     set resolved_path (cd "$dir" && git rev-parse --show-prefix | sed 's,/$,,')
                 end
             else
-                just cross _log error "Error: Path does not exist: $resolved_path"
+                just --justfile "{{justfile()}}" _log error "Error: Path does not exist: $resolved_path"
                 exit 1
             end
         popd >/dev/null
     end
 
     # Query metadata.json
-    just cross _resolve_context2 "$resolved_path" | source \
-        || { just cross _log error "Error: Could not resolve metadata for '$resolved_path'."; exit 1; }
+    just --justfile "{{justfile()}}" _resolve_context2 "$resolved_path" | source \
+        || { just --justfile "{{justfile()}}" _log error "Error: Could not resolve metadata for '$resolved_path'."; exit 1; }
 
     pushd "{{REPO_DIR}}"  
-        if test -d $worktree
-            git diff --no-index $worktree/$remote_path $local_path || true
+        set -l wt_path (just --justfile "{{justfile()}}" _resolve_patch_path "$worktree")
+        set -l local_abs (just --justfile "{{justfile()}}" _resolve_patch_path "$local_path")
+        if test -d $wt_path
+            git diff --no-index $wt_path/$remote_path $local_abs || true
         else
-            just cross _log error "Error: Worktree not found $worktree"
+            just --justfile "{{justfile()}}" _log error "Error: Worktree not found $worktree"
             exit 1
         end
     popd
@@ -620,23 +683,25 @@ push path="" branch="" force="false" yes="false" message="": check-initialized
     #!/usr/bin/env fish
 
     # Query metadata.json
-    just cross _resolve_context2 "{{path}}" | source \
-        || { just cross _log error "Error: Could not resolve metadata for '$path'."; exit 1; }
+    just --justfile "{{justfile()}}" _resolve_context2 "{{path}}" | source \
+        || { just --justfile "{{justfile()}}" _log error "Error: Could not resolve metadata for '$path'."; exit 1; }
 
     pushd "{{REPO_DIR}}"
-        just cross _log warn "The 'push' command is currently WORK IN PROGRESS."
-        if not test -d $worktree
-            just cross _log error "Error: Worktree not found. Run 'just patch' first."
+        set -l worktree_abs (just --justfile "{{justfile()}}" _resolve_patch_path "$worktree")
+        set -l local_abs (just --justfile "{{justfile()}}" _resolve_patch_path "$local_path")
+        just --justfile "{{justfile()}}" _log warn "The 'push' command is currently WORK IN PROGRESS."
+        if not test -d $worktree_abs
+            just --justfile "{{justfile()}}" _log error "Error: Worktree not found. Run 'just patch' first."
             exit 1
         end
         
-        just cross _log info "Syncing changes from $local_path back to $worktree..."
-        rsync -av --delete --exclude .git $local_path/ $worktree/$remote_path/
+        just --justfile "{{justfile()}}" _log info "Syncing changes from $local_path back to $worktree..."
+        rsync -av --delete --exclude .git $local_abs/ $worktree_abs/$remote_path/
         
-        just cross _log info "---------------------------------------------------"
-        just cross _log info "Worktree updated. Status:"
-        git -C $worktree status
-        just cross _log info "---------------------------------------------------"
+        just --justfile "{{justfile()}}" _log info "---------------------------------------------------"
+        just --justfile "{{justfile()}}" _log info "Worktree updated. Status:"
+        git -C $worktree_abs status
+        just --justfile "{{justfile()}}" _log info "---------------------------------------------------"
         
         while true
             if test "{{yes}}" = "true"
@@ -647,8 +712,8 @@ push path="" branch="" force="false" yes="false" message="": check-initialized
 
             switch $choice
                 case r R
-                    just cross _log info "Preparing commit..."
-                    pushd $worktree
+                    just --justfile "{{justfile()}}" _log info "Preparing commit..."
+                    pushd $worktree_abs
                         git add .
                         
                         # Determine commit message
@@ -669,7 +734,7 @@ push path="" branch="" force="false" yes="false" message="": check-initialized
                             if test -z "$msg"
                                 set msg "Sync updates from $local_path"
                             end
-                            just cross _log info "Auto-generated message: $msg"
+                            just --justfile "{{justfile()}}" _log info "Auto-generated message: $msg"
                         end
 
                         git commit -m "$msg"
@@ -689,22 +754,22 @@ push path="" branch="" force="false" yes="false" message="": check-initialized
                             set push_args $push_args "--force"
                         end
 
-                        just cross _log info "Pushing to $push_args..."
+                        just --justfile "{{justfile()}}" _log info "Pushing to $push_args..."
                         git push $push_args
                     popd >/dev/null
                     break
                 case m M
-                    just cross _log info "Spawning subshell in $worktree..."
-                    just cross _log info "Type 'exit' to return."
+                    just --justfile "{{justfile()}}" _log info "Spawning subshell in $worktree..."
+                    just --justfile "{{justfile()}}" _log info "Type 'exit' to return."
                     pushd $worktree
                     fish
                     popd >/dev/null
-                    just cross _log info "Returned from manual mode."
+                    just --justfile "{{justfile()}}" _log info "Returned from manual mode."
                 case c C
-                    just cross _log warn "Cancelled."
+                    just --justfile "{{justfile()}}" _log warn "Cancelled."
                     exit 0
                 case '*'
-                    just cross _log error "Invalid choice."
+                    just --justfile "{{justfile()}}" _log error "Invalid choice."
             end
         end
     popd
@@ -715,12 +780,12 @@ push path="" branch="" force="false" yes="false" message="": check-initialized
 list: check-deps
     #!/usr/bin/env fish
     pushd "{{REPO_DIR}}" >/dev/null
-        if test -f .git/cross/metadata.json
+        if test -f {{METADATA}}
             # Get unique remotes used by patches
-            set used_remotes (jq -r '.patches[].remote' .git/cross/metadata.json | sort -u)
+            set used_remotes (jq -r '.patches[].remote' {{METADATA}} | sort -u)
             
             if test (count $used_remotes) -gt 0
-                just cross _log info "Configured Remotes:"
+                just --justfile "{{justfile()}}" _log info "Configured Remotes:"
                 printf "%-20s %s\n" "NAME" "URL"
                 printf "%s\n" (string repeat -n 70 "-")
                 
@@ -752,28 +817,28 @@ list: check-deps
         end
 
         if not test -f Crossfile
-            just cross _log warn "No patches found (Crossfile missing)."
+            just --justfile "{{justfile()}}" _log warn "No patches found (Crossfile missing)."
             popd >/dev/null
             exit 0
         end
         
-        just cross _log info "Configured Patches:"
+        just --justfile "{{justfile()}}" _log info "Configured Patches:"
         printf "%-20s %-30s %-20s\n" "REMOTE" "REMOTE PATH" "LOCAL PATH"
         printf "%s\n" (string repeat -n 70 "-")
         
-        if test -f .git/cross/metadata.json
-            jq -r '.patches[] | "\(.remote) \(.remote_path) \(.local_path)"' .git/cross/metadata.json | while read -l remote rpath lpath
+        if test -f {{METADATA}}
+            jq -r '.patches[] | "\(.remote) \(.remote_path) \(.local_path)"' {{METADATA}} | while read -l remote rpath lpath
                  printf "%-20s %-30s %-20s\n" $remote $rpath $lpath
             end
         else
-            just cross _log info "No patches found. Run 'just cross patch <remote> <path>' to start."
+            just --justfile "{{justfile()}}" _log info "No patches found. Run 'just --justfile "{{justfile()}}" patch <remote> <path>' to start."
         end
     popd >/dev/null
 
 # wt wrapper
 [no-cd]
 worktree path="":
-    just cross cd "{{path}}" dry="{{dry}}"
+    just --justfile "{{justfile()}}" cd "{{path}}" dry="{{dry}}"
 
 # Internal: Copy text to clipboard (cross-platform)
 [no-cd]
@@ -799,9 +864,10 @@ _copy_to_clipboard text:
 [no-cd]
 _open_shell target path:
     #!/usr/bin/env fish
-    just cross _resolve_context2 "{{path}}" | source || exit 1
+    just --justfile "{{justfile()}}" _resolve_context2 "{{path}}" | source || exit 1
     set -l dir (test "{{target}}" = "local_path" && echo $local_path || echo $worktree)
-    cd {{REPO_DIR}}/$dir && exec $SHELL
+    set -l resolved_dir (just --justfile "{{justfile()}}" _resolve_patch_path "$dir")
+    cd $resolved_dir && exec $SHELL
 
 # Go to worktree directory (for working with git history)
 # With path: opens subshell
@@ -810,14 +876,15 @@ _open_shell target path:
 wt path="":
     #!/usr/bin/env fish
     if test -n "{{path}}"
-        just cross _open_shell worktree "{{path}}"
+        just --justfile "{{justfile()}}" _open_shell worktree "{{path}}"
     else
-        set -l selected (just cross list | tail -n +3 | fzf --height 40% 2>/dev/null | awk '{print $NF}')
+        set -l selected (just --justfile "{{justfile()}}" list | tail -n +3 | fzf --height 40% 2>/dev/null | awk '{print $NF}')
         test -z "$selected" && exit 0
-        just cross _resolve_context2 "$selected" | source || exit 1
-        set -l rel_dir (realpath -m --relative-to=$PWD {{REPO_DIR}}/$worktree)
-        just cross _copy_to_clipboard $rel_dir
-        just cross _log success "Path copied: $rel_dir"
+        just --justfile "{{justfile()}}" _resolve_context2 "$selected" | source || exit 1
+        set -l wt_path (just --justfile "{{justfile()}}" _resolve_patch_path "$worktree")
+        set -l rel_dir (realpath -m --relative-to=$PWD $wt_path)
+        just --justfile "{{justfile()}}" _copy_to_clipboard $rel_dir
+        just --justfile "{{justfile()}}" _log success "Path copied: $rel_dir"
     end
 
 # Go to local_path directory (for editing patched files)
@@ -827,14 +894,15 @@ wt path="":
 cd path="":
     #!/usr/bin/env fish
     if test -n "{{path}}"
-        just cross _open_shell local_path "{{path}}"
+        just --justfile "{{justfile()}}" _open_shell local_path "{{path}}"
     else
-        set -l selected (just cross list | tail -n +3 | fzf --height 40% 2>/dev/null | awk '{print $NF}')
+        set -l selected (just --justfile "{{justfile()}}" list | tail -n +3 | fzf --height 40% 2>/dev/null | awk '{print $NF}')
         test -z "$selected" && exit 0
-        just cross _resolve_context2 "$selected" | source || exit 1
-        set -l rel_dir (realpath -m --relative-to=$PWD {{REPO_DIR}}/$local_path)
-        just cross _copy_to_clipboard $rel_dir
-        just cross _log success "Path copied: $rel_dir"
+        just --justfile "{{justfile()}}" _resolve_context2 "$selected" | source || exit 1
+        set -l lp_path (just --justfile "{{justfile()}}" _resolve_patch_path "$local_path")
+        set -l rel_dir (realpath -m --relative-to=$PWD $lp_path)
+        just --justfile "{{justfile()}}" _copy_to_clipboard $rel_dir
+        just --justfile "{{justfile()}}" _log success "Path copied: $rel_dir"
     end
 
 
@@ -844,39 +912,42 @@ cd path="":
 status: check-deps
     #!/usr/bin/env fish
     if not test -f Crossfile
-        just cross _log warn "No patches found."
+        just --justfile "{{justfile()}}" _log warn "No patches found."
         exit 0
     end
     
+    pushd "{{REPO_DIR}}" >/dev/null
     printf "%-20s %-15s %-15s %-15s\n" "LOCAL PATH" "DIFF" "UPSTREAM" "CONFLICTS"
     printf "%s\n" (string repeat -n 70 "-")
-    
-    if test -f .git/cross/metadata.json
-        jq -r '.patches[] | "\(.remote) \(.remote_path) \(.local_path) \(.worktree)"' .git/cross/metadata.json | while read -l remote rpath local_path wt
+
+    if test -f {{METADATA}}
+        jq -r '.patches[] | "\(.remote) \(.remote_path) \(.local_path) \(.worktree)"' {{METADATA}} | while read -l remote rpath local_path wt
             set diff_stat "Clean"
             set upstream_stat "Synced"
             set conflict_stat "No"
-            
-            if test -d $wt
+            set wt_abs (just --justfile "{{justfile()}}" _resolve_patch_path "$wt")
+            set local_abs (just --justfile "{{justfile()}}" _resolve_patch_path "$local_path")
+
+            if test -d $wt_abs
                 # Check diffs
-                if not git diff --no-index --quiet $wt/$rpath $local_path 2>/dev/null
+                if not git diff --no-index --quiet $wt_abs/$rpath $local_abs 2>/dev/null
                      set diff_stat "Modified"
                 end
-                
+
                 # Check upstream divergence
-                set behind (git -C $wt rev-list --count HEAD..@{upstream} 2>/dev/null)
-                set ahead (git -C $wt rev-list --count @{upstream}..HEAD 2>/dev/null)
+                set behind (git -C $wt_abs rev-list --count HEAD..@{upstream} 2>/dev/null)
+                set ahead (git -C $wt_abs rev-list --count @{upstream}..HEAD 2>/dev/null)
                 if test "$behind" -gt 0
                     set upstream_stat "$behind behind"
                 else if test "$ahead" -gt 0
                     set upstream_stat "$ahead ahead"
                 end
-                
+
                 # Check conflicts in worktree
-                if git -C $wt ls-files -u | grep -q .
+                if git -C $wt_abs ls-files -u | grep -q .
                     set conflict_stat "YES"
                 end
-                
+
                 # Also check conflicts in local path (from failed stash restore)
                 if git ls-files -u $local_path | grep -q .
                     set conflict_stat "YES"
@@ -888,8 +959,9 @@ status: check-deps
             printf "%-20s %-15s %-15s %-15s\n" $local_path $diff_stat $upstream_stat $conflict_stat
         end
     else
-        just cross _log info "No patches found."
+        just --justfile "{{justfile()}}" _log info "No patches found."
     end
+    popd >/dev/null
 
 # Replay commands from Crossfile
 replay: check-deps
