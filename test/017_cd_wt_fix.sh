@@ -93,38 +93,40 @@ fi
 
 # Test 6: Test Go implementation
 log_info "Test 6: Testing Go implementation..."
-if [ -f "$REPO_ROOT/src-go/git-cross" ]; then
-    if "$REPO_ROOT/src-go/git-cross" cd non-existent-path 2>&1 | grep -q "not found"; then
+GO_BIN="$REPO_ROOT/src-go/git-cross-go"
+if [ -f "$GO_BIN" ]; then
+    if "$GO_BIN" cd non-existent-path 2>&1 | grep -qE "not found|No patches"; then
         log_success "Go: cd correctly reports non-existent path"
     else
         log_warn "Go: cd error handling may need improvement"
     fi
     
-    if "$REPO_ROOT/src-go/git-cross" wt non-existent-path 2>&1 | grep -q "not found"; then
+    if "$GO_BIN" wt non-existent-path 2>&1 | grep -qE "not found|No patches"; then
         log_success "Go: wt correctly reports non-existent path"
     else
         log_warn "Go: wt error handling may need improvement"
     fi
 else
-    log_warn "Go binary not found, skipping Go tests"
+    log_warn "Go binary not found at $GO_BIN, skipping Go tests"
 fi
 
 # Test 7: Test Rust implementation
 log_info "Test 7: Testing Rust implementation..."
-if [ -f "$REPO_ROOT/src-rust/target/release/git-cross-rust" ]; then
-    if "$REPO_ROOT/src-rust/target/release/git-cross-rust" cd non-existent-path 2>&1 | grep -q "not found"; then
+RUST_BIN="$REPO_ROOT/src-rust/target/debug/git-cross-rust"
+if [ -f "$RUST_BIN" ]; then
+    if "$RUST_BIN" cd non-existent-path 2>&1 | grep -qE "not found|No patches"; then
         log_success "Rust: cd correctly reports non-existent path"
     else
         log_warn "Rust: cd error handling may need improvement"
     fi
     
-    if "$REPO_ROOT/src-rust/target/release/git-cross-rust" wt non-existent-path 2>&1 | grep -q "not found"; then
+    if "$RUST_BIN" wt non-existent-path 2>&1 | grep -qE "not found|No patches"; then
         log_success "Rust: wt correctly reports non-existent path"
     else
         log_warn "Rust: wt error handling may need improvement"
     fi
 else
-    log_warn "Rust binary not found, skipping Rust tests"
+    log_warn "Rust binary not found at $RUST_BIN, skipping Rust tests"
 fi
 
 # Cleanup

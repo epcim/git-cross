@@ -10,14 +10,12 @@ use tabled::{Table, Tabled};
 
 #[derive(Parser)]
 #[command(name = "git-cross-rust")]
-#[command(version = "0.2.1")]
+#[command(version = "0.3.0")]
 #[command(
     about = "A tool for vendoring git directories using worktrees [EXPERIMENTAL/WIP]",
     long_about = "Note: The Rust implementation of git-cross is currently EXPERIMENTAL and WORK IN PROGRESS. The Go implementation is the primary focus and recommended for production use."
 )]
 struct Cli {
-    #[arg(long, global = true, default_value = "")]
-    dry: String,
     #[command(subcommand)]
     command: Commands,
 }
@@ -375,8 +373,11 @@ fn select_patch_interactive(metadata: &Metadata) -> Result<Option<Patch>> {
             "\t",
             "--prompt",
             "Select patch> ",
+            "--header",
+            "REMOTE\tREMOTE_PATH\tLOCAL_PATH",
             "--height",
             "40%",
+            "--border",
             "--select-1",
             "--exit-0",
         ])
@@ -1347,11 +1348,25 @@ fn main() -> Result<()> {
             }
         }
         Commands::Diff { path } => {
-            // Resolve relative/absolute path to repo-relative
+            // Resolve path: explicit arg takes priority, then CWD auto-detection
             let resolved_path = if !path.is_empty() {
+                // Explicit path: resolve relative/absolute to repo-relative
                 resolve_path_to_repo_relative(path)?
             } else {
-                path.clone()
+                // No explicit path: detect from CWD
+                let mut detected = String::new();
+                if let (Ok(cwd), Ok(root)) = (env::current_dir(), get_repo_root().map(std::path::PathBuf::from)) {
+                    let metadata = load_metadata().unwrap_or(Metadata { patches: vec![] });
+                    for patch in &metadata.patches {
+                        let abs_local = root.join(&patch.local_path);
+                        if cwd == abs_local || cwd.starts_with(&abs_local) {
+                            log_info(&format!("Auto-detected patch from CWD: {}", patch.local_path));
+                            detected = patch.local_path.clone();
+                            break;
+                        }
+                    }
+                }
+                detected
             };
 
             // Get repo root for resolving relative paths in metadata
@@ -1490,7 +1505,14 @@ fn main() -> Result<()> {
         Commands::Exec { args } => {
             let full_cmd = args.join(" ");
             log_info(&format!("Executing custom command: {}", full_cmd));
-            let _ = duct::cmd("bash", ["-c", &full_cmd]).run();
+            let output = duct::cmd("bash", ["-c", &full_cmd])
+                .unchecked()
+                .run()
+                .context("Failed to execute command")?;
+            if !output.status.success() {
+                let code = output.status.code().unwrap_or(1);
+                return Err(anyhow!("Command exited with status {}", code));
+            }
         }
     }
 

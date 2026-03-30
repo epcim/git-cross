@@ -388,8 +388,11 @@ func selectPatchInteractive(meta *Metadata) (*Patch, error) {
 		"\t",
 		"--prompt",
 		"Select patch> ",
+		"--header",
+		"REMOTE\tREMOTE_PATH\tLOCAL_PATH",
 		"--height",
 		"40%",
+		"--border",
 		"--select-1",
 		"--exit-0",
 	)
@@ -432,7 +435,7 @@ func main() {
 	var dry string
 	rootCmd := &cobra.Command{
 		Use:     "git-cross",
-		Version: "0.2.1",
+		Version: "0.3.0",
 	}
 	rootCmd.PersistentFlags().StringVar(&dry, "dry", "", "Dry run command (e.g. echo)")
 
@@ -1068,15 +1071,36 @@ Without path: uses fzf to select a patch, then copies the path to clipboard.`,
 	diffCmd := &cobra.Command{
 		Use:   "diff [path]",
 		Short: "Show changes between local and upstream",
+		Long: `Show diff between local vendored files and their upstream worktree source.
+
+When run without a path argument, auto-detects the current patch from the
+working directory: if CWD is inside a patched local_path, shows only that
+patch's diff. Otherwise shows diffs for all patches.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := ""
 			if len(args) > 0 {
-				// Resolve relative/absolute path to repo-relative
+				// Explicit path: resolve relative/absolute to repo-relative
 				resolved, err := resolvePathToRepoRelative(args[0])
 				if err != nil {
 					return fmt.Errorf("failed to resolve path: %w", err)
 				}
 				path = resolved
+			} else {
+				// No explicit path: detect from CWD
+				cwd, err := os.Getwd()
+				if err == nil {
+					root, _ := getRepoRoot()
+					meta, _ := loadMetadata()
+					for _, p := range meta.Patches {
+						absLocal := filepath.Join(root, p.LocalPath)
+						if strings.HasPrefix(cwd+string(os.PathSeparator), absLocal+string(os.PathSeparator)) ||
+							cwd == absLocal {
+							path = p.LocalPath
+							logInfo(fmt.Sprintf("Auto-detected patch from CWD: %s", path))
+							break
+						}
+					}
+				}
 			}
 
 			// Get repo root for resolving relative paths in metadata

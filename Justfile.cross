@@ -107,17 +107,28 @@ _resolve_context2 path="": check-initialized
 
     # Resolve git repo relative path of target
     if test -z "$path"
-        set -x path "$(git rev-parse --show-prefix | sed 's,\/$,,')" # cwd, relative to git repo
+        # Use USER_CWD (set by root Justfile cross recipe) to preserve caller's CWD
+        if test -n "$USER_CWD" -a -n "$REPO_DIR"
+            set -x path (realpath --relative-to="$REPO_DIR" "$USER_CWD" 2>/dev/null; or echo "")
+            # "." means we're at repo root — treat as empty
+            if test "$path" = "."
+                set -x path ""
+            end
+        end
+        if test -z "$path"
+            set -x path "$(git rev-parse --show-prefix | sed 's,\/$,,')"
+        end
     end
     if test -z "$path"
         just cross _log error "Provide path to 'patch' or change directory into it."
         exit 1
     end
     # Query metadata.json and export matching key as env variables
-    # Find patch where local_path matches rel_target or is a parent of rel_target
-    jq -r --arg path "{{path}}" '
+    # Find patch whose local_path is a prefix of (or equal to) the given path
+    # i.e. path starts with local_path — handles both exact match and subdirectory cases
+    jq -r --arg path "$path" '
         .patches
-        | map(. as $patch | select($patch.local_path | startswith($path)))
+        | map(. as $patch | select($path | startswith($patch.local_path)))
         | map(. + {mlen:(.local_path|length)})
         | max_by(.mlen)
         | to_entries | map("set -x \(.key) \(.value|@sh)") | .[]
@@ -624,7 +635,7 @@ push path="" branch="" force="false" yes="false" message="": check-initialized
         || { just cross _log error "Error: Could not resolve metadata for '$path'."; exit 1; }
 
     pushd "{{REPO_DIR}}"
-        just cross _log warn "The 'push' command is currently WORK IN PROGRESS."
+        just cross _log warn "The 'push' command is experimental. Verify upstream changes after use."
         if not test -d $worktree
             just cross _log error "Error: Worktree not found. Run 'just patch' first."
             exit 1
@@ -812,7 +823,7 @@ wt path="":
     if test -n "{{path}}"
         just cross _open_shell worktree "{{path}}"
     else
-        set -l selected (just cross list | tail -n +3 | fzf --height 40% 2>/dev/null | awk '{print $NF}')
+        set -l selected (just cross list | tail -n +3 | fzf --height 40% --select-1 --exit-0 --prompt "Select patch (wt)> " 2>/dev/null | awk '{print $NF}')
         test -z "$selected" && exit 0
         just cross _resolve_context2 "$selected" | source || exit 1
         set -l rel_dir (realpath -m --relative-to=$PWD {{REPO_DIR}}/$worktree)
@@ -829,7 +840,7 @@ cd path="":
     if test -n "{{path}}"
         just cross _open_shell local_path "{{path}}"
     else
-        set -l selected (just cross list | tail -n +3 | fzf --height 40% 2>/dev/null | awk '{print $NF}')
+        set -l selected (just cross list | tail -n +3 | fzf --height 40% --select-1 --exit-0 --prompt "Select patch (cd)> " 2>/dev/null | awk '{print $NF}')
         test -z "$selected" && exit 0
         just cross _resolve_context2 "$selected" | source || exit 1
         set -l rel_dir (realpath -m --relative-to=$PWD {{REPO_DIR}}/$local_path)

@@ -1,6 +1,6 @@
 [package]
 name = "git-cross-rust"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
@@ -9,7 +9,6 @@ clap = { version = "4.4", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tabled = "0.15"
-shell-words = "1.1"
 git2 = { version = "0.18", features = ["vendored-libgit2"] }
 duct = "0.13"
 which = "6.0"

@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-28
+
+### Added
+- **Context-aware `cross diff`** - Auto-detects current patch from CWD when no path argument given
+  - From inside `vendor/lib`: shows only that patch's diff
+  - From repo root: shows all diffs (Go/Rust) or requires explicit path (Just/Shell)
+  - From subdirectory of a patch: resolves to parent patch
+  - Implemented across all three implementations (Just, Go, Rust)
+  - New test `test/016_diff_context.sh` with 7 scenarios
+- **Expanded test coverage** for Go and Rust CLIs
+  - `diff`, `replay`, `remove`, `prune` commands now tested in `test/008_rust_cli.sh` and `test/009_go_cli.sh`
+  - Output assertions for `list` and `status` commands
+  - Re-enabled `test/006_push.sh` with 4 test scenarios (basic, custom message, named branch, force push)
+  - Graceful skip on emulated ARM64 platforms where compiled binaries crash
+- **P3 TODO item**: Auto-generate GitHub Release with changelog on version tags
+
+### Fixed
+- **Rust `exec` error handling** - Exit status is now properly propagated instead of silently discarded
+- **Rust dead code cleanup** - Removed unused `--dry` flag and `shell-words` dependency
+- **Go `go.mod` version** - Downgraded from unreleased 1.25.5 to 1.23 (matches CI workflow)
+- **Justfile.cross `_resolve_context2`** - Fixed jq `startswith` logic (was checking wrong direction for parent path matching) and fixed `{{path}}` vs `$path` template/variable confusion
+- **Justfile.cross CWD propagation** - Added `USER_CWD` env var to preserve caller's working directory through Just's CWD changes, enabling reliable CWD-based patch auto-detection
+- **Justfile.cross push warning** - Changed stale "WORK IN PROGRESS" message to accurate "experimental" notice
+- **Test 003** - Added missing `mkdir -p` for `src/lib2` upstream directory
+- **Test 006** - Fixed Just positional parameter passing (bypasses `*ARGS` empty-string loss)
+- **Test 017** - Fixed Go binary path (`git-cross` → `git-cross-go`) and Rust binary path (`release` → `debug`)
+
+### Changed
+- **fzf selection UX** - Added `--select-1`, `--exit-0`, and custom `--prompt` to Justfile fzf invocations; added `--header` and `--border` to Go/Rust fzf for consistent, cleaner selection UI
+
 ## [0.2.1] - 2026-01-06
 
 ### Added

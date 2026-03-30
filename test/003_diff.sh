@@ -126,6 +126,7 @@ echo "✓ Passed: diff vendor/lib works from repo root"
 
 # Test 3: diff with ../ (navigate to sibling - if we have one)
 # First create another patch for testing
+mkdir -p "$upstream_path/src/lib2"
 echo "original" > "$upstream_path/src/lib2/other.txt"
 git -C "$upstream_path" add src/lib2/other.txt
 git -C "$upstream_path" commit -m "Add lib2" -q
