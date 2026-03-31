@@ -589,6 +589,67 @@ fn resolve_path_to_repo_relative(input_path: &str) -> Result<String> {
     Ok(rel_path_str.trim_matches('/').to_string())
 }
 
+/// Remove a specific patch line from the Crossfile using structured field matching.
+fn remove_from_crossfile(local_path: &str) {
+    if let Ok(cross_path) = get_crossfile_path() {
+        if let Ok(content) = fs::read_to_string(&cross_path) {
+            let lines: Vec<&str> = content.lines().filter(|line| {
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                let is_patch_line = fields.iter().any(|f| *f == "patch");
+                // Only filter patch lines where the last field matches the local_path
+                if is_patch_line && !fields.is_empty() && fields[fields.len() - 1] == local_path {
+                    return false; // skip this line
+                }
+                true
+            }).collect();
+            let mut new_content = lines.join("\n");
+            if !new_content.is_empty() {
+                new_content.push('\n');
+            }
+            if let Err(e) = fs::write(&cross_path, new_content) {
+                log_error(&format!("Failed to update Crossfile: {}", e));
+            }
+        }
+    }
+}
+
+/// Remove a single patch: worktree, crossfile entry, metadata entry, and local directory.
+/// Used by both `remove` and `prune` commands.
+fn remove_single_patch(metadata: &mut Metadata, local_path: &str) -> Result<()> {
+    let path = normalize_local_path(local_path);
+    let patch_idx = metadata
+        .patches
+        .iter()
+        .position(|p| normalize_local_path(&p.local_path) == path);
+
+    let patch = match patch_idx {
+        Some(idx) => metadata.patches.remove(idx),
+        None => return Err(anyhow!("Patch not found for path: {}", path)),
+    };
+
+    log_info(&format!("Removing patch at {}...", path));
+
+    // 1. Remove worktree
+    if Path::new(&patch.worktree).exists() {
+        log_info(&format!("Removing git worktree at {}...", patch.worktree));
+        if let Err(e) = run_cmd(&["git", "worktree", "remove", "--force", &patch.worktree]) {
+            log_error(&format!("Failed to remove worktree: {}", e));
+        }
+    }
+
+    // 2. Remove from Crossfile
+    log_info("Removing from Crossfile...");
+    remove_from_crossfile(&path);
+
+    // 3. Remove local directory
+    log_info(&format!("Deleting local directory {}...", path));
+    if let Err(e) = fs::remove_dir_all(&path) {
+        log_error(&format!("Failed to remove local directory: {}", e));
+    }
+
+    Ok(())
+}
+
 fn load_metadata() -> Result<Metadata> {
     let path = get_metadata_path()?;
     if path.exists() {
@@ -697,12 +758,10 @@ fn main() -> Result<()> {
 
             run_cmd(&["git", "fetch", &spec.remote, &branch_name])?;
 
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut hasher = DefaultHasher::new();
-            canonical.hash(&mut hasher);
-            branch_name.hash(&mut hasher);
-            let hash = format!("{:016x}", hasher.finish());
+            use sha2::{Sha256, Digest};
+            let mut hasher = Sha256::new();
+            hasher.update(format!("{}\0{}\0{}", spec.remote, spec.remote_path, branch_name));
+            let hash = format!("{:x}", hasher.finalize());
             let hash = &hash[..8];
 
             let wt_dir = format!(".git/cross/worktrees/{}_{}", spec.remote, hash);
@@ -960,7 +1019,13 @@ fn main() -> Result<()> {
                 log_success(&format!("Sync completed for {}", patch.local_path));
             }
         }
-        Commands::Cd { path } => {
+        Commands::Cd { path } | Commands::Wt { path } => {
+            let target = match &cli.command {
+                Commands::Cd { .. } => "local_path",
+                Commands::Wt { .. } => "worktree",
+                _ => unreachable!(),
+            };
+
             let metadata = load_metadata()?;
             if metadata.patches.is_empty() {
                 println!("No patches configured.");
@@ -968,41 +1033,16 @@ fn main() -> Result<()> {
             }
 
             if !path.is_empty() {
-                // Path provided: open shell
-                open_shell_in_dir(path, "local_path")?;
+                open_shell_in_dir(path, target)?;
             } else {
-                // No path: use fzf and copy to clipboard
                 match select_patch_interactive(&metadata) {
                     Ok(Some(patch)) => {
-                        let rel_path = get_relative_path(&patch.local_path);
-                        copy_to_clipboard(&rel_path)?;
-                        log_success(&format!("Path copied to clipboard: {}", rel_path));
-                    }
-                    Ok(None) => {
-                        log_info("No selection made.");
-                    }
-                    Err(_) => {
-                        log_info("fzf not available. Showing patch list; rerun with a path.");
-                        println!("{}", Table::new(metadata.patches));
-                    }
-                }
-            }
-        }
-        Commands::Wt { path } => {
-            let metadata = load_metadata()?;
-            if metadata.patches.is_empty() {
-                println!("No patches configured.");
-                return Ok(());
-            }
-
-            if !path.is_empty() {
-                // Path provided: open shell
-                open_shell_in_dir(path, "worktree")?;
-            } else {
-                // No path: use fzf and copy to clipboard
-                match select_patch_interactive(&metadata) {
-                    Ok(Some(patch)) => {
-                        let rel_path = get_relative_path(&patch.worktree);
+                        let target_path = if target == "worktree" {
+                            &patch.worktree
+                        } else {
+                            &patch.local_path
+                        };
+                        let rel_path = get_relative_path(target_path);
                         copy_to_clipboard(&rel_path)?;
                         log_success(&format!("Path copied to clipboard: {}", rel_path));
                     }
@@ -1186,55 +1226,9 @@ fn main() -> Result<()> {
             println!("{}", Table::new(rows).to_string());
         }
         Commands::Remove { path } => {
-            let path = normalize_local_path(path);
             let mut metadata = load_metadata()?;
-            let patch_idx = metadata
-                .patches
-                .iter()
-                .position(|p| normalize_local_path(&p.local_path) == path);
-
-            let patch = match patch_idx {
-                Some(idx) => metadata.patches.remove(idx),
-                None => return Err(anyhow!("Patch not found for path: {}", path)),
-            };
-
-            log_info(&format!("Removing patch at {}...", path));
-
-            // 1. Remove worktree
-            if Path::new(&patch.worktree).exists() {
-                log_info(&format!("Removing git worktree at {}...", patch.worktree));
-                if let Err(e) = run_cmd(&["git", "worktree", "remove", "--force", &patch.worktree]) {
-                    log_error(&format!("Failed to remove worktree: {}", e));
-                }
-            }
-
-            // 2. Remove from Crossfile
-            log_info("Removing from Crossfile...");
-            if let Ok(cross_path) = get_crossfile_path() {
-                if let Ok(content) = fs::read_to_string(&cross_path) {
-                    let lines: Vec<String> = content
-                        .lines()
-                        .filter(|l| !l.contains("patch") || !l.contains(&path))
-                        .map(|l| l.to_string())
-                        .collect();
-                    let mut new_content = lines.join("\n");
-                    if !new_content.is_empty() {
-                        new_content.push('\n');
-                    }
-                    let _ = fs::write(&cross_path, new_content);
-                }
-            }
-
-            // 3. Save metadata
-            log_info("Updating metadata...");
+            remove_single_patch(&mut metadata, path)?;
             save_metadata(&metadata)?;
-
-            // 4. Remove local directory
-            log_info(&format!("Deleting local directory {}...", path));
-            if let Err(e) = fs::remove_dir_all(&path) {
-                log_error(&format!("Failed to remove local directory: {}", e));
-            }
-
             log_success("Patch removed successfully.");
         }
         Commands::Prune { remote } => {
@@ -1255,36 +1249,10 @@ fn main() -> Result<()> {
                 if patches_to_remove.is_empty() {
                     log_info(&format!("No patches found for remote: {}", remote_name));
                 } else {
-                    // Remove each patch
                     for patch in patches_to_remove {
-                        log_info(&format!("Removing patch: {}", patch.local_path));
-                        
-                        // Remove worktree
-                        if Path::new(&patch.worktree).exists() {
-                            let _ = run_cmd(&["git", "worktree", "remove", "--force", &patch.worktree]);
+                        if let Err(e) = remove_single_patch(&mut metadata, &patch.local_path) {
+                            log_error(&format!("Failed to remove patch {}: {}", patch.local_path, e));
                         }
-                        
-                        // Remove from Crossfile
-                        if let Ok(cross_path) = get_crossfile_path() {
-                            if let Ok(content) = fs::read_to_string(&cross_path) {
-                                let lines: Vec<String> = content
-                                    .lines()
-                                    .filter(|l| !l.contains("patch") || !l.contains(&patch.local_path))
-                                    .map(|l| l.to_string())
-                                    .collect();
-                                let mut new_content = lines.join("\n");
-                                if !new_content.is_empty() {
-                                    new_content.push('\n');
-                                }
-                                let _ = fs::write(&cross_path, new_content);
-                            }
-                        }
-                        
-                        // Remove from metadata
-                        metadata.patches.retain(|p| p.local_path != patch.local_path);
-                        
-                        // Remove local directory
-                        let _ = fs::remove_dir_all(&patch.local_path);
                     }
                     save_metadata(&metadata)?;
                 }

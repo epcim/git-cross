@@ -99,8 +99,10 @@ cd ../..
 
 # Cleanup after Test 4: Reset worktree to clean state
 log_header "Cleaning up after conflict test..."
-worktree_path=".git/cross/worktrees/repo1_2c89338b"
-if [ -d "$worktree_path" ]; then
+# Find the actual worktree directory dynamically (hash algorithm may vary)
+worktree_path=$(find .git/cross/worktrees -maxdepth 1 -name "repo1_*" -type d 2>/dev/null | head -1)
+if [ -n "$worktree_path" ] && [ -d "$worktree_path" ]; then
+    wt_name=$(basename "$worktree_path")
     # Abort any in-progress operations
     git -C "$worktree_path" rebase --abort 2>/dev/null || true
     git -C "$worktree_path" merge --abort 2>/dev/null || true
@@ -108,11 +110,11 @@ if [ -d "$worktree_path" ]; then
     # Remove any leftover rebase directories
     rm -rf "$worktree_path/.git/rebase-merge" 2>/dev/null || true
     rm -rf "$worktree_path/.git/rebase-apply" 2>/dev/null || true
-    rm -rf ".git/worktrees/repo1_2c89338b/rebase-merge" 2>/dev/null || true
-    rm -rf ".git/worktrees/repo1_2c89338b/rebase-apply" 2>/dev/null || true
+    rm -rf ".git/worktrees/$wt_name/rebase-merge" 2>/dev/null || true
+    rm -rf ".git/worktrees/$wt_name/rebase-apply" 2>/dev/null || true
     
     # Checkout correct branch and reset to clean state
-    git -C "$worktree_path" checkout -B cross/repo1/main/2c89338b 2>/dev/null || true
+    git -C "$worktree_path" checkout -B "cross/repo1/main/${wt_name##*_}" 2>/dev/null || true
     git -C "$worktree_path" fetch repo1 2>/dev/null || true
     git -C "$worktree_path" reset --hard repo1/main 2>/dev/null || true
     git -C "$worktree_path" clean -fd 2>/dev/null || true

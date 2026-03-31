@@ -258,6 +258,87 @@ func detectDefaultBranch(url string) (string, error) {
 	return "main", nil
 }
 
+// removeFromCrossfile removes lines matching a specific patch local_path
+// using structured field matching instead of fragile substring search.
+func removeFromCrossfile(localPath string) {
+	path, err := getCrossfilePath()
+	if err != nil {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	var newLines []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		// Only filter "patch" lines; leave "use", "exec", etc. intact
+		fields := strings.Fields(trimmed)
+		// Crossfile lines: "cross patch remote:branch:path local_path"
+		// The local_path is always the last field on a patch line
+		isPatchLine := false
+		for _, f := range fields {
+			if f == "patch" {
+				isPatchLine = true
+				break
+			}
+		}
+		if isPatchLine && len(fields) > 0 && fields[len(fields)-1] == localPath {
+			continue // skip this line
+		}
+		newLines = append(newLines, line)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(newLines, "\n")), 0o644); err != nil {
+		logError(fmt.Sprintf("Failed to update Crossfile: %v", err))
+	}
+}
+
+// removeSinglePatch removes a patch by local_path: worktree, crossfile entry,
+// metadata entry, and local directory. Used by both `remove` and `prune`.
+func removeSinglePatch(meta *Metadata, localPath string) error {
+	localPath = filepath.Clean(localPath)
+
+	patchIdx := -1
+	var patch *Patch
+	for i, p := range meta.Patches {
+		if p.LocalPath == localPath {
+			patch = &meta.Patches[i]
+			patchIdx = i
+			break
+		}
+	}
+	if patch == nil {
+		return fmt.Errorf("patch not found for path: %s", localPath)
+	}
+
+	logInfo(fmt.Sprintf("Removing patch at %s...", localPath))
+
+	// 1. Remove worktree
+	if _, err := os.Stat(patch.Worktree); err == nil {
+		logInfo(fmt.Sprintf("Removing git worktree at %s...", patch.Worktree))
+		if _, err := git.NewCommand("worktree", "remove", "--force", patch.Worktree).RunInDir("."); err != nil {
+			logError(fmt.Sprintf("Failed to remove worktree: %v", err))
+		}
+	}
+
+	// 2. Remove from Crossfile
+	logInfo("Removing from Crossfile...")
+	removeFromCrossfile(localPath)
+
+	// 3. Remove from metadata
+	logInfo("Updating metadata...")
+	meta.Patches = append(meta.Patches[:patchIdx], meta.Patches[patchIdx+1:]...)
+
+	// 4. Remove local directory
+	logInfo(fmt.Sprintf("Deleting local directory %s...", localPath))
+	if err := os.RemoveAll(localPath); err != nil {
+		logError(fmt.Sprintf("Failed to remove local directory: %v", err))
+	}
+
+	return nil
+}
+
 func repoRelativePath() (string, error) {
 	out, err := git.NewCommand("rev-parse", "--show-toplevel").RunInDir(".")
 	if err != nil {
@@ -535,7 +616,7 @@ func main() {
 			}
 
 			h := sha256.New()
-			h.Write([]byte(spec.Remote + spec.RemotePath + spec.Branch))
+			h.Write([]byte(spec.Remote + "\x00" + spec.RemotePath + "\x00" + spec.Branch))
 			hash := hex.EncodeToString(h.Sum(nil))[:8]
 
 			wtDir := fmt.Sprintf(".git/cross/worktrees/%s_%s", spec.Remote, hash)
@@ -837,25 +918,19 @@ func main() {
 		return c.Run()
 	}
 
-	cdCmd := &cobra.Command{
-		Use:   "cd [path]",
-		Short: "Open a shell in the patch local_path (for editing files)",
-		Long: `Open a shell in the patch local_path (for editing files).
-
-With path: opens subshell in the specified local_path directory.
-Without path: uses fzf to select a patch, then copies the path to clipboard.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			meta, _ := loadMetadata()
-			if len(meta.Patches) == 0 {
-				fmt.Println("No patches configured.")
-				return nil
-			}
-
-			if len(args) > 0 {
-				// Path provided: open shell
-				return openShellInDir(strings.TrimSpace(args[0]), "local_path")
-			} else {
-				// No path: use fzf and copy to clipboard
+	// Shared logic for cd/wt commands — only the target field differs
+	makeDirCmd := func(use, short, long, target string) *cobra.Command {
+		return &cobra.Command{
+			Use: use, Short: short, Long: long,
+			RunE: func(cmd *cobra.Command, args []string) error {
+				meta, _ := loadMetadata()
+				if len(meta.Patches) == 0 {
+					fmt.Println("No patches configured.")
+					return nil
+				}
+				if len(args) > 0 {
+					return openShellInDir(strings.TrimSpace(args[0]), target)
+				}
 				selected, err := selectPatchInteractive(&meta)
 				if err != nil {
 					logInfo("fzf not available. Showing patch list; rerun with a path.")
@@ -871,59 +946,29 @@ Without path: uses fzf to select a patch, then copies the path to clipboard.`,
 					logInfo("No selection made.")
 					return nil
 				}
-				relPath := getRelativePath(selected.LocalPath)
+				targetPath := selected.LocalPath
+				if target == "worktree" {
+					targetPath = selected.Worktree
+				}
+				relPath := getRelativePath(targetPath)
 				if err := copyToClipboard(relPath); err != nil {
 					return fmt.Errorf("failed to copy to clipboard: %v", err)
 				}
 				logSuccess(fmt.Sprintf("Path copied to clipboard: %s", relPath))
 				return nil
-			}
-		},
+			},
+		}
 	}
 
-	wtCmd := &cobra.Command{
-		Use:   "wt [path]",
-		Short: "Open a shell in the patch worktree (for working with git history)",
-		Long: `Open a shell in the patch worktree (for working with git history).
+	cdCmd := makeDirCmd("cd [path]",
+		"Open a shell in the patch local_path (for editing files)",
+		"Open a shell in the patch local_path (for editing files).\n\nWith path: opens subshell in the specified local_path directory.\nWithout path: uses fzf to select a patch, then copies the path to clipboard.",
+		"local_path")
 
-With path: opens subshell in the specified worktree directory.
-Without path: uses fzf to select a patch, then copies the path to clipboard.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			meta, _ := loadMetadata()
-			if len(meta.Patches) == 0 {
-				fmt.Println("No patches configured.")
-				return nil
-			}
-
-			if len(args) > 0 {
-				// Path provided: open shell
-				return openShellInDir(strings.TrimSpace(args[0]), "worktree")
-			} else {
-				// No path: use fzf and copy to clipboard
-				selected, err := selectPatchInteractive(&meta)
-				if err != nil {
-					logInfo("fzf not available. Showing patch list; rerun with a path.")
-					table := tablewriter.NewWriter(os.Stdout)
-					table.Header("REMOTE", "REMOTE PATH", "LOCAL PATH")
-					for _, p := range meta.Patches {
-						table.Append(p.Remote, p.RemotePath, p.LocalPath)
-					}
-					table.Render()
-					return nil
-				}
-				if selected == nil {
-					logInfo("No selection made.")
-					return nil
-				}
-				relPath := getRelativePath(selected.Worktree)
-				if err := copyToClipboard(relPath); err != nil {
-					return fmt.Errorf("failed to copy to clipboard: %v", err)
-				}
-				logSuccess(fmt.Sprintf("Path copied to clipboard: %s", relPath))
-				return nil
-			}
-		},
-	}
+	wtCmd := makeDirCmd("wt [path]",
+		"Open a shell in the patch worktree (for working with git history)",
+		"Open a shell in the patch worktree (for working with git history).\n\nWith path: opens subshell in the specified worktree directory.\nWithout path: uses fzf to select a patch, then copies the path to clipboard.",
+		"worktree")
 
 	listCmd := &cobra.Command{
 		Use:   "list",
@@ -1303,62 +1348,13 @@ patch's diff. Otherwise shows diffs for all patches.`,
 		Short: "Remove a patch and its worktree",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			localPath := filepath.Clean(args[0])
 			meta, _ := loadMetadata()
-			var patch *Patch
-			patchIdx := -1
-			for i, p := range meta.Patches {
-				if p.LocalPath == localPath {
-					patch = &meta.Patches[i]
-					patchIdx = i
-					break
-				}
+			if err := removeSinglePatch(&meta, args[0]); err != nil {
+				return err
 			}
-
-			if patch == nil {
-				return fmt.Errorf("patch not found for path: %s", localPath)
-			}
-
-			logInfo(fmt.Sprintf("Removing patch at %s...", localPath))
-
-			// 1. Remove worktree
-			if _, err := os.Stat(patch.Worktree); err == nil {
-				logInfo(fmt.Sprintf("Removing git worktree at %s...", patch.Worktree))
-				if _, err := git.NewCommand("worktree", "remove", "--force", patch.Worktree).RunInDir("."); err != nil {
-					logError(fmt.Sprintf("Failed to remove worktree: %v", err))
-				}
-			}
-
-			// 2. Remove from Crossfile
-			logInfo("Removing from Crossfile...")
-			path, err := getCrossfilePath()
-			if err == nil {
-				data, err := os.ReadFile(path)
-				if err == nil {
-					lines := strings.Split(string(data), "\n")
-					var newLines []string
-					for _, line := range lines {
-						if !strings.Contains(line, "patch") || !strings.Contains(line, localPath) {
-							newLines = append(newLines, line)
-						}
-					}
-					os.WriteFile(path, []byte(strings.Join(newLines, "\n")), 0o644)
-				}
-			}
-
-			// 3. Remove from metadata
-			logInfo("Updating metadata...")
-			meta.Patches = append(meta.Patches[:patchIdx], meta.Patches[patchIdx+1:]...)
 			if err := saveMetadata(meta); err != nil {
 				return err
 			}
-
-			// 4. Remove local directory
-			logInfo(fmt.Sprintf("Deleting local directory %s...", localPath))
-			if err := os.RemoveAll(localPath); err != nil {
-				logError(fmt.Sprintf("Failed to remove local directory: %v", err))
-			}
-
 			logSuccess("Patch removed successfully.")
 			return nil
 		},
@@ -1387,51 +1383,13 @@ patch's diff. Otherwise shows diffs for all patches.`,
 				if len(patchesToRemove) == 0 {
 					logInfo(fmt.Sprintf("No patches found for remote: %s", remoteName))
 				} else {
-					// Remove each patch
 					for _, patchPath := range patchesToRemove {
-						logInfo(fmt.Sprintf("Removing patch: %s", patchPath))
-						// Call remove logic directly
-						localPath := filepath.Clean(patchPath)
-						meta, _ := loadMetadata()
-						var patch *Patch
-						patchIdx := -1
-						for i, p := range meta.Patches {
-							if p.LocalPath == localPath {
-								patch = &meta.Patches[i]
-								patchIdx = i
-								break
-							}
+						if err := removeSinglePatch(&meta, patchPath); err != nil {
+							logError(fmt.Sprintf("Failed to remove patch %s: %v", patchPath, err))
 						}
-
-						if patch != nil {
-							// Remove worktree
-							if _, err := os.Stat(patch.Worktree); err == nil {
-								git.NewCommand("worktree", "remove", "--force", patch.Worktree).RunInDir(".")
-							}
-
-							// Remove from Crossfile
-							path, err := getCrossfilePath()
-							if err == nil {
-								data, err := os.ReadFile(path)
-								if err == nil {
-									lines := strings.Split(string(data), "\n")
-									var newLines []string
-									for _, line := range lines {
-										if !strings.Contains(line, "patch") || !strings.Contains(line, localPath) {
-											newLines = append(newLines, line)
-										}
-									}
-									os.WriteFile(path, []byte(strings.Join(newLines, "\n")), 0o644)
-								}
-							}
-
-							// Remove from metadata
-							meta.Patches = append(meta.Patches[:patchIdx], meta.Patches[patchIdx+1:]...)
-							saveMetadata(meta)
-
-							// Remove local directory
-							os.RemoveAll(localPath)
-						}
+					}
+					if err := saveMetadata(meta); err != nil {
+						return err
 					}
 				}
 
