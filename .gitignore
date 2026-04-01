@@ -17,3 +17,6 @@ testdir
 src-go/git-cross-go
 src-rust/git-cross-rust
 src-rust/target
+
+# git-cross state directory
+.cross/
