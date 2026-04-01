@@ -31,7 +31,7 @@ GO_BIN="$REPO_ROOT/src-go/git-cross-go"
 if [ ! -f "$GO_BIN" ]; then
     echo "Go binary not found at $GO_BIN. Building..."
     export PATH=$HOME/homebrew/bin:$PATH
-    (cd "$REPO_ROOT/src-go" && CGO_ENABLED=0 go build -o git-cross-go main.go)
+    ( cd "$REPO_ROOT/src-go" && CGO_ENABLED=0 GOFLAGS=-mod=mod go build -tags purego -o git-cross-go main.go)
 fi
 # Smoke test: verify the binary works (catches SIGILL on emulated ARM64 platforms
 # where Go toolchain auto-download produces incompatible binaries)
@@ -57,7 +57,7 @@ if [ "$_go_bin_ok" = false ]; then
     # run from CWD so relative paths (.cross/worktrees/...) resolve correctly.
     cat > "$GO_BIN" <<GOEOF
 #!/usr/bin/env bash
-export GOFLAGS=-mod=mod
+export GOFLAGS="-mod=mod -tags=purego"
 exec go run "$REPO_ROOT/src-go/main.go" "\$@"
 GOEOF
     chmod +x "$GO_BIN"

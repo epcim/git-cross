@@ -20,7 +20,7 @@ if git worktree list | grep -q "vendor/lib"; then fail "Worktree still exists"; 
 # 2. Test removal in Go implementation
 echo "## Testing removal in Go..."
 just cross patch repo1:src/lib vendor/app-go
-cd "$REPO_ROOT/src-go" && go build -o git-cross-go main.go
+cd "$REPO_ROOT/src-go" && CGO_ENABLED=0 GOFLAGS=-mod=mod go build -tags purego -o git-cross-go main.go
 cd "$SANDBOX"
 "$REPO_ROOT/src-go/git-cross-go" remove vendor/app-go
 
