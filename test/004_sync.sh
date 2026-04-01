@@ -100,7 +100,7 @@ cd ../..
 # Cleanup after Test 4: Reset worktree to clean state
 log_header "Cleaning up after conflict test..."
 # Find the actual worktree directory dynamically (hash algorithm may vary)
-worktree_path=$(find .git/cross/worktrees -maxdepth 1 -name "repo1_*" -type d 2>/dev/null | head -1)
+worktree_path=$(find .cross/worktrees -maxdepth 1 -name "repo1_*" -type d 2>/dev/null | head -1)
 if [ -n "$worktree_path" ] && [ -d "$worktree_path" ]; then
     wt_name=$(basename "$worktree_path")
     # Abort any in-progress operations

@@ -23,7 +23,7 @@ log_header "Testing sparse checkout in Just/Fish"
 just cross use demo "$upstream_url"
 just cross patch demo:apps/app1 vendor/app1
 
-wt_path=$(find .git/cross/worktrees -maxdepth 1 -name "demo_*" | head -n 1)
+wt_path=$(find .cross/worktrees -maxdepth 1 -name "demo_*" | head -n 1)
 if [ -z "$wt_path" ]; then
     fail "Worktree not found"
 fi
@@ -35,7 +35,7 @@ if [ -f "$wt_path/root.txt" ]; then
 fi
 
 # Clean up for next implementation
-rm -rf vendor/app1 .git/cross/worktrees/* .git/worktrees/* Crossfile
+rm -rf vendor/app1 .cross/worktrees/* .git/worktrees/* Crossfile
 
 # Test using Go implementation
 log_header "Testing sparse checkout in Go"
@@ -50,14 +50,14 @@ else
     "$GO_BIN" use demo "$upstream_url"
     "$GO_BIN" patch demo:apps/app1 vendor/app1
 
-    wt_path=$(find .git/cross/worktrees -maxdepth 1 -name "demo_*" | head -n 1)
+    wt_path=$(find .cross/worktrees -maxdepth 1 -name "demo_*" | head -n 1)
     if [ -f "$wt_path/root.txt" ]; then
         fail "root.txt found in worktree! Sparse checkout failed for Go."
     fi
 fi
 
 # Clean up
-rm -rf vendor/app1 .git/cross/worktrees/* .git/worktrees/* Crossfile
+rm -rf vendor/app1 .cross/worktrees/* .git/worktrees/* Crossfile
 
 # Test using Rust implementation
 log_header "Testing sparse checkout in Rust"
@@ -72,7 +72,7 @@ if [ -f "$RUST_BIN" ]; then
     "$RUST_BIN" use demo "$upstream_url"
     "$RUST_BIN" patch demo:apps/app1 vendor/app1
 
-    wt_path=$(find .git/cross/worktrees -maxdepth 1 -name "demo_*" | head -n 1)
+    wt_path=$(find .cross/worktrees -maxdepth 1 -name "demo_*" | head -n 1)
     if [ -f "$wt_path/root.txt" ]; then
         fail "root.txt found in worktree! Sparse checkout failed for Rust."
     fi

@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	MetadataRelPath  = ".git/cross/metadata.json"
+	MetadataRelPath  = ".cross/metadata.json"
 	CrossfileRelPath = "Crossfile"
 )
 
@@ -165,6 +165,32 @@ func saveMetadata(meta Metadata) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
+
+// ensureGitignore adds ".cross/" to .gitignore if not already present.
+func ensureGitignore() {
+	root, err := getRepoRoot()
+	if err != nil {
+		return
+	}
+	gi := filepath.Join(root, ".gitignore")
+	data, err := os.ReadFile(gi)
+	if err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if strings.TrimSpace(line) == ".cross/" || strings.TrimSpace(line) == ".cross" {
+				return
+			}
+		}
+	}
+	f, err := os.OpenFile(gi, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		f.WriteString("\n")
+	}
+	f.WriteString(".cross/\n")
+}
 func updateCrossfile(line string) error {
 	path, err := getCrossfilePath()
 	if err != nil {
@@ -619,21 +645,36 @@ func main() {
 			h.Write([]byte(spec.Remote + "\x00" + spec.RemotePath + "\x00" + spec.Branch))
 			hash := hex.EncodeToString(h.Sum(nil))[:8]
 
-			wtDir := fmt.Sprintf(".git/cross/worktrees/%s_%s", spec.Remote, hash)
+			wtDir := fmt.Sprintf(".cross/worktrees/%s_%s", spec.Remote, hash)
+			branchName := fmt.Sprintf("cross/%s/%s/%s", spec.Remote, spec.Branch, hash)
 			if _, err := os.Stat(wtDir); os.IsNotExist(err) {
 				logInfo(fmt.Sprintf("Setting up worktree at %s...", wtDir))
-				if err := os.MkdirAll(wtDir, 0o755); err != nil {
+				// Only create parent dir - let git worktree add create the worktree dir itself
+				if err := os.MkdirAll(filepath.Dir(wtDir), 0o755); err != nil {
 					return err
 				}
 
-				c := exec.Command("git", "worktree", "add", "--no-checkout", wtDir, fmt.Sprintf("%s/%s", spec.Remote, spec.Branch))
+				// Prune stale worktree registrations (e.g. from previous failed attempts)
+				exec.Command("git", "worktree", "prune").Run()
+
+				c := exec.Command("git", "worktree", "add", "--no-checkout", "-f",
+					"-B", branchName, wtDir, fmt.Sprintf("%s/%s", spec.Remote, spec.Branch))
 				if out, err := c.CombinedOutput(); err != nil {
+					// Clean up partial directory on failure
+					os.RemoveAll(wtDir)
 					return fmt.Errorf("git worktree add failed: %v\nOutput: %s", err, string(out))
 				}
 
-				git.NewCommand("sparse-checkout", "init", "--no-cone").RunInDir(wtDir)
-				git.NewCommand("sparse-checkout", "set", spec.RemotePath).RunInDir(wtDir)
-				git.NewCommand("checkout").RunInDir(wtDir)
+				// Sparse checkout
+				if _, err := git.NewCommand("sparse-checkout", "init", "--no-cone").RunInDir(wtDir); err != nil {
+					return fmt.Errorf("sparse-checkout init failed: %w", err)
+				}
+				if _, err := git.NewCommand("sparse-checkout", "set", spec.RemotePath).RunInDir(wtDir); err != nil {
+					return fmt.Errorf("sparse-checkout set failed: %w", err)
+				}
+				if _, err := git.NewCommand("checkout").RunInDir(wtDir); err != nil {
+					return fmt.Errorf("checkout failed: %w", err)
+				}
 			}
 
 			logInfo(fmt.Sprintf("Syncing files to %s...", localPath))
@@ -646,6 +687,8 @@ func main() {
 				return err
 			}
 
+			// Ensure .cross/ is in .gitignore
+			ensureGitignore()
 			meta, _ := loadMetadata()
 			found := false
 			for i, p := range meta.Patches {
@@ -746,6 +789,8 @@ func main() {
 				}
 
 				// Step 4: Pull rebase from upstream
+				// Refresh index to avoid false conflicts from rsync mtime changes
+				exec.Command("git", "-C", p.Worktree, "update-index", "--refresh", "-q").Run()
 				logInfo("Pulling updates from upstream...")
 				if err := wtRepo.Pull(git.PullOptions{
 					Remote: p.Remote,

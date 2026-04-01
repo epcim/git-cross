@@ -37,8 +37,8 @@ echo "upstream content" > "$upstream/src/file.txt"
 git -C "$upstream" add . && git -C "$upstream" commit -m "init" -q
 
 # Initialize cross and create patch
-mkdir -p .git/cross
-echo '{"patches":[]}' > .git/cross/metadata.json
+mkdir -p .cross
+echo '{"patches":[]}' > .cross/metadata.json
 git remote add demo "$upstream"
 
 log_info "Creating patch..."
@@ -74,11 +74,11 @@ fi
 # Test 4: Verify wt with valid path (can't test subshell directly)
 log_info "Test 4: wt target worktree exists..."
 # Worktree path includes a hash, so find it dynamically
-if [ -d ".git/cross/worktrees" ] && ls .git/cross/worktrees/demo_* >/dev/null 2>&1; then
+if [ -d ".cross/worktrees" ] && ls .cross/worktrees/demo_* >/dev/null 2>&1; then
     log_success "wt target worktree exists"
 else
     log_error "wt target worktree doesn't exist"
-    ls -la .git/cross/worktrees/ || true
+    ls -la .cross/worktrees/ || true
     exit 1
 fi
 

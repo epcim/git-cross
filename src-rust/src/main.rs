@@ -114,7 +114,7 @@ struct PatchSpec {
     branch_provided: bool,
 }
 
-const METADATA_REL_PATH: &str = ".git/cross/metadata.json";
+const METADATA_REL_PATH: &str = ".cross/metadata.json";
 const CROSSFILE_REL_PATH: &str = "Crossfile";
 
 fn get_repo_root() -> Result<String> {
@@ -671,6 +671,35 @@ fn save_metadata(metadata: &Metadata) -> Result<()> {
     Ok(())
 }
 
+/// Ensures ".cross/" is listed in .gitignore at the repo root.
+fn ensure_gitignore() {
+    let root = match get_repo_root() {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let gi_path = Path::new(&root).join(".gitignore");
+    let existing = fs::read_to_string(&gi_path).unwrap_or_default();
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if trimmed == ".cross/" || trimmed == ".cross" {
+            return;
+        }
+    }
+    let mut f = match fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&gi_path)
+    {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    if !existing.is_empty() && !existing.ends_with('
+') {
+        let _ = writeln!(f);
+    }
+    let _ = writeln!(f, ".cross/");
+}
+
 fn update_crossfile(line: &str) -> Result<()> {
     let path = get_crossfile_path()?;
     let mut content = if path.exists() {
@@ -764,20 +793,36 @@ fn main() -> Result<()> {
             let hash = format!("{:x}", hasher.finalize());
             let hash = &hash[..8];
 
-            let wt_dir = format!(".git/cross/worktrees/{}_{}", spec.remote, hash);
+            let wt_dir = format!(".cross/worktrees/{}_{}", spec.remote, hash);
 
+            let local_branch = format!("cross/{}/{}/{}", spec.remote, branch_name, hash);
             if !Path::new(&wt_dir).exists() {
                 log_info(&format!("Setting up worktree at {}...", wt_dir));
-                fs::create_dir_all(&wt_dir)?;
+                // Only create parent dir - let git worktree add create the worktree dir itself
+                if let Some(parent) = Path::new(&wt_dir).parent() {
+                    fs::create_dir_all(parent)?;
+                }
 
-                run_cmd(&[
+                // Prune stale worktree registrations (e.g. from previous failed attempts)
+                let _ = run_cmd(&["git", "worktree", "prune"]);
+
+                if let Err(e) = run_cmd(&[
                     "git",
                     "worktree",
                     "add",
                     "--no-checkout",
+                    "-f",
+                    "-B",
+                    &local_branch,
                     &wt_dir,
                     &format!("{}/{}", spec.remote, branch_name),
-                ])?;
+                ]) {
+                    // Clean up partial directory on failure
+                    let _ = fs::remove_dir_all(&wt_dir);
+                    return Err(e);
+                }
+
+                // Sparse checkout
                 run_cmd(&["git", "-C", &wt_dir, "sparse-checkout", "init", "--no-cone"])?;
                 run_cmd(&[
                     "git",
@@ -796,6 +841,9 @@ fn main() -> Result<()> {
             let src = format!("{}/{}/", wt_dir, spec.remote_path);
             let dst = format!("{}/", target_path);
             run_cmd(&["rsync", "-av", "--delete", "--exclude", ".git", &src, &dst])?;
+
+            // Ensure .cross/ is in .gitignore
+            ensure_gitignore();
 
             let mut metadata = load_metadata()?;
             if let Some(existing) = metadata
@@ -930,6 +978,8 @@ fn main() -> Result<()> {
                 }
 
                 // Step 4: Pull rebase from upstream
+                // Refresh index to avoid false conflicts from rsync mtime changes
+                let _ = run_cmd(&["git", "-C", &patch.worktree, "update-index", "--refresh", "-q"]);
                 log_info("Pulling updates from upstream...");
                 if let Err(e) = run_cmd(&[
                     "git",

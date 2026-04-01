@@ -53,17 +53,13 @@ if [ "$_go_bin_ok" = false ]; then
     GO_BIN="$SANDBOX/bin/git-cross-go"
     mkdir -p "$SANDBOX/bin"
     # Compiled Go binaries crash with SIGILL on this emulated ARM64 platform.
-    # Use 'go run' wrapper with GIT_WORK_TREE/GIT_DIR to redirect to correct repo.
-    GO_BIN="$SANDBOX/bin/git-cross-go"
-    mkdir -p "$SANDBOX/bin"
-    cat > "$GO_BIN" <<'GOEOF'
+    # Use 'go run' wrapper: GOFLAGS=-mod=mod skips vendor dir;
+    # run from CWD so relative paths (.cross/worktrees/...) resolve correctly.
+    cat > "$GO_BIN" <<GOEOF
 #!/usr/bin/env bash
-_cwd=$(pwd)
-export GIT_WORK_TREE="$_cwd"
-export GIT_DIR="$_cwd/.git"
+export GOFLAGS=-mod=mod
+exec go run "$REPO_ROOT/src-go/main.go" "\$@"
 GOEOF
-    echo "cd \"$REPO_ROOT/src-go\" && exec go run main.go \"\$@\"" >> "$GO_BIN"
-    chmod +x "$GO_BIN"
     chmod +x "$GO_BIN"
 fi
 

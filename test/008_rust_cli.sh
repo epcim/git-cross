@@ -31,6 +31,10 @@ RUST_BIN="$REPO_ROOT/src-rust/target/debug/git-cross-rust"
 if [ ! -f "$RUST_BIN" ]; then
     echo "Rust binary not found at $RUST_BIN. Building..."
     export PATH=$HOME/homebrew/bin:$PATH
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo "SKIP: cargo not found, skipping Rust CLI tests"
+        exit 0
+    fi
     (cd "$REPO_ROOT/src-rust" && cargo build)
 fi
 

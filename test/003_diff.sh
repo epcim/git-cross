@@ -48,7 +48,7 @@ log_header "Testing 'just cross status'..."
 # Find worktree
 # AICONTEXT: finding worktree, shall be possible with metadata.yaml and with just cross _resolve_context, better keep the test code DRY principle.
 hash=$(echo "vendor/lib" | md5sum | cut -d' ' -f1 | cut -c1-8)
-wt=".git/cross/worktrees/repo1_$hash"
+wt=".cross/worktrees/repo1_$hash"
 
 git -C "$wt" fetch -q
 

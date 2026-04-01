@@ -3,7 +3,7 @@ set export := true
 set positional-arguments
 
 CROSSFILE := "Crossfile"
-CROSSDIR := ".git/cross"
+CROSSDIR := ".cross"
 METADATA := "$CROSSDIR/metadata.json"
 JUST_DIR := env("JUST_DIR", source_dir())
 REPO_DIR := env ("REPO_DIR", "$(git rev-parse --show-toplevel)")
@@ -374,7 +374,7 @@ patch remote_spec local_path="": check-deps
         # calculate hash/id — must match Go/Rust: SHA256(remote\0remote_path\0branch)[:8]
         set hash (printf '%s\0%s\0%s' $remote $r_path $remote_branch | sha256sum 2>/dev/null; or printf '%s\0%s\0%s' $remote $r_path $remote_branch | shasum -a 256)
         set hash (echo $hash | cut -d' ' -f1 | string sub -l 8)
-        set wt ".git/cross/worktrees/$remote"_"$hash"
+        set wt ".cross/worktrees/$remote"_"$hash"
         
         # setup worktree
         just cross _log info "Setting up worktree at $wt..."
@@ -393,6 +393,14 @@ patch remote_spec local_path="": check-deps
         just cross _log info "Syncing files to $l_path..."
         mkdir -p $l_path
         rsync -av --delete --exclude .git $wt/$r_path/ $l_path/
+
+        # Ensure .cross/ is in .gitignore
+        if not grep -qxF '.cross/' .gitignore 2>/dev/null
+            if test -f .gitignore; and test -s .gitignore; and not string match -q '' (tail -c1 .gitignore)
+                echo '' >> .gitignore
+            end
+            echo '.cross/' >> .gitignore
+        end
 
         # Add local_path to git
         git add $l_path
@@ -516,6 +524,8 @@ sync *path="": check-initialized
         popd
         
         # 3. Pull rebase from upstream
+        # Refresh index to avoid false conflicts from rsync mtime changes
+        git -C $worktree update-index --refresh -q 2>/dev/null; or true
         just cross _log info "Pulling from upstream..."
         if not git -C $worktree pull --rebase
             just cross _log error "Conflict detected in $worktree. Please resolve manually."
@@ -737,9 +747,9 @@ push path="" branch="" force="false" yes="false" message="": check-initialized
 list: check-deps
     #!/usr/bin/env fish
     pushd "{{REPO_DIR}}" >/dev/null
-        if test -f .git/cross/metadata.json
+        if test -f .cross/metadata.json
             # Get unique remotes used by patches
-            set used_remotes (jq -r '.patches[].remote' .git/cross/metadata.json | sort -u)
+            set used_remotes (jq -r '.patches[].remote' .cross/metadata.json | sort -u)
             
             if test (count $used_remotes) -gt 0
                 just cross _log info "Configured Remotes:"
@@ -783,8 +793,8 @@ list: check-deps
         printf "%-20s %-30s %-20s\n" "REMOTE" "REMOTE PATH" "LOCAL PATH"
         printf "%s\n" (string repeat -n 70 "-")
         
-        if test -f .git/cross/metadata.json
-            jq -r '.patches[] | "\(.remote) \(.remote_path) \(.local_path)"' .git/cross/metadata.json | while read -l remote rpath lpath
+        if test -f .cross/metadata.json
+            jq -r '.patches[] | "\(.remote) \(.remote_path) \(.local_path)"' .cross/metadata.json | while read -l remote rpath lpath
                  printf "%-20s %-30s %-20s\n" $remote $rpath $lpath
             end
         else
@@ -873,8 +883,8 @@ status: check-deps
     printf "%-20s %-15s %-15s %-15s\n" "LOCAL PATH" "DIFF" "UPSTREAM" "CONFLICTS"
     printf "%s\n" (string repeat -n 70 "-")
     
-    if test -f .git/cross/metadata.json
-        jq -r '.patches[] | "\(.remote) \(.remote_path) \(.local_path) \(.worktree)"' .git/cross/metadata.json | while read -l remote rpath local_path wt
+    if test -f .cross/metadata.json
+        jq -r '.patches[] | "\(.remote) \(.remote_path) \(.local_path) \(.worktree)"' .cross/metadata.json | while read -l remote rpath local_path wt
             set diff_stat "Clean"
             set upstream_stat "Synced"
             set conflict_stat "No"
