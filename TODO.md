@@ -2,8 +2,8 @@
 
 ## Summary
 
-**Status:** v0.3.0 — context-aware diff, fzf improvements, bug fixes, expanded test coverage  
-**Critical Issues:** 0 (all P0 issues resolved)  
+**Status:** v0.3.1-dev — sparse-checkout fix, vendor build fix, AI sandbox workflow  
+**Critical Issues:** 0 (P0 sparse-checkout and vendor build issues resolved)  
 **Pending Enhancements:** 1 (single-file patch)
 
 ## Core Implementation Status
@@ -144,6 +144,20 @@
 ### Completed Enhancements
 
 ## Known Issues (To FIX)
+
+### ✅ P0: Sparse Checkout Broken on Newer Git (FIXED)
+
+- [x] **Issue:** `git sparse-checkout set <path>` in `--no-cone` mode (used by all three implementations) fails to reliably checkout directories on newer Git versions (2.43+). The gitignore-style pattern `src` (without trailing `/`) does not match directory contents. Additionally, bare `git checkout` can be a no-op in worktrees created with `--no-checkout`.
+
+**Fix Applied:**
+- ✅ All three implementations: Added trailing `/` to sparse-checkout patterns for reliable directory matching
+- ✅ All three implementations: Replaced `git checkout` with `git read-tree -mu HEAD` for explicit tree materialization
+- ✅ Added `src-go/vendor/` to `.gitignore` to prevent "inconsistent vendoring" build errors
+- ✅ Fixed all test Go build commands to remove stale vendor dir and use `-mod=mod` directly
+- ✅ test/014_remove.sh: Reuses existing Go binary, gracefully skips when Go unavailable
+- ✅ Added test/018_sbx_sandbox.sh for AI sandbox workflow validation
+
+**Files:** `src-go/main.go`, `src-rust/src/main.rs`, `Justfile.cross`, `.gitignore`, `test/009_go_cli.sh`, `test/012_sparse_checkout.sh`, `test/013_real_world.sh`, `test/014_remove.sh`, `test/018_sbx_sandbox.sh`
 
 ### ✅ P0: Sync Command Data Loss (FIXED)
 

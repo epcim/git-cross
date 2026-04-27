@@ -160,6 +160,46 @@ If using `just`, you can override targets to add pre/post hooks:
 3. **Rsync**: Efficiently syncs changes between worktree and your source tree.
 4. **Crossfile**: A plain-text record of all active patches for easy sharing.
 
+## AI-Assisted Coding and Sandbox Workflows
+
+AI coding tools (Cursor, Copilot Workspace, Claude Code, Aider, etc.) frequently work in **subfolders** rather than the repository root. This is by design: the main `.git/` directory and full repository history are not shared with the AI tool's context, reducing noise and improving focus.
+
+**git-cross fits this pattern naturally.** Vendored files are physical files in subfolders -- AI tools can read, modify, and reason about them directly without needing access to the upstream `.git` state.
+
+### Docker Sandbox (`sbx`) Integration
+
+Container-based development sandboxes (e.g. `docker sandbox`, `sbx`) create isolated environments where your code runs inside a container. These tools often support `git worktree` to share repository state without copying `.git/`:
+
+```bash
+# 1. Set up git-cross in your main repo
+git cross use upstream https://github.com/example/lib.git
+git cross patch upstream:src vendor/lib
+
+# 2. Create a sandbox scoped to the vendor subfolder
+sbx create --mount vendor/lib   # AI tool sees only vendor/lib/
+
+# 3. AI modifies files in the sandbox (vendor/lib/)
+# 4. Push changes back upstream from the host
+git cross push vendor/lib
+```
+
+**Key properties that make this work:**
+- **Physical files** in subfolders (not gitlinks) -- sandbox tools mount them directly.
+- **Sparse checkout** -- only the needed subdirectory is present, keeping AI context small.
+- **`Crossfile` reproducibility** -- `git cross replay` reconstructs the vendored environment inside a fresh container or CI job.
+- **Bidirectional sync** -- AI-generated changes in the sandbox flow back upstream via `git cross push`.
+- **Hidden worktrees** -- the `.git/cross/worktrees/` directory stays on the host; the sandbox only sees clean working copies.
+
+### Rules for AI-Assisted Development
+
+When using AI tools with git-cross managed subfolders:
+
+1. **Scope AI context to subfolders.** Share `vendor/<name>/` with the AI tool, not the repository root. The AI doesn't need `.git/`, `Crossfile`, or `.cross/`.
+2. **Use `git cross diff` to review AI changes** before pushing upstream. This compares the local subfolder against the worktree (upstream state).
+3. **Use `git cross sync` after upstream changes** to pull updates into the AI's working directory.
+4. **`Crossfile` is the source of truth.** When setting up a new sandbox or CI environment, `git cross replay` recreates all patches from scratch.
+5. **Worktrees enable container-aware git.** Tools like `sbx` that support `git worktree` can access the repository's git state without mounting the entire `.git/` directory into the container.
+
 ## Architecture
 
 ### Technical Implementation Analysis

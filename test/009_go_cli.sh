@@ -31,7 +31,9 @@ GO_BIN="$REPO_ROOT/src-go/git-cross-go"
 if [ ! -f "$GO_BIN" ]; then
     echo "Go binary not found at $GO_BIN. Building..."
     export PATH=$HOME/homebrew/bin:$PATH
-    ( cd "$REPO_ROOT/src-go" && CGO_ENABLED=0 GOFLAGS=-mod=mod go build -tags purego -o git-cross-go main.go)
+    # Remove stale vendor dir that causes "inconsistent vendoring" errors
+    rm -rf "$REPO_ROOT/src-go/vendor" 2>/dev/null || true
+    ( cd "$REPO_ROOT/src-go" && CGO_ENABLED=0 go build -mod=mod -tags purego -o git-cross-go main.go)
 fi
 # Smoke test: verify the binary works (catches SIGILL on emulated ARM64 platforms
 # where Go toolchain auto-download produces incompatible binaries)

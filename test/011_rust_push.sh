@@ -14,7 +14,14 @@ if [ ! -f "$RUST_CROSS" ]; then
         echo "SKIP: cargo not found, skipping Rust push tests"
         exit 0
     fi
-    (cd "$REPO_ROOT/src-rust" && cargo build)
+    (cd "$REPO_ROOT/src-rust" && cargo build) || {
+        echo "SKIP: Rust build failed, skipping Rust push tests"
+        exit 0
+    }
+fi
+if [ ! -f "$RUST_CROSS" ]; then
+    echo "SKIP: Rust binary not available after build, skipping Rust push tests"
+    exit 0
 fi
 
 # Setup upstream

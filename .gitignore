@@ -15,6 +15,7 @@ testdir
 
 # builds
 src-go/git-cross-go
+src-go/vendor/
 src-rust/git-cross-rust
 src-rust/target
 

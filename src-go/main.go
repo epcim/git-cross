@@ -165,7 +165,6 @@ func saveMetadata(meta Metadata) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-
 // ensureGitignore adds ".cross/" to .gitignore if not already present.
 func ensureGitignore() {
 	root, err := getRepoRoot()
@@ -665,14 +664,21 @@ func main() {
 					return fmt.Errorf("git worktree add failed: %v\nOutput: %s", err, string(out))
 				}
 
-				// Sparse checkout
+				// Sparse checkout — use trailing "/" so gitignore-style patterns
+				// reliably match the directory and its contents in --no-cone mode.
 				if _, err := git.NewCommand("sparse-checkout", "init", "--no-cone").RunInDir(wtDir); err != nil {
 					return fmt.Errorf("sparse-checkout init failed: %w", err)
 				}
-				if _, err := git.NewCommand("sparse-checkout", "set", spec.RemotePath).RunInDir(wtDir); err != nil {
+				sparsePattern := spec.RemotePath
+				if !strings.HasSuffix(sparsePattern, "/") {
+					sparsePattern += "/"
+				}
+				if _, err := git.NewCommand("sparse-checkout", "set", sparsePattern).RunInDir(wtDir); err != nil {
 					return fmt.Errorf("sparse-checkout set failed: %w", err)
 				}
-				if _, err := git.NewCommand("checkout").RunInDir(wtDir); err != nil {
+				// Use read-tree to explicitly populate index+worktree from HEAD,
+				// because bare "git checkout" can be a no-op after --no-checkout.
+				if _, err := git.NewCommand("read-tree", "-mu", "HEAD").RunInDir(wtDir); err != nil {
 					return fmt.Errorf("checkout failed: %w", err)
 				}
 			}

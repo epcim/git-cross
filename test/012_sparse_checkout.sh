@@ -41,7 +41,9 @@ rm -rf vendor/app1 .cross/worktrees/* .git/worktrees/* Crossfile
 log_header "Testing sparse checkout in Go"
 GO_BIN="$REPO_ROOT/src-go/git-cross-go"
 if [ ! -f "$GO_BIN" ]; then
-    (cd "$REPO_ROOT/src-go" && CGO_ENABLED=0 GOFLAGS=-mod=mod go build -tags purego -o "$GO_BIN" main.go)
+    # Remove stale vendor dir that causes "inconsistent vendoring" errors
+    rm -rf "$REPO_ROOT/src-go/vendor" 2>/dev/null || true
+    (cd "$REPO_ROOT/src-go" && CGO_ENABLED=0 go build -mod=mod -tags purego -o "$GO_BIN" main.go)
 fi
 if ! "$GO_BIN" --version >/dev/null 2>&1; then
     log_warn "Go binary not working on this platform, skipping Go sparse checkout test"

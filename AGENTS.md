@@ -116,6 +116,7 @@ Tests 001-007 form a chain for Shell/Just (001 is sourced by 002, etc.). Tests 0
 | `exec` | 005* | -- | -- |
 | `init` | -- | 009 | 008 |
 | `sparse checkout` | 012 | 012 | 012 |
+| `sbx/sandbox workflow` | -- | 018 | -- |
 
 `*` = partial/basic assertions only. `--` = not tested.
 

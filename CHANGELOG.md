@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **P0: Sparse checkout broken on newer Git versions** - `git sparse-checkout set <path>` in `--no-cone` mode no longer reliably checks out directories without trailing `/`. Fixed across all three implementations (Go, Rust, Justfile.cross) by appending `/` to sparse-checkout patterns and using `git read-tree -mu HEAD` instead of bare `git checkout` (which can no-op after `--no-checkout`).
+- **P0: Go build "inconsistent vendoring" in CI** - Tests that build the Go binary now remove stale `vendor/` directory and pass `-mod=mod` as a direct flag. Added `src-go/vendor/` to `.gitignore` to prevent accidental commits.
+- **test/014_remove.sh robustness** - Go binary is now reused if already built; gracefully skips Go tests when Go toolchain is unavailable.
+
+### Added
+- **AI-assisted coding / sandbox workflow documentation** - New README section explaining how git-cross integrates with AI coding tools and container-based development sandboxes (`sbx`, Docker sandbox). Covers subfolder scoping, `Crossfile` reproducibility, and bidirectional sync.
+- **test/018_sbx_sandbox.sh** - End-to-end test for the AI sandbox workflow: vendor setup, sandbox isolation (no `.git`), AI file modifications, diff review, upstream push, Crossfile replay, and sync.
+
 ## [0.3.0] - 2026-03-28
 
 ### Added

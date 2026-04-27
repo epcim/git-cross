@@ -383,10 +383,12 @@ patch remote_spec local_path="": check-deps
             git fetch $remote $remote_branch
             git worktree add --no-checkout -B "cross/$remote/$remote_branch/$hash" $wt "$remote/$remote_branch" >/dev/null 2>&1
 
-            # Sparse checkout
+            # Sparse checkout — trailing "/" ensures gitignore-style pattern
+            # reliably matches the directory in --no-cone mode.
             git -C $wt sparse-checkout init --no-cone
-            git -C $wt sparse-checkout set $r_path
-            git -C $wt checkout
+            git -C $wt sparse-checkout set "$r_path/"
+            # read-tree explicitly populates worktree (bare checkout can no-op after --no-checkout)
+            git -C $wt read-tree -mu HEAD
         end
 
         # sync to local_path

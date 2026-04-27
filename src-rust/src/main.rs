@@ -693,8 +693,7 @@ fn ensure_gitignore() {
         Ok(f) => f,
         Err(_) => return,
     };
-    if !existing.is_empty() && !existing.ends_with('
-') {
+    if !existing.is_empty() && !existing.ends_with('\n') {
         let _ = writeln!(f);
     }
     let _ = writeln!(f, ".cross/");
@@ -822,17 +821,25 @@ fn main() -> Result<()> {
                     return Err(e);
                 }
 
-                // Sparse checkout
+                // Sparse checkout — use trailing "/" so gitignore-style patterns
+                // reliably match the directory and its contents in --no-cone mode.
                 run_cmd(&["git", "-C", &wt_dir, "sparse-checkout", "init", "--no-cone"])?;
+                let sparse_pattern = if spec.remote_path.ends_with('/') {
+                    spec.remote_path.clone()
+                } else {
+                    format!("{}/", spec.remote_path)
+                };
                 run_cmd(&[
                     "git",
                     "-C",
                     &wt_dir,
                     "sparse-checkout",
                     "set",
-                    &spec.remote_path,
+                    &sparse_pattern,
                 ])?;
-                run_cmd(&["git", "-C", &wt_dir, "checkout"])?;
+                // Use read-tree to explicitly populate index+worktree from HEAD,
+                // because bare "git checkout" can be a no-op after --no-checkout.
+                run_cmd(&["git", "-C", &wt_dir, "read-tree", "-mu", "HEAD"])?;
             }
 
             log_info(&format!("Syncing files to {}...", target_path));
@@ -1043,7 +1050,7 @@ fn main() -> Result<()> {
                 // Step 7: Restore stashed changes
                 if stashed {
                     log_info("Restoring stashed local changes...");
-                    if let Err(e) = run_cmd(&["git", "-C", &local_abs_path, "stash", "pop"]) {
+                    if let Err(_e) = run_cmd(&["git", "-C", &local_abs_path, "stash", "pop"]) {
                         log_error("Failed to restore stashed changes. Conflicts may exist.");
                         log_error(&format!("Resolve manually in: {}", patch.local_path));
                         log_info("Run 'git status' to see conflicts, then 'git stash drop' when resolved.");

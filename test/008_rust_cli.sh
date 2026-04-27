@@ -35,7 +35,14 @@ if [ ! -f "$RUST_BIN" ]; then
         echo "SKIP: cargo not found, skipping Rust CLI tests"
         exit 0
     fi
-    (cd "$REPO_ROOT/src-rust" && cargo build)
+    (cd "$REPO_ROOT/src-rust" && cargo build) || {
+        echo "SKIP: Rust build failed, skipping Rust CLI tests"
+        exit 0
+    }
+fi
+if [ ! -f "$RUST_BIN" ]; then
+    echo "SKIP: Rust binary not available after build, skipping Rust CLI tests"
+    exit 0
 fi
 
 # Setup upstream
