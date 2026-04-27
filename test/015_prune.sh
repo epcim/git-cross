@@ -31,8 +31,8 @@ fi
 just cross prune test-remote-1 || fail "Prune failed"
 
 # Verify patch is removed from metadata
-if [ -f ".git/cross/metadata.json" ]; then
-    patch_count=$(jq -r '.patches | length' .git/cross/metadata.json)
+if [ -f ".cross/metadata.json" ]; then
+    patch_count=$(jq -r '.patches | length' .cross/metadata.json)
     if [ "$patch_count" != "0" ]; then
         fail "Expected 0 patches after prune, got $patch_count"
     fi
@@ -105,7 +105,7 @@ just cross use test-remote-3 "file://$upstream3" || fail "Failed to add remote"
 just cross patch test-remote-3:lib vendor/lib || fail "Failed to create patch"
 
 # Manually break the worktree (simulate corruption)
-worktree_dir=$(find .git/cross/worktrees -maxdepth 1 -type d -name "test-remote-3_*" | head -n 1)
+worktree_dir=$(find .cross/worktrees -maxdepth 1 -type d -name "test-remote-3_*" | head -n 1)
 if [ -n "$worktree_dir" ]; then
     log_info "Found worktree: $worktree_dir"
     # Remove worktree directory but leave git reference (creates stale reference)

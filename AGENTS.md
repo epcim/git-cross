@@ -1,90 +1,209 @@
 # AGENTS
 
+Instructions for AI agents working on this codebase.
+
 ## Architecture
 
-**Stack**:
-1. **Core**: `git worktree` (vendoring mechanism) + `rsync` (syncing mechanism)
-2. **Implementation Layers**:
-   - **Go (Recommended/Primary)**: Native CLI using `gogs/git-module` and `grsync`, located in `src-go/`.
-   - **Just + Fish**: The original implementation in `Justfile.cross`, still fully functional and widely used.
-   - **Rust (Experimental / WIP)**: Native CLI in `src-rust/`, being refactored to use `git2` and `duct`.
+**Core mechanism**: `git worktree` (vendoring) + `rsync` (syncing). Three parallel implementations exist with command parity.
 
-## Core Components
+| Layer | Location | Language | CLI Framework | Git Interface | Status |
+|-------|----------|----------|---------------|---------------|--------|
+| **Go** (primary) | `src-go/main.go` | Go | Cobra | `gogs/git-module` + `os/exec` | Production |
+| **Just + Fish** | `Justfile.cross` | Fish/Bash | Just | `git` CLI + `jq` | Reference |
+| **Rust** (experimental) | `src-rust/src/main.rs` | Rust | Clap | `git2` (minimal) + `duct` | WIP |
 
-1. **Native CLIs (`git-cross-rust` / `git-cross-go` preferred)**:
-   - Primary entry points for modern usage.
-   - Command parity: `use`, `patch`, `sync`, `list`, `status`, `replay`, `push`, `exec`.
-   - Mirror the original shell-based logic but are faster and easier to distribute.
+Both Go and Rust are single-file implementations (~1500 lines each). Justfile.cross is ~940 lines.
 
-2. **Justfile + Justfile.cross**:
-   - `Justfile`: Root task runner delegating to `Justfile.cross` or native CLIs.
-   - `Justfile.cross`: The canonical "source of truth" for the original logic.
+## File Map
 
-3. **Persistence**: `Crossfile`
-   - Plain-text record of `use` and `patch` commands.
-   - Enables `replay` command to reconstruct the entire vendored environment.
+```
+Justfile              # Root wrapper: delegates `just cross <cmd>` to Justfile.cross
+Justfile.cross        # Shell/Fish reference implementation (all commands)
+Crossfile             # User-facing state: records use/patch commands for replay
+src-go/main.go        # Go CLI (single file, Cobra-based)
+src-go/go.mod         # Go module (go 1.23)
+src-rust/src/main.rs  # Rust CLI (single file, Clap-based)
+src-rust/Cargo.toml   # Rust dependencies
+.git/cross/           # Internal state directory
+  metadata.json       # Patch registry: {patches: [{remote, remote_path, local_path, worktree, branch}]}
+  worktrees/          # Hidden git worktrees for each patch
+test/common.sh        # Shared test helpers (setup_sandbox, create_upstream, assertions)
+test/run-all.sh       # Test runner: discovers and executes test/NNN_*.sh files
+test/001-017_*.sh     # Individual test files (see coverage matrix below)
+```
 
-4. **Metadata**: `.git/cross/metadata.json`
-   - Internal state tracking (worktree paths, remote mappings).
-   - Used by CLIs for faster lookups and status reporting.
+## Commands (all implementations)
 
-## Commands
+| Command | Args | Purpose |
+|---------|------|---------|
+| `use` | `<name> <url>` | Register remote, detect default branch |
+| `patch` | `<remote[:branch]:path> [local_path]` | Sparse-checkout worktree, rsync to local |
+| `sync` | `[path]` | Pull upstream, rebase, rsync back to local |
+| `diff` | `[path]` | `git diff --no-index` between worktree and local (context-aware: auto-detects patch from CWD) |
+| `list` | | Table of remotes and patches |
+| `status` | | Health: local diffs, upstream divergence, conflicts |
+| `push` | `[path]` | Rsync local to worktree, commit, push upstream |
+| `replay` | | Re-execute Crossfile to reconstruct environment |
+| `remove` | `<path>` | Delete patch, clean Crossfile and metadata |
+| `prune` | `[remote]` | Remove remote and all its patches, prune stale worktrees |
+| `exec` | `<cmd>` | Run arbitrary command (for Crossfile hooks) |
+| `init` | | Create empty Crossfile |
+| `cd` | `[path]` | Open shell in local_path (or fzf select + clipboard) |
+| `wt` | `[path]` | Open shell in worktree (or fzf select + clipboard) |
 
-All implementations follow the same command structure:
+## Implementation Comparison
 
-### Core Workflow
-- **`use <name> <url>`**: Register a remote and detect its default branch.
-- **`patch <remote:path[:branch]> <local_path>`**: Sync a subdirectory from a remote to a local path using a hidden worktree.
-- **`sync [path]`**: pull updates for all or specific patches. Uses rebase for clean history.
-- **`replay`**: Re-run all commands found in the `Crossfile`.
+### Quality Assessment
 
-### Inspection
-- **`list`**: Tabular view of all configured patches.
-- **`status`**: Detailed health check (dirty files, upstream divergence, conflicts).
-- **`diff`**: Show changes between local files and their upstream source.
+| Aspect | Just/Fish | Go | Rust |
+|--------|-----------|-----|------|
+| **Readability** | Best. Concise, intent-clear | Good. Cobra structure helps | Good. Match arms are clean |
+| **Error handling** | Weak. Fish has no `set -e`; many unchecked returns | Weak. 14 `loadMetadata` errors silently discarded | Mixed. `anyhow`/`?` is good, but 12 `let _ =` suppressions |
+| **Testability** | Tested via Just invocation | Self-contained binary | Self-contained binary |
+| **Distribution** | Requires `just` + `fish` + `jq` + `rsync` | Single static binary + `rsync` | Single binary + `rsync` |
+| **Maintainability** | Simple to modify, fast iteration | Single 1509-line file, needs decomposition | Single 1520-line file, needs decomposition |
 
-### Infrastructure
-- **`exec <cmd>`**: Run arbitrary commands for post-patching automation.
+### Key Discrepancies
 
-## Testing
+| Topic | Just/Fish | Go | Rust |
+|-------|-----------|-----|------|
+| **Worktree hash** | `md5sum(local_path)` — branch NOT included | `SHA256(remote+path+branch)[:8]` — no field separator | `DefaultHasher(canonical+branch)[:8]` — **non-deterministic across Rust versions** |
+| **Git interface** | Direct `git` CLI everywhere | Mixed: `gogs/git-module` + `os/exec` + `git.Open()` — 3 styles interleaved | `git2` for 2 commands only, `duct`/`run_cmd` for rest — git2 is dead weight |
+| **Metadata `id` field** | Written via jq | **Not in struct** — silently dropped on save | Present with `#[serde(default)]` |
+| **Crossfile removal** | `grep -v "patch"` — removes ALL lines with "patch" | `strings.Contains(line, "patch") && strings.Contains(line, localPath)` — fragile | Same as Go — fragile substring match |
+| **`init` path** | CWD (no `pushd REPO_DIR`) | CWD (hardcodes `"Crossfile"`) | CWD (hardcodes `"Crossfile"`) |
+| **`push` no-arg** | Requires explicit path or CWD in patch | Silently selects first patch | Silently selects first patch |
 
-Testing is modular and targets each implementation:
-- **Bash/Fish**: `test/run-all.sh` executes legacy shell tests.
-- **Rust**: `test/008_rust_cli.sh` verifies the Rust port.
-- **Go**: `test/009_go_cli.sh` verifies the Go implementation.
+### What Each Implementation Does Best
 
-For known issues and planned enhancements, see [TODO.md](TODO.md).
+- **Justfile.cross**: Clearest intent. `_resolve_context2` is elegant. `update_crossfile` is a 2-line recipe. The CWD-based auto-detection via `USER_CWD` + `jq` is the most correct approach.
+- **Go**: `updateCrossfile()` has the best deduplication (3-way prefix matching). `resolvePathToRepoRelative()` handles macOS `/tmp` -> `/private/tmp` symlinks. `detectDefaultBranch()` has the most robust fallback chain.
+- **Rust**: `parse_patch_spec()` handles the most edge cases. `anyhow` error context is better than Go's raw `fmt.Errorf`. `select_patch_interactive()` has the cleanest fzf integration.
 
-## Agent Guidelines
+### Known Systemic Issues (all implementations share)
 
-### CRITICAL: Complete Implementation Requirement
+1. **`cd`/`wt` code duplication**: Near-identical blocks in Go (80 lines) and Rust (56 lines). Should be a single parameterized function.
+2. **`remove`/`prune` code duplication**: Prune copy-pastes remove logic. Should call a shared `removePatch()` helper.
+3. **`sync` is a god-method**: 159 lines (Go), 192 lines (Rust), 166 lines (Just). Needs decomposition into: stash, sync-to-worktree, pull-rebase, detect-deletions, sync-from-worktree, unstash.
+4. **Crossfile removal is fragile**: All three use substring matching that can corrupt unrelated lines.
+5. **`loadMetadata` errors universally ignored**: Corrupted metadata.json silently treated as empty.
 
-**When implementing any feature or bug fix:**
-1. **ALL THREE implementations MUST be updated** - Justfile.cross, Go (src-go/), and Rust (src-rust/)
-2. **NO partial commits** - All implementations must land in the same commit or commit series
-3. **Test coverage required** - Each new feature/fix MUST have test coverage in test/XXX_*.sh
-4. **All implementations tested** - Tests must verify behavior across Just, Go, and Rust implementations
-5. **Command parity maintained** - All implementations must provide identical functionality and behavior
+## Test Coverage
 
-**Workflow:**
-- Implement in Justfile.cross first (reference implementation)
-- Port to Go (primary production implementation)
-- Port to Rust (experimental implementation)
-- Create/update test case (test/XXX_*.sh)
-- Verify all three implementations pass the same test
-- Document in TODO.md and commit message
-- Only then commit
+### Test Structure
 
-### Other Guidelines
+Tests 001-007 form a chain for Shell/Just (001 is sourced by 002, etc.). Tests 008 (Rust) and 009 (Go) are self-contained monolithic tests. Tests 010-017 are focused feature tests.
 
-- **Consistency**: When adding features, ensure logic parity across `Justfile.cross`, Rust, and Go versions.
-- **Command Parity**: All implementations (Just, Go, Rust) **MUST** implement the same set of core commands to ensure a consistent user experience regardless of the implementation layer used. 
-- **Tool Hygiene**: Installation and Git alias management MUST be handled through distribution (e.g., `Justfile`), keep binaries focused on functional command implementation.
-- **Hygiene**: Always protect the `.git/cross/` directory and ensure hidden worktrees are managed correctly.
-- **Reproducibility**: Any state change that affects the environment must be recorded in the `Crossfile`.
-- **Portability**: Native implementations should remain self-contained (using libraries where possible, like `grsync` in Go).
+### Coverage Matrix
+
+| Command | Shell (tests) | Go (tests) | Rust (tests) |
+|---------|:---:|:---:|:---:|
+| `use` | 001 | 009 | 008 |
+| `patch` | 002 | 009 | 008 |
+| `sync` (basic) | 004 | 009 | 008 |
+| `sync` (edge cases: conflicts, stash, deletion) | 004 | -- | -- |
+| `diff` (basic) | 003 | 009 | 008 |
+| `diff` (context-aware CWD) | 003, 016 | 016 | -- |
+| `diff` (relative paths) | 003 | -- | -- |
+| `list` | (017) | 009, 014 | 008, 014 |
+| `status` (all states) | 007 | 009* | 008* |
+| `push` (basic) | 006 | 009 | 008, 011 |
+| `push` (custom msg/branch/force) | 006 | -- | 011 |
+| `replay` | 005 | 009 | 008 |
+| `remove` | 014 | 014 | 014 |
+| `prune` | 015 | 009 | 008 |
+| `cd`/`wt` | 017 | 017 | 017 |
+| `exec` | 005* | -- | -- |
+| `init` | -- | 009 | 008 |
+| `sparse checkout` | 012 | 012 | 012 |
+| `sbx/sandbox workflow` | -- | 018 | -- |
+
+`*` = partial/basic assertions only. `--` = not tested.
+
+### Gaps Worth Addressing
+
+- **Go/Rust sync edge cases**: conflicts, uncommitted changes, file deletion — only tested in Shell.
+- **Go push with custom message/branch/force**: only Shell and Rust test these.
+- **Rust context-aware diff**: not tested (Go and Shell are).
+- **`exec` command**: only tested indirectly through replay.
+- **`list` for Shell**: no dedicated test.
+
+## Agent Workflow
+
+### Before Making Changes
+
+1. **Read this file** and `TODO.md` to understand priorities and constraints.
+2. **Run existing tests** to establish a baseline: `just cross-test` or `bash test/run-all.sh`.
+3. **Understand the three implementations** — changes must land in all three unless the scope is explicitly limited (e.g., "fix Go only").
+4. **Check the coverage matrix** above to know what's tested where.
+
+### Implementing Features
+
+**Order of implementation:**
+1. **Justfile.cross first** — it's the simplest to iterate on, and serves as the reference for behavior.
+2. **Go second** — primary production implementation. Ensure it matches the Just behavior.
+3. **Rust third** — experimental. Port from Go since the structure is closer.
+4. **Write/update tests** — at minimum, add assertions to 008 (Rust) and 009 (Go). For Shell, add to the relevant 00X test or create a new one.
+5. **Update documentation** — `TODO.md`, `CHANGELOG.md`, this file if the change affects architecture.
+
+**Order of verification:**
+1. `bash test/NNN_specific.sh` — run the specific test for the feature.
+2. `bash test/003_diff.sh` and `bash test/004_sync.sh` — most likely to regress.
+3. `bash test/run-all.sh` — full regression.
+
+### Implementing Bug Fixes
+
+- Fix in all three implementations unless the bug is implementation-specific.
+- If fixing a shared pattern (e.g., Crossfile removal), fix the pattern once and port to all three.
+- Add a regression test.
+
+### Code Quality Rules
+
+**Do:**
+- Propagate errors explicitly. Use `return err` (Go), `?` (Rust), `or exit 1` (Fish).
+- Use the established helpers: `getRepoRoot()`/`get_repo_root()`, `loadMetadata()`/`load_metadata()`, `updateCrossfile()`/`update_crossfile()`.
+- Use constants for paths: `.git/cross/worktrees/`, `Crossfile`, `.git/cross/metadata.json`.
+- Match the existing code style of each implementation (Cobra commands in Go, Clap derive in Rust, Fish recipes in Just).
+
+**Don't:**
+- Add new dependencies to Rust (git2 is already dead weight — prefer `duct` CLI calls).
+- Use `gogs/git-module` for new Go code (prefer `os/exec` for consistency — the mixed approach is a known problem).
+- Make Justfile.cross more complex to accommodate programmatic concerns — keep it readable and concise.
+- Silently discard errors with `_ =` / `let _ =` / ignoring return values. Log them at minimum.
+- Duplicate logic between commands (especially `remove`/`prune` and `cd`/`wt`).
+
+### Working with Tests
+
+- Tests use `setup_sandbox` and `create_upstream` from `test/common.sh`.
+- Shell tests may chain-source earlier tests (e.g., 003 sources 002 which sources 001).
+- Tests 008/009 are self-contained and build their own binaries.
+- To run a specific test: `bash test/NNN_name.sh`.
+- To run all: `bash test/run-all.sh` or `just cross-test`.
+- CI runs on `ubuntu-latest` and does NOT install Go/Rust toolchains — tests 008/009 must handle this gracefully (skip with message).
+
+### Commit Conventions
+
+- No partial implementations — all three must be updated in the same commit series.
+- Test coverage required for new features.
+- Update `CHANGELOG.md` for user-facing changes.
+- Update `TODO.md` when completing or adding items.
 
 ## Implementation Details
-- **Hidden worktrees**: Stored in `.git/cross/worktrees/`.
-- **Sparse checkout**: Only specified paths are checked out to save disk and time.
-- **Rsync**: Used for the final sync to the local source tree to ensure physical files exist (unlike submodules).
+
+- **Hidden worktrees**: `.git/cross/worktrees/<remote>_<hash>`.
+- **Sparse checkout**: `git sparse-checkout set <path>` — only specified paths checked out.
+- **Rsync**: `rsync -av --delete --exclude .git` for worktree-to-local sync. `--delete` removes files locally that were deleted upstream.
+- **Crossfile format**: Lines like `cross use <name> <url>` or `cross patch <remote>:<branch>:<path> <local>`. Parsed as bash during `replay`.
+- **Metadata format**: JSON at `.git/cross/metadata.json`. Schema: `{"patches": [{"id", "remote", "remote_path", "local_path", "worktree", "branch"}]}`.
+
+## Refactoring Priorities
+
+When time allows, these structural improvements would most benefit the codebase:
+
+1. **Extract `removePatch()` helper** in Go and Rust — eliminates duplication between `remove` and `prune`.
+2. **Unify `cd`/`wt`** into a single parameterized function in Go and Rust.
+3. **Decompose `sync`** into sub-functions (stash, sync-to-wt, pull, detect-deletions, sync-from-wt, unstash).
+4. **Fix Crossfile removal** — use structured parsing (split line, match local_path field) instead of substring matching.
+5. **Stabilize Rust worktree hash** — replace `DefaultHasher` with SHA256 to match Go's deterministic behavior.
+6. **Remove `git2` dependency** from Rust — it's used for 2 trivial operations that already have CLI fallbacks.
+7. **Consolidate Go's git interface** — pick either `gogs/git-module` or `os/exec` and use it consistently.

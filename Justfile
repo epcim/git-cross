@@ -4,6 +4,7 @@ import? "git.just"
 [no-cd]
 @cross *ARGS:
   REPO_DIR=$(git rev-parse --show-toplevel) \
+  USER_CWD=${USER_CWD:-$(pwd)} \
   just --justfile "{{source_dir()}}/Justfile.cross" {{ARGS}}
 
 # keep compatibility with `just test-cross`

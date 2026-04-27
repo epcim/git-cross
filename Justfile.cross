@@ -3,7 +3,7 @@ set export := true
 set positional-arguments
 
 CROSSFILE := "Crossfile"
-CROSSDIR := ".git/cross"
+CROSSDIR := ".cross"
 METADATA := "$CROSSDIR/metadata.json"
 JUST_DIR := env("JUST_DIR", source_dir())
 REPO_DIR := env ("REPO_DIR", "$(git rev-parse --show-toplevel)")
@@ -107,17 +107,28 @@ _resolve_context2 path="": check-initialized
 
     # Resolve git repo relative path of target
     if test -z "$path"
-        set -x path "$(git rev-parse --show-prefix | sed 's,\/$,,')" # cwd, relative to git repo
+        # Use USER_CWD (set by root Justfile cross recipe) to preserve caller's CWD
+        if test -n "$USER_CWD" -a -n "$REPO_DIR"
+            set -x path (realpath --relative-to="$REPO_DIR" "$USER_CWD" 2>/dev/null; or echo "")
+            # "." means we're at repo root — treat as empty
+            if test "$path" = "."
+                set -x path ""
+            end
+        end
+        if test -z "$path"
+            set -x path "$(git rev-parse --show-prefix | sed 's,\/$,,')"
+        end
     end
     if test -z "$path"
         just cross _log error "Provide path to 'patch' or change directory into it."
         exit 1
     end
     # Query metadata.json and export matching key as env variables
-    # Find patch where local_path matches rel_target or is a parent of rel_target
-    jq -r --arg path "{{path}}" '
+    # Find patch whose local_path is a prefix of (or equal to) the given path
+    # i.e. path starts with local_path — handles both exact match and subdirectory cases
+    jq -r --arg path "$path" '
         .patches
-        | map(. as $patch | select($patch.local_path | startswith($path)))
+        | map(. as $patch | select($path | startswith($patch.local_path)))
         | map(. + {mlen:(.local_path|length)})
         | max_by(.mlen)
         | to_entries | map("set -x \(.key) \(.value|@sh)") | .[]
@@ -205,12 +216,22 @@ remove path: check-deps
             git worktree remove --force "$wt"
         end
 
-        # 2. Remove from Crossfile
+        # 2. Remove from Crossfile (match patch lines where last field is the local_path)
         just cross _log info "Removing from Crossfile..."
         if test -f "{{CROSSFILE}}"
             set tmp (mktemp)
-            grep -v "patch" "{{CROSSFILE}}" > "$tmp"
-            grep "patch" "{{CROSSFILE}}" | grep -v "$l_path" >> "$tmp"
+            while read -l line
+                # Only remove lines that are patch commands with this exact local_path as last field
+                set fields (string split ' ' -- (string trim $line))
+                set is_patch false
+                for f in $fields
+                    test "$f" = "patch" && set is_patch true
+                end
+                if test "$is_patch" = true -a (count $fields) -gt 0 -a "$fields[-1]" = "$l_path"
+                    continue  # skip this line
+                end
+                echo "$line" >> "$tmp"
+            end < "{{CROSSFILE}}"
             mv "$tmp" "{{CROSSFILE}}"
         end
 
@@ -350,9 +371,10 @@ patch remote_spec local_path="": check-deps
             end
         end
         
-        # calculate hash/id
-        set hash (echo $l_path | md5sum | cut -d' ' -f1 | cut -c1-8)
-        set wt ".git/cross/worktrees/$remote"_"$hash"
+        # calculate hash/id — must match Go/Rust: SHA256(remote\0remote_path\0branch)[:8]
+        set hash (printf '%s\0%s\0%s' $remote $r_path $remote_branch | sha256sum 2>/dev/null; or printf '%s\0%s\0%s' $remote $r_path $remote_branch | shasum -a 256)
+        set hash (echo $hash | cut -d' ' -f1 | string sub -l 8)
+        set wt ".cross/worktrees/$remote"_"$hash"
         
         # setup worktree
         just cross _log info "Setting up worktree at $wt..."
@@ -361,16 +383,26 @@ patch remote_spec local_path="": check-deps
             git fetch $remote $remote_branch
             git worktree add --no-checkout -B "cross/$remote/$remote_branch/$hash" $wt "$remote/$remote_branch" >/dev/null 2>&1
 
-            # Sparse checkout
+            # Sparse checkout — trailing "/" ensures gitignore-style pattern
+            # reliably matches the directory in --no-cone mode.
             git -C $wt sparse-checkout init --no-cone
-            git -C $wt sparse-checkout set $r_path
-            git -C $wt checkout
+            git -C $wt sparse-checkout set "$r_path/"
+            # read-tree explicitly populates worktree (bare checkout can no-op after --no-checkout)
+            git -C $wt read-tree -mu HEAD
         end
 
         # sync to local_path
         just cross _log info "Syncing files to $l_path..."
         mkdir -p $l_path
         rsync -av --delete --exclude .git $wt/$r_path/ $l_path/
+
+        # Ensure .cross/ is in .gitignore
+        if not grep -qxF '.cross/' .gitignore 2>/dev/null
+            if test -f .gitignore; and test -s .gitignore; and not string match -q '' (tail -c1 .gitignore)
+                echo '' >> .gitignore
+            end
+            echo '.cross/' >> .gitignore
+        end
 
         # Add local_path to git
         git add $l_path
@@ -494,6 +526,8 @@ sync *path="": check-initialized
         popd
         
         # 3. Pull rebase from upstream
+        # Refresh index to avoid false conflicts from rsync mtime changes
+        git -C $worktree update-index --refresh -q 2>/dev/null; or true
         just cross _log info "Pulling from upstream..."
         if not git -C $worktree pull --rebase
             just cross _log error "Conflict detected in $worktree. Please resolve manually."
@@ -624,7 +658,7 @@ push path="" branch="" force="false" yes="false" message="": check-initialized
         || { just cross _log error "Error: Could not resolve metadata for '$path'."; exit 1; }
 
     pushd "{{REPO_DIR}}"
-        just cross _log warn "The 'push' command is currently WORK IN PROGRESS."
+        just cross _log warn "The 'push' command is experimental. Verify upstream changes after use."
         if not test -d $worktree
             just cross _log error "Error: Worktree not found. Run 'just patch' first."
             exit 1
@@ -715,9 +749,9 @@ push path="" branch="" force="false" yes="false" message="": check-initialized
 list: check-deps
     #!/usr/bin/env fish
     pushd "{{REPO_DIR}}" >/dev/null
-        if test -f .git/cross/metadata.json
+        if test -f .cross/metadata.json
             # Get unique remotes used by patches
-            set used_remotes (jq -r '.patches[].remote' .git/cross/metadata.json | sort -u)
+            set used_remotes (jq -r '.patches[].remote' .cross/metadata.json | sort -u)
             
             if test (count $used_remotes) -gt 0
                 just cross _log info "Configured Remotes:"
@@ -761,8 +795,8 @@ list: check-deps
         printf "%-20s %-30s %-20s\n" "REMOTE" "REMOTE PATH" "LOCAL PATH"
         printf "%s\n" (string repeat -n 70 "-")
         
-        if test -f .git/cross/metadata.json
-            jq -r '.patches[] | "\(.remote) \(.remote_path) \(.local_path)"' .git/cross/metadata.json | while read -l remote rpath lpath
+        if test -f .cross/metadata.json
+            jq -r '.patches[] | "\(.remote) \(.remote_path) \(.local_path)"' .cross/metadata.json | while read -l remote rpath lpath
                  printf "%-20s %-30s %-20s\n" $remote $rpath $lpath
             end
         else
@@ -812,7 +846,7 @@ wt path="":
     if test -n "{{path}}"
         just cross _open_shell worktree "{{path}}"
     else
-        set -l selected (just cross list | tail -n +3 | fzf --height 40% 2>/dev/null | awk '{print $NF}')
+        set -l selected (just cross list | tail -n +3 | fzf --height 40% --select-1 --exit-0 --prompt "Select patch (wt)> " 2>/dev/null | awk '{print $NF}')
         test -z "$selected" && exit 0
         just cross _resolve_context2 "$selected" | source || exit 1
         set -l rel_dir (realpath -m --relative-to=$PWD {{REPO_DIR}}/$worktree)
@@ -829,7 +863,7 @@ cd path="":
     if test -n "{{path}}"
         just cross _open_shell local_path "{{path}}"
     else
-        set -l selected (just cross list | tail -n +3 | fzf --height 40% 2>/dev/null | awk '{print $NF}')
+        set -l selected (just cross list | tail -n +3 | fzf --height 40% --select-1 --exit-0 --prompt "Select patch (cd)> " 2>/dev/null | awk '{print $NF}')
         test -z "$selected" && exit 0
         just cross _resolve_context2 "$selected" | source || exit 1
         set -l rel_dir (realpath -m --relative-to=$PWD {{REPO_DIR}}/$local_path)
@@ -851,8 +885,8 @@ status: check-deps
     printf "%-20s %-15s %-15s %-15s\n" "LOCAL PATH" "DIFF" "UPSTREAM" "CONFLICTS"
     printf "%s\n" (string repeat -n 70 "-")
     
-    if test -f .git/cross/metadata.json
-        jq -r '.patches[] | "\(.remote) \(.remote_path) \(.local_path) \(.worktree)"' .git/cross/metadata.json | while read -l remote rpath local_path wt
+    if test -f .cross/metadata.json
+        jq -r '.patches[] | "\(.remote) \(.remote_path) \(.local_path) \(.worktree)"' .cross/metadata.json | while read -l remote rpath local_path wt
             set diff_stat "Clean"
             set upstream_stat "Synced"
             set conflict_stat "No"

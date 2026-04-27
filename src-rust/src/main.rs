@@ -10,14 +10,12 @@ use tabled::{Table, Tabled};
 
 #[derive(Parser)]
 #[command(name = "git-cross-rust")]
-#[command(version = "0.2.1")]
+#[command(version = "0.3.0")]
 #[command(
     about = "A tool for vendoring git directories using worktrees [EXPERIMENTAL/WIP]",
     long_about = "Note: The Rust implementation of git-cross is currently EXPERIMENTAL and WORK IN PROGRESS. The Go implementation is the primary focus and recommended for production use."
 )]
 struct Cli {
-    #[arg(long, global = true, default_value = "")]
-    dry: String,
     #[command(subcommand)]
     command: Commands,
 }
@@ -116,7 +114,7 @@ struct PatchSpec {
     branch_provided: bool,
 }
 
-const METADATA_REL_PATH: &str = ".git/cross/metadata.json";
+const METADATA_REL_PATH: &str = ".cross/metadata.json";
 const CROSSFILE_REL_PATH: &str = "Crossfile";
 
 fn get_repo_root() -> Result<String> {
@@ -375,8 +373,11 @@ fn select_patch_interactive(metadata: &Metadata) -> Result<Option<Patch>> {
             "\t",
             "--prompt",
             "Select patch> ",
+            "--header",
+            "REMOTE\tREMOTE_PATH\tLOCAL_PATH",
             "--height",
             "40%",
+            "--border",
             "--select-1",
             "--exit-0",
         ])
@@ -588,6 +589,67 @@ fn resolve_path_to_repo_relative(input_path: &str) -> Result<String> {
     Ok(rel_path_str.trim_matches('/').to_string())
 }
 
+/// Remove a specific patch line from the Crossfile using structured field matching.
+fn remove_from_crossfile(local_path: &str) {
+    if let Ok(cross_path) = get_crossfile_path() {
+        if let Ok(content) = fs::read_to_string(&cross_path) {
+            let lines: Vec<&str> = content.lines().filter(|line| {
+                let fields: Vec<&str> = line.split_whitespace().collect();
+                let is_patch_line = fields.iter().any(|f| *f == "patch");
+                // Only filter patch lines where the last field matches the local_path
+                if is_patch_line && !fields.is_empty() && fields[fields.len() - 1] == local_path {
+                    return false; // skip this line
+                }
+                true
+            }).collect();
+            let mut new_content = lines.join("\n");
+            if !new_content.is_empty() {
+                new_content.push('\n');
+            }
+            if let Err(e) = fs::write(&cross_path, new_content) {
+                log_error(&format!("Failed to update Crossfile: {}", e));
+            }
+        }
+    }
+}
+
+/// Remove a single patch: worktree, crossfile entry, metadata entry, and local directory.
+/// Used by both `remove` and `prune` commands.
+fn remove_single_patch(metadata: &mut Metadata, local_path: &str) -> Result<()> {
+    let path = normalize_local_path(local_path);
+    let patch_idx = metadata
+        .patches
+        .iter()
+        .position(|p| normalize_local_path(&p.local_path) == path);
+
+    let patch = match patch_idx {
+        Some(idx) => metadata.patches.remove(idx),
+        None => return Err(anyhow!("Patch not found for path: {}", path)),
+    };
+
+    log_info(&format!("Removing patch at {}...", path));
+
+    // 1. Remove worktree
+    if Path::new(&patch.worktree).exists() {
+        log_info(&format!("Removing git worktree at {}...", patch.worktree));
+        if let Err(e) = run_cmd(&["git", "worktree", "remove", "--force", &patch.worktree]) {
+            log_error(&format!("Failed to remove worktree: {}", e));
+        }
+    }
+
+    // 2. Remove from Crossfile
+    log_info("Removing from Crossfile...");
+    remove_from_crossfile(&path);
+
+    // 3. Remove local directory
+    log_info(&format!("Deleting local directory {}...", path));
+    if let Err(e) = fs::remove_dir_all(&path) {
+        log_error(&format!("Failed to remove local directory: {}", e));
+    }
+
+    Ok(())
+}
+
 fn load_metadata() -> Result<Metadata> {
     let path = get_metadata_path()?;
     if path.exists() {
@@ -607,6 +669,34 @@ fn save_metadata(metadata: &Metadata) -> Result<()> {
     let content = serde_json::to_string_pretty(metadata)?;
     fs::write(path, content)?;
     Ok(())
+}
+
+/// Ensures ".cross/" is listed in .gitignore at the repo root.
+fn ensure_gitignore() {
+    let root = match get_repo_root() {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    let gi_path = Path::new(&root).join(".gitignore");
+    let existing = fs::read_to_string(&gi_path).unwrap_or_default();
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if trimmed == ".cross/" || trimmed == ".cross" {
+            return;
+        }
+    }
+    let mut f = match fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&gi_path)
+    {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        let _ = writeln!(f);
+    }
+    let _ = writeln!(f, ".cross/");
 }
 
 fn update_crossfile(line: &str) -> Result<()> {
@@ -696,38 +786,60 @@ fn main() -> Result<()> {
 
             run_cmd(&["git", "fetch", &spec.remote, &branch_name])?;
 
-            use std::collections::hash_map::DefaultHasher;
-            use std::hash::{Hash, Hasher};
-            let mut hasher = DefaultHasher::new();
-            canonical.hash(&mut hasher);
-            branch_name.hash(&mut hasher);
-            let hash = format!("{:016x}", hasher.finish());
+            use sha2::{Sha256, Digest};
+            let mut hasher = Sha256::new();
+            hasher.update(format!("{}\0{}\0{}", spec.remote, spec.remote_path, branch_name));
+            let hash = format!("{:x}", hasher.finalize());
             let hash = &hash[..8];
 
-            let wt_dir = format!(".git/cross/worktrees/{}_{}", spec.remote, hash);
+            let wt_dir = format!(".cross/worktrees/{}_{}", spec.remote, hash);
 
+            let local_branch = format!("cross/{}/{}/{}", spec.remote, branch_name, hash);
             if !Path::new(&wt_dir).exists() {
                 log_info(&format!("Setting up worktree at {}...", wt_dir));
-                fs::create_dir_all(&wt_dir)?;
+                // Only create parent dir - let git worktree add create the worktree dir itself
+                if let Some(parent) = Path::new(&wt_dir).parent() {
+                    fs::create_dir_all(parent)?;
+                }
 
-                run_cmd(&[
+                // Prune stale worktree registrations (e.g. from previous failed attempts)
+                let _ = run_cmd(&["git", "worktree", "prune"]);
+
+                if let Err(e) = run_cmd(&[
                     "git",
                     "worktree",
                     "add",
                     "--no-checkout",
+                    "-f",
+                    "-B",
+                    &local_branch,
                     &wt_dir,
                     &format!("{}/{}", spec.remote, branch_name),
-                ])?;
+                ]) {
+                    // Clean up partial directory on failure
+                    let _ = fs::remove_dir_all(&wt_dir);
+                    return Err(e);
+                }
+
+                // Sparse checkout — use trailing "/" so gitignore-style patterns
+                // reliably match the directory and its contents in --no-cone mode.
                 run_cmd(&["git", "-C", &wt_dir, "sparse-checkout", "init", "--no-cone"])?;
+                let sparse_pattern = if spec.remote_path.ends_with('/') {
+                    spec.remote_path.clone()
+                } else {
+                    format!("{}/", spec.remote_path)
+                };
                 run_cmd(&[
                     "git",
                     "-C",
                     &wt_dir,
                     "sparse-checkout",
                     "set",
-                    &spec.remote_path,
+                    &sparse_pattern,
                 ])?;
-                run_cmd(&["git", "-C", &wt_dir, "checkout"])?;
+                // Use read-tree to explicitly populate index+worktree from HEAD,
+                // because bare "git checkout" can be a no-op after --no-checkout.
+                run_cmd(&["git", "-C", &wt_dir, "read-tree", "-mu", "HEAD"])?;
             }
 
             log_info(&format!("Syncing files to {}...", target_path));
@@ -736,6 +848,9 @@ fn main() -> Result<()> {
             let src = format!("{}/{}/", wt_dir, spec.remote_path);
             let dst = format!("{}/", target_path);
             run_cmd(&["rsync", "-av", "--delete", "--exclude", ".git", &src, &dst])?;
+
+            // Ensure .cross/ is in .gitignore
+            ensure_gitignore();
 
             let mut metadata = load_metadata()?;
             if let Some(existing) = metadata
@@ -870,6 +985,8 @@ fn main() -> Result<()> {
                 }
 
                 // Step 4: Pull rebase from upstream
+                // Refresh index to avoid false conflicts from rsync mtime changes
+                let _ = run_cmd(&["git", "-C", &patch.worktree, "update-index", "--refresh", "-q"]);
                 log_info("Pulling updates from upstream...");
                 if let Err(e) = run_cmd(&[
                     "git",
@@ -933,7 +1050,7 @@ fn main() -> Result<()> {
                 // Step 7: Restore stashed changes
                 if stashed {
                     log_info("Restoring stashed local changes...");
-                    if let Err(e) = run_cmd(&["git", "-C", &local_abs_path, "stash", "pop"]) {
+                    if let Err(_e) = run_cmd(&["git", "-C", &local_abs_path, "stash", "pop"]) {
                         log_error("Failed to restore stashed changes. Conflicts may exist.");
                         log_error(&format!("Resolve manually in: {}", patch.local_path));
                         log_info("Run 'git status' to see conflicts, then 'git stash drop' when resolved.");
@@ -959,7 +1076,13 @@ fn main() -> Result<()> {
                 log_success(&format!("Sync completed for {}", patch.local_path));
             }
         }
-        Commands::Cd { path } => {
+        Commands::Cd { path } | Commands::Wt { path } => {
+            let target = match &cli.command {
+                Commands::Cd { .. } => "local_path",
+                Commands::Wt { .. } => "worktree",
+                _ => unreachable!(),
+            };
+
             let metadata = load_metadata()?;
             if metadata.patches.is_empty() {
                 println!("No patches configured.");
@@ -967,41 +1090,16 @@ fn main() -> Result<()> {
             }
 
             if !path.is_empty() {
-                // Path provided: open shell
-                open_shell_in_dir(path, "local_path")?;
+                open_shell_in_dir(path, target)?;
             } else {
-                // No path: use fzf and copy to clipboard
                 match select_patch_interactive(&metadata) {
                     Ok(Some(patch)) => {
-                        let rel_path = get_relative_path(&patch.local_path);
-                        copy_to_clipboard(&rel_path)?;
-                        log_success(&format!("Path copied to clipboard: {}", rel_path));
-                    }
-                    Ok(None) => {
-                        log_info("No selection made.");
-                    }
-                    Err(_) => {
-                        log_info("fzf not available. Showing patch list; rerun with a path.");
-                        println!("{}", Table::new(metadata.patches));
-                    }
-                }
-            }
-        }
-        Commands::Wt { path } => {
-            let metadata = load_metadata()?;
-            if metadata.patches.is_empty() {
-                println!("No patches configured.");
-                return Ok(());
-            }
-
-            if !path.is_empty() {
-                // Path provided: open shell
-                open_shell_in_dir(path, "worktree")?;
-            } else {
-                // No path: use fzf and copy to clipboard
-                match select_patch_interactive(&metadata) {
-                    Ok(Some(patch)) => {
-                        let rel_path = get_relative_path(&patch.worktree);
+                        let target_path = if target == "worktree" {
+                            &patch.worktree
+                        } else {
+                            &patch.local_path
+                        };
+                        let rel_path = get_relative_path(target_path);
                         copy_to_clipboard(&rel_path)?;
                         log_success(&format!("Path copied to clipboard: {}", rel_path));
                     }
@@ -1185,55 +1283,9 @@ fn main() -> Result<()> {
             println!("{}", Table::new(rows).to_string());
         }
         Commands::Remove { path } => {
-            let path = normalize_local_path(path);
             let mut metadata = load_metadata()?;
-            let patch_idx = metadata
-                .patches
-                .iter()
-                .position(|p| normalize_local_path(&p.local_path) == path);
-
-            let patch = match patch_idx {
-                Some(idx) => metadata.patches.remove(idx),
-                None => return Err(anyhow!("Patch not found for path: {}", path)),
-            };
-
-            log_info(&format!("Removing patch at {}...", path));
-
-            // 1. Remove worktree
-            if Path::new(&patch.worktree).exists() {
-                log_info(&format!("Removing git worktree at {}...", patch.worktree));
-                if let Err(e) = run_cmd(&["git", "worktree", "remove", "--force", &patch.worktree]) {
-                    log_error(&format!("Failed to remove worktree: {}", e));
-                }
-            }
-
-            // 2. Remove from Crossfile
-            log_info("Removing from Crossfile...");
-            if let Ok(cross_path) = get_crossfile_path() {
-                if let Ok(content) = fs::read_to_string(&cross_path) {
-                    let lines: Vec<String> = content
-                        .lines()
-                        .filter(|l| !l.contains("patch") || !l.contains(&path))
-                        .map(|l| l.to_string())
-                        .collect();
-                    let mut new_content = lines.join("\n");
-                    if !new_content.is_empty() {
-                        new_content.push('\n');
-                    }
-                    let _ = fs::write(&cross_path, new_content);
-                }
-            }
-
-            // 3. Save metadata
-            log_info("Updating metadata...");
+            remove_single_patch(&mut metadata, path)?;
             save_metadata(&metadata)?;
-
-            // 4. Remove local directory
-            log_info(&format!("Deleting local directory {}...", path));
-            if let Err(e) = fs::remove_dir_all(&path) {
-                log_error(&format!("Failed to remove local directory: {}", e));
-            }
-
             log_success("Patch removed successfully.");
         }
         Commands::Prune { remote } => {
@@ -1254,36 +1306,10 @@ fn main() -> Result<()> {
                 if patches_to_remove.is_empty() {
                     log_info(&format!("No patches found for remote: {}", remote_name));
                 } else {
-                    // Remove each patch
                     for patch in patches_to_remove {
-                        log_info(&format!("Removing patch: {}", patch.local_path));
-                        
-                        // Remove worktree
-                        if Path::new(&patch.worktree).exists() {
-                            let _ = run_cmd(&["git", "worktree", "remove", "--force", &patch.worktree]);
+                        if let Err(e) = remove_single_patch(&mut metadata, &patch.local_path) {
+                            log_error(&format!("Failed to remove patch {}: {}", patch.local_path, e));
                         }
-                        
-                        // Remove from Crossfile
-                        if let Ok(cross_path) = get_crossfile_path() {
-                            if let Ok(content) = fs::read_to_string(&cross_path) {
-                                let lines: Vec<String> = content
-                                    .lines()
-                                    .filter(|l| !l.contains("patch") || !l.contains(&patch.local_path))
-                                    .map(|l| l.to_string())
-                                    .collect();
-                                let mut new_content = lines.join("\n");
-                                if !new_content.is_empty() {
-                                    new_content.push('\n');
-                                }
-                                let _ = fs::write(&cross_path, new_content);
-                            }
-                        }
-                        
-                        // Remove from metadata
-                        metadata.patches.retain(|p| p.local_path != patch.local_path);
-                        
-                        // Remove local directory
-                        let _ = fs::remove_dir_all(&patch.local_path);
                     }
                     save_metadata(&metadata)?;
                 }
@@ -1347,11 +1373,25 @@ fn main() -> Result<()> {
             }
         }
         Commands::Diff { path } => {
-            // Resolve relative/absolute path to repo-relative
+            // Resolve path: explicit arg takes priority, then CWD auto-detection
             let resolved_path = if !path.is_empty() {
+                // Explicit path: resolve relative/absolute to repo-relative
                 resolve_path_to_repo_relative(path)?
             } else {
-                path.clone()
+                // No explicit path: detect from CWD
+                let mut detected = String::new();
+                if let (Ok(cwd), Ok(root)) = (env::current_dir(), get_repo_root().map(std::path::PathBuf::from)) {
+                    let metadata = load_metadata().unwrap_or(Metadata { patches: vec![] });
+                    for patch in &metadata.patches {
+                        let abs_local = root.join(&patch.local_path);
+                        if cwd == abs_local || cwd.starts_with(&abs_local) {
+                            log_info(&format!("Auto-detected patch from CWD: {}", patch.local_path));
+                            detected = patch.local_path.clone();
+                            break;
+                        }
+                    }
+                }
+                detected
             };
 
             // Get repo root for resolving relative paths in metadata
@@ -1490,7 +1530,14 @@ fn main() -> Result<()> {
         Commands::Exec { args } => {
             let full_cmd = args.join(" ");
             log_info(&format!("Executing custom command: {}", full_cmd));
-            let _ = duct::cmd("bash", ["-c", &full_cmd]).run();
+            let output = duct::cmd("bash", ["-c", &full_cmd])
+                .unchecked()
+                .run()
+                .context("Failed to execute command")?;
+            if !output.status.success() {
+                let code = output.status.code().unwrap_or(1);
+                return Err(anyhow!("Command exited with status {}", code));
+            }
         }
     }
 

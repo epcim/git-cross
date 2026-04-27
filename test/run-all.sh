@@ -57,6 +57,12 @@ fi
 
 for t in "${tests[@]}"; do
     # If the file doesn't exist (e.g. glob failed), skip
+    
+    # Clean shared testdir between tests to prevent stale worktree state
+    if [ -d "$TESTDIR" ]; then
+        chmod -R u+w "$TESTDIR" 2>/dev/null || true
+        rm -r "$TESTDIR" 2>/dev/null || true
+    fi
     [ -f "$t" ] || continue
     
     total=$((total + 1))

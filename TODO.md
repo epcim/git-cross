@@ -2,9 +2,9 @@
 
 ## Summary
 
-**Status:** v0.2.1 released with prune command and sync fixes  
-**Critical Issues:** 0 (all P0 issues resolved)  
-**Pending Enhancements:** 2 (single-file patch, fzf improvements)
+**Status:** v0.3.1-dev — sparse-checkout fix, vendor build fix, AI sandbox workflow  
+**Critical Issues:** 0 (P0 sparse-checkout and vendor build issues resolved)  
+**Pending Enhancements:** 1 (single-file patch)
 
 ## Core Implementation Status
 
@@ -80,12 +80,24 @@
 - [ ] **Single file patch capability** - Review and propose implementation (tool and test) to be able to patch even single file. If not easily possible without major refactoring, evaluate new command "patch-file".
   - **Effort:** 4-6 hours (includes research)
   
-- [ ] **Improve interactive `fzf` selection** in native implementations - Better UI, preview panes, multi-select for batch operations.
-  - **Effort:** 3-5 hours
+- [x] **Improve interactive `fzf` selection** in native implementations - Added `--header`, `--border`, `--select-1`, `--exit-0`, custom prompts.
+  - **Effort:** 1 hour (completed)
 
 ### P3: Low Priority (UX Improvements)
 
-- [ ] **Context-aware `cross diff` command** - Smart diff behavior based on current working directory
+- [ ] **Auto-generate GitHub Release with changelog on version tags** - Automatically create a GitHub Release with generated changelog when a `v*.*` tag (major/minor) is pushed.
+  - **Current State:** `release.yml` triggers on `v*` tags and runs GoReleaser (which creates a release for Go binaries) + Rust matrix builds. Rust artifacts are uploaded to the GoReleaser-created release via `softprops/action-gh-release`. GoReleaser generates its own changelog from commits.
+  - **Desired Improvements:**
+    - Generate a meaningful changelog (not just raw commits) grouped by category (features, fixes, etc.)
+    - Include links to CHANGELOG.md entries if maintained
+    - Only create full releases for major/minor tags (`v*.*.0`); patch tags (`v*.*.N`) can be lighter
+    - Consider using `git-cliff` or GoReleaser's built-in changelog templates for better formatting
+    - Add a release-notes template that summarizes: binary download links, notable changes, upgrade instructions
+  - **Effort:** 2-3 hours
+  - **Files:** `.github/workflows/release.yml`, `.goreleaser.yaml` (if exists), optionally `cliff.toml`
+  - **Status:** Documented for future implementation
+
+- [x] **Context-aware `cross diff` command** - Smart diff behavior based on current working directory
   - **Issue:** Currently `cross diff` shows diffs for ALL patches regardless of PWD
   - **Desired Behavior:**
     - When executed inside a patched local_path: Show diff only for that specific patch
@@ -126,12 +138,26 @@
       - CWD inside nested subdirectory of patch (needs parent resolution)
       - Multiple patches in nested directories (resolve closest parent)
       - Symlinked directories (should follow symlinks)
-  - **Priority Rationale:** Low priority - UX improvement, not a bug
-  - **Status:** Documented for future implementation
+  - **Status:** COMPLETE — Implemented across all three implementations. Test coverage in `test/016_diff_context.sh`.
+  - Also fixed `_resolve_context2` jq query (startswith was inverted) and `USER_CWD` propagation through Just wrapper.
 
 ### Completed Enhancements
 
 ## Known Issues (To FIX)
+
+### ✅ P0: Sparse Checkout Broken on Newer Git (FIXED)
+
+- [x] **Issue:** `git sparse-checkout set <path>` in `--no-cone` mode (used by all three implementations) fails to reliably checkout directories on newer Git versions (2.43+). The gitignore-style pattern `src` (without trailing `/`) does not match directory contents. Additionally, bare `git checkout` can be a no-op in worktrees created with `--no-checkout`.
+
+**Fix Applied:**
+- ✅ All three implementations: Added trailing `/` to sparse-checkout patterns for reliable directory matching
+- ✅ All three implementations: Replaced `git checkout` with `git read-tree -mu HEAD` for explicit tree materialization
+- ✅ Added `src-go/vendor/` to `.gitignore` to prevent "inconsistent vendoring" build errors
+- ✅ Fixed all test Go build commands to remove stale vendor dir and use `-mod=mod` directly
+- ✅ test/014_remove.sh: Reuses existing Go binary, gracefully skips when Go unavailable
+- ✅ Added test/018_sbx_sandbox.sh for AI sandbox workflow validation
+
+**Files:** `src-go/main.go`, `src-rust/src/main.rs`, `Justfile.cross`, `.gitignore`, `test/009_go_cli.sh`, `test/012_sparse_checkout.sh`, `test/013_real_world.sh`, `test/014_remove.sh`, `test/018_sbx_sandbox.sh`
 
 ### ✅ P0: Sync Command Data Loss (FIXED)
 

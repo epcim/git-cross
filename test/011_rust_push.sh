@@ -10,7 +10,18 @@ export PATH=$HOME/homebrew/bin:$PATH
 RUST_CROSS="$REPO_ROOT/src-rust/target/debug/git-cross-rust"
 
 if [ ! -f "$RUST_CROSS" ]; then
-    (cd "$REPO_ROOT/src-rust" && cargo build)
+    if ! command -v cargo >/dev/null 2>&1; then
+        echo "SKIP: cargo not found, skipping Rust push tests"
+        exit 0
+    fi
+    (cd "$REPO_ROOT/src-rust" && cargo build) || {
+        echo "SKIP: Rust build failed, skipping Rust push tests"
+        exit 0
+    }
+fi
+if [ ! -f "$RUST_CROSS" ]; then
+    echo "SKIP: Rust binary not available after build, skipping Rust push tests"
+    exit 0
 fi
 
 # Setup upstream

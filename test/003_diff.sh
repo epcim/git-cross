@@ -48,7 +48,7 @@ log_header "Testing 'just cross status'..."
 # Find worktree
 # AICONTEXT: finding worktree, shall be possible with metadata.yaml and with just cross _resolve_context, better keep the test code DRY principle.
 hash=$(echo "vendor/lib" | md5sum | cut -d' ' -f1 | cut -c1-8)
-wt=".git/cross/worktrees/repo1_$hash"
+wt=".cross/worktrees/repo1_$hash"
 
 git -C "$wt" fetch -q
 
@@ -126,6 +126,7 @@ echo "✓ Passed: diff vendor/lib works from repo root"
 
 # Test 3: diff with ../ (navigate to sibling - if we have one)
 # First create another patch for testing
+mkdir -p "$upstream_path/src/lib2"
 echo "original" > "$upstream_path/src/lib2/other.txt"
 git -C "$upstream_path" add src/lib2/other.txt
 git -C "$upstream_path" commit -m "Add lib2" -q

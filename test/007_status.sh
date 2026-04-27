@@ -65,7 +65,7 @@ popd >/dev/null
 # 'just cross sync' would pull and update, making it synced again.
 # We manually fetch in the worktree to simulate the state where we know about updates but haven't synced.
 # First, identify worktree
-wt_dir=$(find .git/cross/worktrees -maxdepth 1 -name "upstream_*" | head -n 1)
+wt_dir=$(find .cross/worktrees -maxdepth 1 -name "upstream_*" | head -n 1)
 if [ -z "$wt_dir" ]; then fail "Worktree not found"; fi
 
 git -C "$wt_dir" fetch upstream
@@ -91,7 +91,7 @@ git reset HEAD vendor/docs 2>/dev/null || true
 git checkout vendor/docs 2>/dev/null || true
 
 # Force resync to ensure files match
-wt_dir_fixed=$(find .git/cross/worktrees -maxdepth 1 -name "upstream_*" | head -n 1)
+wt_dir_fixed=$(find .cross/worktrees -maxdepth 1 -name "upstream_*" | head -n 1)
 if [ -n "$wt_dir_fixed" ]; then
     rsync -a --delete "$wt_dir_fixed/docs/" "vendor/docs/"
 fi
