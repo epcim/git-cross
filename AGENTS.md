@@ -196,7 +196,7 @@ Tests 001-007 form a chain for Shell/Just (001 is sourced by 002, etc.). Tests 0
 - **Sparse checkout**: `git sparse-checkout init --no-cone` + `git sparse-checkout set <path>/` + `git read-tree -mu HEAD`. The trailing `/` on the pattern is required for reliable directory matching in `--no-cone` mode on newer Git versions (2.43+). `read-tree -mu HEAD` explicitly materializes the worktree (bare `git checkout` can no-op after `--no-checkout`).
 - **Rsync**: `rsync -av --delete --exclude .git` for worktree-to-local sync. `--delete` removes files locally that were deleted upstream.
 - **Crossfile format**: Lines like `cross use <name> <url>` or `cross patch <remote>:<branch>:<path> <local>`. Parsed as bash during `replay`.
-- **Metadata format**: JSON at `.git/cross/metadata.json`. Schema: `{"patches": [{"id", "remote", "remote_path", "local_path", "worktree", "branch"}]}`.
+- **.crossignore**: Located in the root of each local_path, uses gitignore-style patterns to exclude files from status and diff comparisons. Implemented by filtering directory trees using git add and git clean to remove ignored files before comparison.
 
 ## Refactoring Priorities
 

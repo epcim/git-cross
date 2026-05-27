@@ -1,223 +1,300 @@
-# git-cross 🧬
+# git-cross
 
 [![CI](https://github.com/epcim/git-cross/workflows/CI/badge.svg)](https://github.com/epcim/git-cross/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://github.com/epcim/git-cross/blob/main/CHANGELOG.md)
 
-**Git's CRISPR.** Minimalist approach for mixing "parts" of git repositories using `git worktree` + `rsync`.
+`git-cross` is a small tool for pulling part of one Git repository into another with `git worktree` plus `rsync`.
 
-## Why git-cross?
+It is for the cases where you want real files in your tree, not a gitlink, and still want a clean path back upstream.
 
-| Feature | git-cross | Submodules | git-subrepo |
-|---------|-----------|------------|-------------|
-| **Physical files** | ✅ Yes | ❌ Gitlinks only | ✅ Yes |
-| **Easy to modify** | ✅ Direct edits | ⚠️ Complex | ✅ Direct edits |
-| **Partial checkout** | ✅ Subdirectories | ❌ Entire repo | ❌ Entire repo |
-| **Upstream sync** | ✅ Bidirectional | ⚠️ Complex | ⚠️ Merge commits |
-| **Commit visibility** | ✅ In main repo | ❌ Separate | ✅ In main repo |
-| **Reproducibility** | ✅ Crossfile | ⚠️ .gitmodules | ⚠️ Manual |
+## Why Use It
 
-## What it is not
+`git-cross` is useful when you want to:
 
-Git-cross is not a replacement for `git-subrepo` or `git-submodule`. -- It provides an alternative approach and simplifies otherwise manual and complex git workflow behind into intuitive commands.
+- vendor only one subdirectory from another repository
+- keep vendored code as normal files in your own repository
+- pull upstream updates without converting your repo into a submodule setup
+- push changes back to a fork or upstream project without manual worktree plumbing
+- let AI tools work on a mounted subfolder instead of your full repository
 
-Git-cross does not directly link external repositories to your main repository. -- It provides separate worktrees for each upstream patch, and help with sync to local repository.
+Compared with submodules or subrepo-style flows, the tradeoff is simple: `git-cross` keeps files physical and visible in your repo, and tracks the upstream relationship separately through hidden worktrees and `Crossfile`.
 
-## Implementation status
+## Common Use Cases
 
-The project is still in early days and Work In Progress. Just/Golang versions are tested by the author on best-effort basis. Most of the commands and structure of "Crossfile" is already freezed.
+- Pull `docs/` from an upstream project into `vendor/docs`
+- Keep a shared app template in `vendor/template` and customize it locally
+- Work on an upstream library inside `vendor/lib` with normal editor tooling
+- Let an AI sandbox mount only `vendor/lib` instead of the whole repo
+- Publish your local combined result to your own `origin`, while still being able to send a clean PR or MR upstream later
 
-The project provides three implementations, with **Go being the primary native version for production use.**
+## Status
 
-1.  **Go Implementation:** The most robust and feature-complete version. Recommended for general use.
-2.  **Justfile/Fish:** The original functional version, great for integration-first workflows.
-3.  **Rust Implementation:** Currently **EXPERIMENTAL / WIP**. High-performance alternative being refactored to use native libraries.
+The repository ships three implementations:
+
+1. Go: primary production implementation
+2. Just/Fish: readable reference implementation
+3. Rust: experimental parity implementation
+
+For normal usage, prefer the Go binary.
 
 ## Installation
 
-### Method 1: Go CLI (Recommended)
-The Go version is the primary implementation. Use the shortcut or follow manual steps.
+### Go CLI
 
-**Automation:**
 ```bash
-just install       # Installs Go CLI (default)
-just install shell # Installs Just/Shell version
-just install rust  # Installs Rust implementation (WIP)
+just install
 ```
 
-**Manual steps:**
-1. Download a pre-built binary from [GitHub Releases](https://github.com/epcim/git-cross/releases).
-2. Or build locally:
-   ```bash
-   cd src-go && go build -o git-cross main.go
-   # Setup git alias 'cross'
-   git config --global alias.cross "!$(pwd)/git-cross"
-   ```
+Manual build:
 
-### Method 2: Just (Vendoring)
-The original functional version. Ideal for projects already using `just`.
-
-**Manual steps (for vendoring in your project):**
-1. Clone the repo: `git clone https://github.com/epcim/git-cross.git vendor/git-cross`
-2. Install alias: `git config --global alias.cross-just "!just --justfile $(pwd)/vendor/git-cross/Justfile cross"`
-3. Import in your `Justfile`: `import? 'vendor/git-cross/Justfile'`
-
-### Method 3: Rust CLI (Experimental / WIP)
-High-performance alternative for contributors or library interop testing.
-
-**Manual steps:**
 ```bash
-cd src-rust
-cargo install --path .
-# Setup git alias 'cross-rust' 
-git config --global alias.cross-rust "!git-cross-rust"
+cd src-go
+go build -o git-cross-go main.go
+git config --global alias.cross "!$(pwd)/git-cross-go"
+```
+
+### Shell Reference
+
+```bash
+just install shell
+```
+
+### Rust CLI
+
+```bash
+just install rust
 ```
 
 ## Quick Start
 
 ```bash
-# Setup upstream
+# 1. Register upstream
 git cross use demo https://github.com/example/demo.git
 
-# Vendor a subdirectory
+# 2. Materialize one directory locally
 git cross patch demo:docs vendor/docs
 
-# Pull updates
-git cross sync
-
-# Check status
+# 3. Inspect local state
 git cross status
-```
+git cross diff vendor/docs
 
-## Core Commands
-
-#### `use` - Add Upstream
-```bash
-git cross use <name> <url>
-```
-Adds a remote repository and autodetects the default branch.
-
-#### `patch` - Vendor Directory
-```bash
-git cross patch <remote>:<path> [local_dest]
-```
-Creates a sparse-checkout worktree and syncs files locally.
-
-#### `sync` - Pull Updates
-```bash
-git cross sync [path]
-```
-Fetches latest changes from upstream and updates local vendored files.
-
-#### `status` - Check Health
-```bash
-git cross status
-```
-Shows if files are modified locally, behind upstream, or have conflicts.
-
-#### `list` - Show Patches
-```bash
-git cross list
-```
-Displays all configured patches in a table.
-
-#### `push` - Contribute Back
-```bash
-git cross push [path] [--force] [--message "msg"]
-```
-Syncs local changes back to the worktree, commits, and pushes to upstream.
-
-#### `replay` - Restore State
-```bash
-git cross replay
-```
-Re-executes all commands in `Crossfile` to recreate the vendored environment.
-
-## Advanced Features
-
-### Custom Hooks
-You can use the `exec` command in your `Crossfile` for post-patching tasks:
-```bash
-# Crossfile
-cross patch demo:src vendor/src
-cross exec "npm install && npm run build"
-```
-
-> **Note**: While `cross` is the standard prefix for `Crossfile` entries (ensuring portability), you can also use `git cross` or `just cross` if you prefer specific implementation behavior.
-
-### Just Integration
-If using `just`, you can override targets to add pre/post hooks:
-```just
-@cross *ARGS:
-    echo "Before..."
-    just --justfile vendor/git-cross/Justfile.cross {{ARGS}}
-    echo "After..."
+# 4. Pull new upstream changes later
+git cross sync vendor/docs
 ```
 
 ## How It Works
-1. **Worktrees**: Maintains hidden worktrees in `.git/cross/worktrees/`.
-2. **Sparse Checkout**: Only checks out the specific directories you need.
-3. **Rsync**: Efficiently syncs changes between worktree and your source tree.
-4. **Crossfile**: A plain-text record of all active patches for easy sharing.
 
-## AI-Assisted Coding and Sandbox Workflows
+`git-cross` keeps four things in sync:
 
-AI coding tools (Cursor, Copilot Workspace, Claude Code, Aider, etc.) frequently work in **subfolders** rather than the repository root. This is by design: the main `.git/` directory and full repository history are not shared with the AI tool's context, reducing noise and improving focus.
+1. Your main repository
+2. A hidden worktree for each upstream patch under `.cross/worktrees/`
+3. A local physical directory such as `vendor/docs`
+4. A `Crossfile` that records how to rebuild the setup
 
-**git-cross fits this pattern naturally.** Vendored files are physical files in subfolders -- AI tools can read, modify, and reason about them directly without needing access to the upstream `.git` state.
+In practice:
 
-### Docker Sandbox (`sbx`) Integration
+- your editor sees normal files
+- AI tools can work on normal files
+- upstream history stays in the hidden worktree
+- `git cross replay` can reconstruct the setup later
 
-Container-based development sandboxes (e.g. `docker sandbox`, `sbx`) create isolated environments where your code runs inside a container. These tools often support `git worktree` to share repository state without copying `.git/`:
+## Local Custom Files On Top Of Upstream
+
+One common pattern is to keep local-only files next to upstream-managed files.
+
+Example:
 
 ```bash
-# 1. Set up git-cross in your main repo
-git cross use upstream https://github.com/example/lib.git
-git cross patch upstream:src vendor/lib
+git cross use app https://github.com/example/app.git
+git cross patch app:src vendor/app
 
-# 2. Create a sandbox scoped to the vendor subfolder
-sbx create --mount vendor/lib   # AI tool sees only vendor/lib/
-
-# 3. AI modifies files in the sandbox (vendor/lib/)
-# 4. Push changes back upstream from the host
-git cross push vendor/lib
+cat > vendor/app/.crossignore <<'EOF'
+.env
+compose.override.yaml
+EOF
 ```
 
-**Key properties that make this work:**
-- **Physical files** in subfolders (not gitlinks) -- sandbox tools mount them directly.
-- **Sparse checkout** -- only the needed subdirectory is present, keeping AI context small.
-- **`Crossfile` reproducibility** -- `git cross replay` reconstructs the vendored environment inside a fresh container or CI job.
-- **Bidirectional sync** -- AI-generated changes in the sandbox flow back upstream via `git cross push`.
-- **Hidden worktrees** -- the `.git/cross/worktrees/` directory stays on the host; the sandbox only sees clean working copies.
+What this does today:
 
-### Rules for AI-Assisted Development
+- `git cross status` shows `Override` for that patch
+- `git cross diff vendor/app` prints manual `git diff --no-index ...` commands for the override paths
+- your local files stay in place for normal local work
 
-When using AI tools with git-cross managed subfolders:
+This is intentionally conservative. `.crossignore` entries are review signals, not a substitute for review before `sync` or `push`.
 
-1. **Scope AI context to subfolders.** Share `vendor/<name>/` with the AI tool, not the repository root. The AI doesn't need `.git/`, `Crossfile`, or `.cross/`.
-2. **Use `git cross diff` to review AI changes** before pushing upstream. This compares the local subfolder against the worktree (upstream state).
-3. **Use `git cross sync` after upstream changes** to pull updates into the AI's working directory.
-4. **`Crossfile` is the source of truth.** When setting up a new sandbox or CI environment, `git cross replay` recreates all patches from scratch.
-5. **Worktrees enable container-aware git.** Tools like `sbx` that support `git worktree` can access the repository's git state without mounting the entire `.git/` directory into the container.
+If you keep secrets or machine-local files in a patched directory, review them explicitly before sending changes upstream.
 
-## Architecture
+## Publish To Your Own Repo And Upstream
 
-### Technical Implementation Analysis
+There are two separate publish flows.
 
-`git-cross` provides three distinct implementation layers, ensuring the tool is available as a shell-based coordinator or a production-grade native CLI.
+### 1. Publish the combined result to your own `origin`
 
-| Feature | Go (Primary) | Pure Justfile | Rust (Exp.) | winner |
-| :--- | :---: | :---: | :---: | :---: |
-| **Philosophy** | Porcelain Wrapper | Shell Coordination | Library-First | **Go** (for balance) |
-| **CLI Ergonomics** | Cobra (Standard) | Task-based | Clap (Elegant) | **Rust** |
-| **Git Interop** | Binary Wrapper | Direct CLI calls | Native Bindings | **Shell** (for transparency) |
-| **Distribution** | Static (Zip/One) | Tool-dependent | Compiled (C-link) | **Go** |
-| **Speed to Fix** | Fast | Instant | Medium | **Shell** |
+This is just normal Git in your main repository:
 
-### Verdict: The Multi-Layer Strategy
-*   **Go (Primary):** The designated production version. It offers the best balance of distribution ease (zero-dependency binaries) and reliable Git orchestration.
-*   **Justfile:** The original source of truth. It remains the fastest way to integrate `git-cross` into existing CI/CD pipelines that already use `just`.
-*   **Rust (Experimental):** A high-performance alternative exploring native library integration (`libgit2`). Best for users who require memory safety and a premium CLI experience.
+```bash
+git add vendor/app
+git commit -m "Update vendored app and local overlays"
+git push origin main
+```
+
+Your own repository stores the final combined result, including local overlay files if you choose to commit them there.
+
+### 2. Send changes back to the upstream project
+
+When you want to contribute upstream-managed changes back:
+
+```bash
+git cross diff vendor/app
+git cross push vendor/app --message "Fix upstream bug"
+```
+
+Recommended pattern:
+
+1. Track a writable fork with `git cross use`.
+2. Patch from that fork into your local tree.
+3. Keep local-only overlay files out of the upstream contribution.
+4. Run `git cross push` for the vendored path.
+5. Open a PR or MR from your fork branch to the original upstream project.
+
+This lets your main repo keep its local opinionated result while the upstream contribution stays focused.
+
+## Tutorials
+
+- [Overview](docs/overview.md)
+- [Tutorial: Local Overlays And Upstream Contribution](docs/tutorials/local-overlays-and-upstream.md)
+- [Tutorial: Whole Upstream Into A Local Directory](docs/tutorials/whole-upstream-into-local-dir.md)
+- [Tutorial: Migrate A Private Fork To git-cross](docs/tutorials/migrating-private-fork-to-git-cross.md)
+- [Sandbox Kits](sbx-kits/README.md)
+
+## Commands
+
+### `use`
+
+```bash
+git cross use <name> <url>
+```
+
+Register an upstream remote alias and detect its default branch.
+
+### `patch`
+
+```bash
+git cross patch <remote>:<path> [local_dest]
+```
+
+Create or reuse a hidden worktree, sparse-check out the upstream path, and sync it into your local directory.
+
+### `sync`
+
+```bash
+git cross sync [path]
+```
+
+Pull upstream changes into the local patched directory.
+
+### `diff`
+
+```bash
+git cross diff [path]
+```
+
+Compare local files with the hidden worktree copy.
+
+### `status`
+
+```bash
+git cross status
+```
+
+Show local diff state, upstream divergence, and conflicts.
+
+### `push`
+
+```bash
+git cross push [path] [--force] [--message "msg"]
+```
+
+Sync local changes back into the worktree, commit them there, and push to the upstream remote.
+
+### `replay`
+
+```bash
+git cross replay
+```
+
+Rebuild the full setup from `Crossfile`.
+
+### `remove`
+
+```bash
+git cross remove <path>
+```
+
+Remove one patch and clean up local state.
+
+### `prune`
+
+```bash
+git cross prune [remote]
+```
+
+Remove unused remotes, stale worktrees, or all patches for one remote.
+
+## Safety Notes
+
+- `remove` and `prune` now guard against deleting repo root contents when a patch targets `.`
+- whole-upstream patching with `remote:.` and `remote:/` works for vendoring into local directories
+- override markers in `.crossignore` currently affect review surfaces: `status` and `diff`
+- if you are experimenting with root-target overlay workflows, treat them as advanced usage and verify results carefully
+
+## AI Tooling And Skills
+
+This repo already includes agent guidance for AI coding tools:
+
+- shared repo roles in `.agents/`
+- Claude-facing entrypoints in `.claude/`
+- OpenCode-native skills in `.opencode/skills/`
+
+Current shared roles:
+
+- maintainer
+- feature spec writer
+- safety reviewer
+- regression tester
+
+If you want an AI agent to work only on a vendored subtree, mount just that subtree in a sandbox and keep the main `.git` state on the host.
+
+## Docker `sbx` Starter
+
+This repo includes repo-local starter kits under `sbx-kits/`.
+
+Examples:
+
+```bash
+sbx run opencode --kit ./sbx-kits/opencode
+sbx run claude --kit ./sbx-kits/claude
+```
+
+Why use a kit:
+
+- safer trial path for people who do not want to install a new tool globally first
+- reproducible sandbox setup checked into the repository
+- easy place to add sandbox-local agent config later
+
+See [sbx-kits/README.md](sbx-kits/README.md) for the structure, starter kits, and intended workflow.
+
+## Architecture Summary
+
+High level:
+
+- Just/Fish is the readable behavior reference
+- Go is the main production CLI
+- Rust is parity-oriented and still experimental
+
+Detailed architecture notes live in [docs/overview.md](docs/overview.md).
 
 ## License
+
 MIT

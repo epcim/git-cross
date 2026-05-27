@@ -17,7 +17,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y fish rsync jq
+        sudo apt-get install -y fish rsync jq ripgrep
         # Install yq
         sudo wget --retry-connrefused --waitretry=1 --read-timeout=20 --timeout=15 -t 5 https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/bin/yq
         sudo chmod +x /usr/bin/yq
@@ -32,6 +32,7 @@ jobs:
         git --version
         rsync --version
         jq --version
+        rg --version
         yq --version
         
     - name: Run dependency check

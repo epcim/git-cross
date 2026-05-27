@@ -131,6 +131,32 @@ fn get_crossfile_path() -> Result<std::path::PathBuf> {
     Ok(Path::new(&root).join(CROSSFILE_REL_PATH))
 }
 
+fn parse_cross_overrides(content: &str) -> Vec<String> {
+    let mut overrides = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        overrides.push(trimmed.to_string());
+    }
+    overrides
+}
+
+fn get_cross_overrides(local_path: &Path) -> Result<Vec<String>> {
+    let path = local_path.join(".crossignore");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+
+    let content = fs::read_to_string(path)?;
+    Ok(parse_cross_overrides(&content))
+}
+
+fn has_cross_overrides(local_path: &Path) -> Result<bool> {
+    Ok(!get_cross_overrides(local_path)?.is_empty())
+}
+
 fn parse_patch_spec(spec: &str) -> Result<PatchSpec> {
     let parts: Vec<&str> = spec.split(':').collect();
     if parts.len() < 2 {
@@ -644,10 +670,12 @@ fn remove_single_patch(metadata: &mut Metadata, local_path: &str) -> Result<()> 
     log_info("Removing from Crossfile...");
     remove_from_crossfile(&path);
 
-    // 3. Remove local directory
-    log_info(&format!("Deleting local directory {}...", path));
-    if let Err(e) = fs::remove_dir_all(&path) {
-        log_error(&format!("Failed to remove local directory: {}", e));
+    // 3. Remove local directory (with root guard)
+    if path != "." && !path.is_empty() {
+        log_info(&format!("Deleting local directory {}...", path));
+        if let Err(e) = fs::remove_dir_all(&path) {
+            log_error(&format!("Failed to remove local directory: {}", e));
+        }
     }
 
     Ok(())
@@ -1229,24 +1257,28 @@ fn main() -> Result<()> {
                 if !worktree_path.exists() {
                     row.diff = "Missing WT".to_string();
                 } else {
-                    // Both paths must be resolved relative to repo root
-                    let upstream_path = worktree_path.join(&patch.remote_path);
-                    let local_path = Path::new(&root).join(&patch.local_path);
-                    
-                    let diff_check = duct::cmd(
-                        "git",
-                        [
-                            "diff",
-                            "--no-index",
-                            "--quiet",
-                            &upstream_path.to_string_lossy(),
-                            &local_path.to_string_lossy(),
-                        ],
-                    )
-                    .unchecked()
-                    .run()?;
-                    if !diff_check.status.success() {
-                        row.diff = "Modified".to_string();
+                    if has_cross_overrides(&Path::new(&root).join(&patch.local_path))? {
+                        row.diff = "Override".to_string();
+                    } else {
+                        // Both paths must be resolved relative to repo root
+                        let upstream_path = worktree_path.join(&patch.remote_path);
+                        let local_path = Path::new(&root).join(&patch.local_path);
+
+                        let diff_check = duct::cmd(
+                            "git",
+                            [
+                                "diff",
+                                "--no-index",
+                                "--quiet",
+                                &upstream_path.to_string_lossy(),
+                                &local_path.to_string_lossy(),
+                            ],
+                        )
+                        .unchecked()
+                        .run()?;
+                        if !diff_check.status.success() {
+                            row.diff = "Modified".to_string();
+                        }
                     }
 
                     let behind = run_cmd(&[
@@ -1442,11 +1474,33 @@ fn main() -> Result<()> {
                 // Both paths must be resolved relative to repo root
                 let upstream_path = worktree_path.join(&patch.remote_path);
                 let local_path = Path::new(&root).join(&patch.local_path);
-                
-                // git diff --no-index returns 1 on differences, duct handles it via unchecked() if we want to ignore exit code
-                let _ = duct::cmd("git", ["diff", "--no-index", 
-                    &upstream_path.to_string_lossy(), 
-                    &local_path.to_string_lossy()]).run();
+
+                let overrides = get_cross_overrides(&local_path)?;
+                if !overrides.is_empty() {
+                    log_info(&format!(
+                        ".crossignore overrides present in {}; review manually:",
+                        patch.local_path
+                    ));
+                    for override_path in overrides {
+                        println!(
+                            "git diff --no-index {:?} {:?}",
+                            upstream_path.join(&override_path),
+                            local_path.join(&override_path)
+                        );
+                    }
+                } else {
+                    let _ = duct::cmd(
+                        "git",
+                        [
+                            "diff",
+                            "--no-index",
+                            &upstream_path.to_string_lossy(),
+                            &local_path.to_string_lossy(),
+                        ],
+                    )
+                    .unchecked()
+                    .run();
+                }
             }
             if !found && !resolved_path.is_empty() {
                 return Err(anyhow!("Patch not found for path: {}", resolved_path));

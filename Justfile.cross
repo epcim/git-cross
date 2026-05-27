@@ -87,14 +87,14 @@ test-shell *ARGS="bash":
 check-deps:
     #!/usr/bin/env fish
     set -l missing
-    for cmd in fish rsync git jq
+    for cmd in fish rsync git jq rg
         if not command -v $cmd > /dev/null
             set missing $missing $cmd
         end
     end
     if test (count $missing) -gt 0
         just cross _log error "Missing: $missing"
-        just cross _log info "Install with: brew install $missing"
+        just cross _log info "Install the missing binaries with your package manager."
         exit 1
     end
 
@@ -139,6 +139,19 @@ _resolve_context2 path="": check-initialized
 update_crossfile +cmd:
     grep -qF "{{cmd}}" "{{CROSSFILE}}" 2>/dev/null || echo "{{cmd}}" >> "{{CROSSFILE}}"; exit 0
 
+[no-cd]
+_crossignore_overrides local_dir:
+    #!/usr/bin/env fish
+    set -l file "{{local_dir}}/.crossignore"
+    if not test -f "$file"
+        exit 0
+    end
+    while read -l line
+        set -l trimmed (string trim -- "$line")
+        if test -n "$trimmed"; and not string match -q '#*' -- "$trimmed"
+            printf '%s\n' "$trimmed"
+        end
+    end < "$file"
 
 # Internal: Log message with color
 _log level +message:
@@ -241,9 +254,11 @@ remove path: check-deps
         jq --arg lp "$l_path" '.patches |= map(select(.local_path != $lp))' {{METADATA}} > "$tmp_meta"
         mv "$tmp_meta" {{METADATA}}
 
-        # 4. Remove local directory
-        just cross _log info "Deleting local directory $l_path..."
-        rm -rf "$l_path"
+        # 4. Remove local directory (with root guard)
+        if test "$l_path" != "." -a -n "$l_path"
+            just cross _log info "Deleting local directory $l_path..."
+            rm -rf "$l_path"
+        end
 
         just cross _log success "Patch removed successfully."
     popd
@@ -357,20 +372,15 @@ patch remote_spec local_path="": check-deps
     end
 
     # update vars — treat "/" as "." (whole repo root)
-    set r_path "$remote_path"
-    set r_path (string trim -l -c '/' "$r_path")
-    set r_path (string trim -r -c '/' "$r_path")
-    if test -z "$r_path"
-        set r_path "."
-    end
+    set r_path (string trim -c '/' -- "$remote_path")
+    test -n "$r_path"; or set r_path "."
+
     set l_path "{{local_path}}"
-    if test -z "$l_path"
-        if test "$r_path" = "."
-            just cross _log error "Error: local_path is required when patching whole repo (path is '.')"
-            exit 1
-        end
-        set l_path "$r_path"
+    if test -z "$l_path" -a "$r_path" = "."
+        just cross _log error "Error: local_path is required when patching whole repo (path is '.')"
+        exit 1
     end
+    test -n "$l_path"; or set l_path "$r_path"
 
     pushd "{{REPO_DIR}}"
     
@@ -662,7 +672,14 @@ diff path="": check-initialized
 
     pushd "{{REPO_DIR}}"  
         if test -d $worktree
-            git diff --no-index $worktree/$remote_path $local_path || true
+            set overrides (just cross _crossignore_overrides "{{REPO_DIR}}/$local_path")
+            if test -z "$overrides[1]"
+                git diff --no-index $worktree/$remote_path $local_path || true
+            else
+                for override in $overrides
+                    printf 'git diff --no-index "%s" "%s"\n' "{{REPO_DIR}}/$worktree/$remote_path/$override" "{{REPO_DIR}}/$local_path/$override"
+                end
+            end
         else
             just cross _log error "Error: Worktree not found $worktree"
             exit 1
@@ -899,6 +916,7 @@ cd path="":
 [no-cd]
 status: check-deps
     #!/usr/bin/env fish
+    cd "{{REPO_DIR}}"
     if not test -f Crossfile
         just cross _log warn "No patches found."
         exit 0
@@ -915,8 +933,11 @@ status: check-deps
             
             if test -d $wt
                 # Check diffs
-                if not git diff --no-index --quiet $wt/$rpath $local_path 2>/dev/null
-                     set diff_stat "Modified"
+                set overrides (just cross _crossignore_overrides "{{REPO_DIR}}/$local_path")
+                if test (count $overrides) -gt 0
+                    set diff_stat "Override"
+                else if not git diff --no-index --quiet $wt/$rpath $local_path 2>/dev/null
+                    set diff_stat "Modified"
                 end
                 
                 # Check upstream divergence

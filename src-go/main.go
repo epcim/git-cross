@@ -46,6 +46,38 @@ func getCrossfilePath() (string, error) {
 	return filepath.Join(root, CrossfileRelPath), nil
 }
 
+func parseCrossOverrides(data string) []string {
+	var overrides []string
+	for _, line := range strings.Split(data, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		overrides = append(overrides, line)
+	}
+	return overrides
+}
+
+func getCrossOverrides(localPath string) ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(localPath, ".crossignore"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return parseCrossOverrides(string(data)), nil
+}
+
+
+func hasCrossOverrides(localPath string) (bool, error) {
+	overrides, err := getCrossOverrides(localPath)
+	if err != nil {
+		return false, err
+	}
+	return len(overrides) > 0, nil
+}
+
 type Patch struct {
 	Remote     string `json:"remote"`
 	RemotePath string `json:"remote_path"`
@@ -356,10 +388,12 @@ func removeSinglePatch(meta *Metadata, localPath string) error {
 	logInfo("Updating metadata...")
 	meta.Patches = append(meta.Patches[:patchIdx], meta.Patches[patchIdx+1:]...)
 
-	// 4. Remove local directory
-	logInfo(fmt.Sprintf("Deleting local directory %s...", localPath))
-	if err := os.RemoveAll(localPath); err != nil {
-		logError(fmt.Sprintf("Failed to remove local directory: %v", err))
+	// 4. Remove local directory (with root guard)
+	if localPath != "." && localPath != "" {
+		logInfo(fmt.Sprintf("Deleting local directory %s...", localPath))
+		if err := os.RemoveAll(localPath); err != nil {
+			logError(fmt.Sprintf("Failed to remove local directory: %v", err))
+		}
 	}
 
 	return nil
@@ -1136,12 +1170,20 @@ func main() {
 				if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
 					diff = "Missing WT"
 				} else {
-					// Quick diff check - use absolute paths
-					upstreamPath := filepath.Join(worktreePath, p.RemotePath)
-					localPath := filepath.Join(root, p.LocalPath)
-					c := exec.Command("git", "diff", "--no-index", "--quiet", upstreamPath, localPath)
-					if err := c.Run(); err != nil {
-						diff = "Modified"
+					hasOverrides, err := hasCrossOverrides(filepath.Join(root, p.LocalPath))
+					if err != nil {
+						return fmt.Errorf("failed to read .crossignore for %s: %w", p.LocalPath, err)
+					}
+					if hasOverrides {
+						diff = "Override"
+					} else {
+						// Quick diff check - use absolute paths
+						upstreamPath := filepath.Join(worktreePath, p.RemotePath)
+						localPath := filepath.Join(root, p.LocalPath)
+						c := exec.Command("git", "diff", "--no-index", "--quiet", upstreamPath, localPath)
+						if err := c.Run(); err != nil {
+							diff = "Modified"
+						}
 					}
 
 					behindOut, _ := git.NewCommand("rev-list", "--count", "HEAD..@{upstream}").RunInDir(worktreePath)
@@ -1229,14 +1271,24 @@ patch's diff. Otherwise shows diffs for all patches.`,
 				}
 
 				// Use git diff --no-index to compare directories
-				// Both paths must be resolved relative to repo root
 				upstreamPath := filepath.Join(worktreePath, p.RemotePath)
 				localPath := filepath.Join(root, p.LocalPath)
-				c := exec.Command("git", "diff", "--no-index", upstreamPath, localPath)
-				c.Stdout = os.Stdout
-				c.Stderr = os.Stderr
-				// git diff --no-index returns 1 if there are differences, which cobra might treat as error
-				_ = c.Run()
+				overrides, err := getCrossOverrides(localPath)
+				if err != nil {
+					return fmt.Errorf("failed to read .crossignore for %s: %w", p.LocalPath, err)
+				}
+				if len(overrides) > 0 {
+					logInfo(fmt.Sprintf(".crossignore overrides present in %s; review manually:", p.LocalPath))
+					for _, override := range overrides {
+						fmt.Printf("git diff --no-index %q %q\n", filepath.Join(upstreamPath, override), filepath.Join(localPath, override))
+					}
+				} else {
+					c := exec.Command("git", "diff", "--no-index", upstreamPath, localPath)
+					c.Stdout = os.Stdout
+					c.Stderr = os.Stderr
+					// git diff --no-index returns 1 if there are differences, which cobra might treat as error
+					_ = c.Run()
+				}
 			}
 			if !found && path != "" {
 				return fmt.Errorf("patch not found for path: %s", path)

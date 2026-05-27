@@ -118,5 +118,17 @@ else
     log_success "Test 7 passed: Go shows all patches from repo root"
 fi
 
+# --- Test 8: override markers print manual diff commands ---
+log_header "Test 8: override markers print manual diff commands..."
+cat > vendor/alpha/.crossignore <<'EOF'
+.env
+EOF
+output=$(just cross diff vendor/alpha 2>&1 || true)
+echo "$output"
+if ! echo "$output" | grep -q '.env'; then
+    fail "Test 8: diff should print manual override file command"
+fi
+rm -f vendor/alpha/.crossignore
+
 echo ""
 echo "All context-aware diff tests passed!"

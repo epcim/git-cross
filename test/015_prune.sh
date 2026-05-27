@@ -214,4 +214,33 @@ else
     echo "SKIP: Go binary not available, skipping Go orphan prune test"
 fi
 
+######
+# Test 6: Root-target prune safety guard (Shell/Just)
+######
+log_header "Test 6: Root-target prune safety guard..."
+
+setup_sandbox
+cd "$SANDBOX"
+
+root_upstream=$(create_upstream "root-prune")
+just cross use root-remote "file://$root_upstream" || fail "Failed to add root-remote"
+
+cat > Crossfile <<'EOF'
+# git-cross configuration
+cross patch root-remote:main:. .
+EOF
+mkdir -p .cross
+cat > .cross/metadata.json <<'EOF'
+{"patches":[{"id":"root1234","remote":"root-remote","remote_path":".","local_path":".","worktree":".cross/worktrees/root-remote_root1234","branch":"main"}]}
+EOF
+echo "keep me" > keep.txt
+
+just cross prune root-remote || fail "Root-target prune failed"
+
+if [ ! -f "keep.txt" ]; then fail "root-target prune deleted repo root contents"; fi
+if git remote | grep -q '^root-remote$'; then fail "root-target prune did not remove remote"; fi
+if [ "$(jq -r '.patches | length' .cross/metadata.json)" != "0" ]; then fail "root-target prune did not clean metadata"; fi
+
+log_success "Test 6 passed: Root-target prune keeps repo root contents"
+
 log_success "All prune tests passed!"
