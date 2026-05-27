@@ -111,6 +111,32 @@ if [ ! -f "vendor/nested-dir/file.txt" ]; then
     fail "Go 'patch' failed to vendor nested dir"
 fi
 
+log_header "Testing Go 'patch' with whole repo root (.: and :/)..."
+# Create a small upstream to patch entirely
+root_upstream=$(create_upstream "root-demo")
+pushd "$root_upstream" >/dev/null
+echo "root file" > root.txt
+mkdir -p sub
+echo "sub file" > sub/data.txt
+git add . && git commit -m "Root content" -q
+popd >/dev/null
+
+"$GO_BIN" use root-demo "file://$root_upstream"
+"$GO_BIN" patch root-demo:. vendor/whole-repo
+if [ ! -f "vendor/whole-repo/root.txt" ]; then
+    fail "Go 'patch' with '.' failed to vendor root.txt"
+fi
+if [ ! -f "vendor/whole-repo/sub/data.txt" ]; then
+    fail "Go 'patch' with '.' failed to vendor sub/data.txt"
+fi
+
+# Also test :/ syntax (should be normalized to .)
+"$GO_BIN" patch root-demo:/ vendor/whole-repo-slash
+if [ ! -f "vendor/whole-repo-slash/root.txt" ]; then
+    fail "Go 'patch' with '/' failed to vendor root.txt"
+fi
+"$GO_BIN" remove vendor/whole-repo-slash
+
 # FIXME: cd and wt commands with --dry flag hang in CI environment
 # These commands work locally but cause test timeouts in automated runs
 # Skipping for now - comprehensive testing in test/010_worktree.sh

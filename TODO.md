@@ -79,6 +79,12 @@
 
 - [ ] **Single file patch capability** - Review and propose implementation (tool and test) to be able to patch even single file. If not easily possible without major refactoring, evaluate new command "patch-file".
   - **Effort:** 4-6 hours (includes research)
+
+- [ ] **Root overlay patching with `.crossignore`** - Support patching upstream root or upstream subdirectory into local repo root while preserving local-only files and preventing secret leakage upstream.
+  - **Problem:** Current patch/sync/push flows are mirror-oriented and unsafe for repo-root usage.
+  - **Requirements:** Safe root-target patching, `.crossignore` protection, non-destructive `remove`/`prune`, selective and batch-safe operations.
+  - **Spec:** `specs/002-root-overlay-patching/`
+  - **Effort:** 1-2 days for design and safety groundwork, plus implementation/testing across all three implementations.
   
 - [x] **Improve interactive `fzf` selection** in native implementations - Added `--header`, `--border`, `--select-1`, `--exit-0`, custom prompts.
   - **Effort:** 1 hour (completed)

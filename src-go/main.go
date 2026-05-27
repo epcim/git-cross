@@ -90,8 +90,9 @@ func parsePatchSpec(spec string) (patchSpec, error) {
 
 	remotePath = strings.TrimPrefix(remotePath, "/")
 	remotePath = strings.TrimSuffix(remotePath, "/")
+	// Treat empty path (from "/") as "." meaning whole repo root
 	if remotePath == "" {
-		return patchSpec{}, fmt.Errorf("invalid remote path in spec: %s", spec)
+		remotePath = "."
 	}
 
 	return patchSpec{
@@ -664,22 +665,29 @@ func main() {
 					return fmt.Errorf("git worktree add failed: %v\nOutput: %s", err, string(out))
 				}
 
-				// Sparse checkout — use trailing "/" so gitignore-style patterns
-				// reliably match the directory and its contents in --no-cone mode.
-				if _, err := git.NewCommand("sparse-checkout", "init", "--no-cone").RunInDir(wtDir); err != nil {
-					return fmt.Errorf("sparse-checkout init failed: %w", err)
-				}
-				sparsePattern := spec.RemotePath
-				if !strings.HasSuffix(sparsePattern, "/") {
-					sparsePattern += "/"
-				}
-				if _, err := git.NewCommand("sparse-checkout", "set", sparsePattern).RunInDir(wtDir); err != nil {
-					return fmt.Errorf("sparse-checkout set failed: %w", err)
-				}
-				// Use read-tree to explicitly populate index+worktree from HEAD,
-				// because bare "git checkout" can be a no-op after --no-checkout.
-				if _, err := git.NewCommand("read-tree", "-mu", "HEAD").RunInDir(wtDir); err != nil {
-					return fmt.Errorf("checkout failed: %w", err)
+				if spec.RemotePath == "." {
+					// Whole-repo patch: skip sparse-checkout, do full checkout
+					if _, err := git.NewCommand("read-tree", "-mu", "HEAD").RunInDir(wtDir); err != nil {
+						return fmt.Errorf("checkout failed: %w", err)
+					}
+				} else {
+					// Sparse checkout — use trailing "/" so gitignore-style patterns
+					// reliably match the directory and its contents in --no-cone mode.
+					if _, err := git.NewCommand("sparse-checkout", "init", "--no-cone").RunInDir(wtDir); err != nil {
+						return fmt.Errorf("sparse-checkout init failed: %w", err)
+					}
+					sparsePattern := spec.RemotePath
+					if !strings.HasSuffix(sparsePattern, "/") {
+						sparsePattern += "/"
+					}
+					if _, err := git.NewCommand("sparse-checkout", "set", sparsePattern).RunInDir(wtDir); err != nil {
+						return fmt.Errorf("sparse-checkout set failed: %w", err)
+					}
+					// Use read-tree to explicitly populate index+worktree from HEAD,
+					// because bare "git checkout" can be a no-op after --no-checkout.
+					if _, err := git.NewCommand("read-tree", "-mu", "HEAD").RunInDir(wtDir); err != nil {
+						return fmt.Errorf("checkout failed: %w", err)
+					}
 				}
 			}
 
@@ -1504,6 +1512,26 @@ patch's diff. Otherwise shows diffs for all patches.`,
 				// Always prune stale worktrees
 				logInfo("Pruning stale worktrees...")
 				git.NewCommand("worktree", "prune", "--verbose").RunInDir(".")
+
+				// Clean orphaned .cross/worktrees/ directories not referenced in metadata
+				crossWtDir := ".cross/worktrees"
+				if entries, err := os.ReadDir(crossWtDir); err == nil {
+					knownWts := make(map[string]bool)
+					for _, p := range meta.Patches {
+						knownWts[p.Worktree] = true
+					}
+					for _, e := range entries {
+						if !e.IsDir() {
+							continue
+						}
+						wtPath := filepath.Join(crossWtDir, e.Name())
+						if !knownWts[wtPath] {
+							logInfo(fmt.Sprintf("Removing orphaned worktree directory: %s", wtPath))
+							os.RemoveAll(wtPath)
+						}
+					}
+				}
+
 				logSuccess("Worktree pruning complete.")
 			}
 

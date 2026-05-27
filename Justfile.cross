@@ -320,6 +320,19 @@ prune remote_name="": check-deps
             # Always prune stale worktrees
             just cross _log info "Pruning stale worktrees..."
             git worktree prune --verbose
+
+            # Clean orphaned .cross/worktrees/ directories not referenced in metadata
+            if test -d .cross/worktrees
+                set known_wts (jq -r '.patches[].worktree' {{METADATA}} 2>/dev/null)
+                for wt_dir in .cross/worktrees/*/
+                    set wt_dir (string trim -r -c '/' "$wt_dir")
+                    if not contains "$wt_dir" $known_wts
+                        just cross _log info "Removing orphaned worktree directory: $wt_dir"
+                        rm -r "$wt_dir"
+                    end
+                end
+            end
+
             just cross _log success "Worktree pruning complete."
         end
     popd
@@ -343,10 +356,19 @@ patch remote_spec local_path="": check-deps
             exit 1
     end
 
-    # update vars
+    # update vars — treat "/" as "." (whole repo root)
     set r_path "$remote_path"
+    set r_path (string trim -l -c '/' "$r_path")
+    set r_path (string trim -r -c '/' "$r_path")
+    if test -z "$r_path"
+        set r_path "."
+    end
     set l_path "{{local_path}}"
     if test -z "$l_path"
+        if test "$r_path" = "."
+            just cross _log error "Error: local_path is required when patching whole repo (path is '.')"
+            exit 1
+        end
         set l_path "$r_path"
     end
 
@@ -355,11 +377,6 @@ patch remote_spec local_path="": check-deps
         # validate remote   
         if not git remote show $remote |grep -vq "^$remote\$" 
             just cross _log error "Error: Remote $remote not found. Run: just use $remote <url>"
-            exit 1
-        end
-        # validate paths
-        if test -z "$l_path"; or test "$l_path" = "/";
-            just cross _log error "Error: Invalid format Use remote[:branch]:remote_path [local_path]"
             exit 1
         end
 
@@ -383,12 +400,17 @@ patch remote_spec local_path="": check-deps
             git fetch $remote $remote_branch
             git worktree add --no-checkout -B "cross/$remote/$remote_branch/$hash" $wt "$remote/$remote_branch" >/dev/null 2>&1
 
-            # Sparse checkout — trailing "/" ensures gitignore-style pattern
-            # reliably matches the directory in --no-cone mode.
-            git -C $wt sparse-checkout init --no-cone
-            git -C $wt sparse-checkout set "$r_path/"
-            # read-tree explicitly populates worktree (bare checkout can no-op after --no-checkout)
-            git -C $wt read-tree -mu HEAD
+            if test "$r_path" = "."
+                # Whole-repo patch: skip sparse-checkout, do full checkout
+                git -C $wt read-tree -mu HEAD
+            else
+                # Sparse checkout — trailing "/" ensures gitignore-style pattern
+                # reliably matches the directory in --no-cone mode.
+                git -C $wt sparse-checkout init --no-cone
+                git -C $wt sparse-checkout set "$r_path/"
+                # read-tree explicitly populates worktree (bare checkout can no-op after --no-checkout)
+                git -C $wt read-tree -mu HEAD
+            end
         end
 
         # sync to local_path

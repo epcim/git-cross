@@ -163,9 +163,12 @@ fn parse_patch_spec(spec: &str) -> Result<PatchSpec> {
         .trim_start_matches('/')
         .trim_end_matches('/')
         .to_string();
-    if remote_path.is_empty() {
-        return Err(anyhow!("Invalid remote path in spec: {}", spec));
-    }
+    // Treat empty path (from "/") as "." meaning whole repo root
+    let remote_path = if remote_path.is_empty() {
+        ".".to_string()
+    } else {
+        remote_path
+    };
 
     Ok(PatchSpec {
         remote,
@@ -821,25 +824,30 @@ fn main() -> Result<()> {
                     return Err(e);
                 }
 
-                // Sparse checkout — use trailing "/" so gitignore-style patterns
-                // reliably match the directory and its contents in --no-cone mode.
-                run_cmd(&["git", "-C", &wt_dir, "sparse-checkout", "init", "--no-cone"])?;
-                let sparse_pattern = if spec.remote_path.ends_with('/') {
-                    spec.remote_path.clone()
+                if spec.remote_path == "." {
+                    // Whole-repo patch: skip sparse-checkout, do full checkout
+                    run_cmd(&["git", "-C", &wt_dir, "read-tree", "-mu", "HEAD"])?;
                 } else {
-                    format!("{}/", spec.remote_path)
-                };
-                run_cmd(&[
-                    "git",
-                    "-C",
-                    &wt_dir,
-                    "sparse-checkout",
-                    "set",
-                    &sparse_pattern,
-                ])?;
-                // Use read-tree to explicitly populate index+worktree from HEAD,
-                // because bare "git checkout" can be a no-op after --no-checkout.
-                run_cmd(&["git", "-C", &wt_dir, "read-tree", "-mu", "HEAD"])?;
+                    // Sparse checkout — use trailing "/" so gitignore-style patterns
+                    // reliably match the directory and its contents in --no-cone mode.
+                    run_cmd(&["git", "-C", &wt_dir, "sparse-checkout", "init", "--no-cone"])?;
+                    let sparse_pattern = if spec.remote_path.ends_with('/') {
+                        spec.remote_path.clone()
+                    } else {
+                        format!("{}/", spec.remote_path)
+                    };
+                    run_cmd(&[
+                        "git",
+                        "-C",
+                        &wt_dir,
+                        "sparse-checkout",
+                        "set",
+                        &sparse_pattern,
+                    ])?;
+                    // Use read-tree to explicitly populate index+worktree from HEAD,
+                    // because bare "git checkout" can be a no-op after --no-checkout.
+                    run_cmd(&["git", "-C", &wt_dir, "read-tree", "-mu", "HEAD"])?;
+                }
             }
 
             log_info(&format!("Syncing files to {}...", target_path));
@@ -1369,6 +1377,25 @@ fn main() -> Result<()> {
                 // Always prune stale worktrees
                 log_info("Pruning stale worktrees...");
                 let _ = run_cmd(&["git", "worktree", "prune", "--verbose"]);
+
+                // Clean orphaned .cross/worktrees/ directories not referenced in metadata
+                let cross_wt_dir = Path::new(".cross/worktrees");
+                if cross_wt_dir.is_dir() {
+                    let known_wts: std::collections::HashSet<String> =
+                        metadata.patches.iter().map(|p| p.worktree.clone()).collect();
+                    if let Ok(entries) = fs::read_dir(cross_wt_dir) {
+                        for entry in entries.flatten() {
+                            if entry.path().is_dir() {
+                                let wt_path = format!(".cross/worktrees/{}", entry.file_name().to_string_lossy());
+                                if !known_wts.contains(&wt_path) {
+                                    log_info(&format!("Removing orphaned worktree directory: {}", wt_path));
+                                    let _ = fs::remove_dir_all(entry.path());
+                                }
+                            }
+                        }
+                    }
+                }
+
                 log_success("Worktree pruning complete.");
             }
         }

@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - **P0: Sparse checkout broken on newer Git versions** - `git sparse-checkout set <path>` in `--no-cone` mode no longer reliably checks out directories without trailing `/`. Fixed across all three implementations (Go, Rust, Justfile.cross) by appending `/` to sparse-checkout patterns and using `git read-tree -mu HEAD` instead of bare `git checkout` (which can no-op after `--no-checkout`).
 - **P0: Go build "inconsistent vendoring" in CI** - Tests that build the Go binary now remove stale `vendor/` directory and pass `-mod=mod` as a direct flag. Added `src-go/vendor/` to `.gitignore` to prevent accidental commits.
+- **Whole-repo patching (`:/` and `:.`)** - `cross patch remote:/` and `cross patch remote:.` now correctly patch the entire upstream repo. Previously `/` was rejected as invalid, and `.` produced an empty worktree because sparse-checkout pattern `./` matched nothing. Fix: `/` is normalized to `.`, and `.` skips sparse-checkout entirely (full checkout).
+- **Prune leaves orphaned `.cross/worktrees/` directories** - `cross prune` now scans `.cross/worktrees/` and removes directories not referenced in `metadata.json`. Previously only `git worktree prune` was called, which cleans git's internal registry but not the actual cross-managed directories.
 - **test/014_remove.sh robustness** - Go binary is now reused if already built; gracefully skips Go tests when Go toolchain is unavailable.
 
 ### Added

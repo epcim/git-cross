@@ -124,4 +124,94 @@ fi
 
 log_success "Test 3 passed: Worktree pruning completed"
 
+######
+# Test 4: Orphaned .cross/worktrees/ directory cleanup (Shell/Just)
+######
+log_header "Test 4: Orphaned worktree directory cleanup (Shell)..."
+
+setup_sandbox
+cd "$SANDBOX"
+
+upstream4=$(create_upstream "upstream4")
+mkdir -p "$upstream4/src"
+pushd "$upstream4" >/dev/null
+echo "content" > src/file.txt
+git add src/file.txt && git commit -m "init" -q
+popd >/dev/null
+
+just cross use demo "file://$upstream4" || fail "Failed to add remote"
+just cross patch demo:src vendor/src || fail "Failed to create patch"
+
+# Verify active worktree exists
+active_wt=$(find .cross/worktrees -maxdepth 1 -type d -name "demo_*" | head -n 1)
+if [ -z "$active_wt" ]; then fail "Active worktree not found"; fi
+log_info "Active worktree: $active_wt"
+
+# Create orphaned worktree directories (simulating stale state from hash changes or manual ops)
+mkdir -p .cross/worktrees/demo_deadbeef
+echo "orphan" > .cross/worktrees/demo_deadbeef/dummy.txt
+mkdir -p .cross/worktrees/old-remote_12345678
+
+orphan_count=$(find .cross/worktrees -maxdepth 1 -type d ! -name worktrees | wc -l | tr -d ' ')
+log_info "Worktree dirs before prune: $orphan_count (expect 3: 1 active + 2 orphans)"
+
+# Run prune (no-arg mode, pipe 'n' to skip interactive remote removal)
+echo "n" | just cross prune || true
+
+# Verify orphaned dirs are removed but active one remains
+if [ -d ".cross/worktrees/demo_deadbeef" ]; then fail "Orphaned demo_deadbeef not cleaned"; fi
+if [ -d ".cross/worktrees/old-remote_12345678" ]; then fail "Orphaned old-remote_12345678 not cleaned"; fi
+if [ ! -d "$active_wt" ]; then fail "Active worktree $active_wt was incorrectly removed"; fi
+
+log_success "Test 4 passed: Orphaned worktree directories cleaned by Shell prune"
+
+######
+# Test 5: Orphaned .cross/worktrees/ directory cleanup (Go)
+######
+log_header "Test 5: Orphaned worktree directory cleanup (Go)..."
+
+GO_BIN="$REPO_ROOT/src-go/git-cross-go"
+if [ ! -f "$GO_BIN" ]; then
+    if command -v go >/dev/null 2>&1; then
+        rm -r "$REPO_ROOT/src-go/vendor" 2>/dev/null || true
+        ( cd "$REPO_ROOT/src-go" && CGO_ENABLED=0 go build -mod=mod -tags purego -o git-cross-go main.go ) || GO_BIN=""
+    else
+        GO_BIN=""
+    fi
+fi
+
+if [ -n "$GO_BIN" ] && [ -f "$GO_BIN" ]; then
+    setup_sandbox
+    cd "$SANDBOX"
+
+    upstream5=$(create_upstream "upstream5")
+    mkdir -p "$upstream5/lib"
+    pushd "$upstream5" >/dev/null
+    echo "content" > lib/file.txt
+    git add lib/file.txt && git commit -m "init" -q
+    popd >/dev/null
+
+    "$GO_BIN" init
+    "$GO_BIN" use demo "file://$upstream5"
+    "$GO_BIN" patch demo:lib vendor/lib
+
+    active_wt=$(find .cross/worktrees -maxdepth 1 -type d -name "demo_*" | head -n 1)
+    if [ -z "$active_wt" ]; then fail "Active worktree not found (Go)"; fi
+
+    # Create orphaned dirs
+    mkdir -p .cross/worktrees/demo_deadbeef
+    mkdir -p .cross/worktrees/stale_aabbccdd
+
+    # Go prune (no-arg, pipe 'n' for interactive prompt)
+    echo "n" | "$GO_BIN" prune
+
+    if [ -d ".cross/worktrees/demo_deadbeef" ]; then fail "Go: orphaned demo_deadbeef not cleaned"; fi
+    if [ -d ".cross/worktrees/stale_aabbccdd" ]; then fail "Go: orphaned stale_aabbccdd not cleaned"; fi
+    if [ ! -d "$active_wt" ]; then fail "Go: active worktree incorrectly removed"; fi
+
+    log_success "Test 5 passed: Orphaned worktree directories cleaned by Go prune"
+else
+    echo "SKIP: Go binary not available, skipping Go orphan prune test"
+fi
+
 log_success "All prune tests passed!"
