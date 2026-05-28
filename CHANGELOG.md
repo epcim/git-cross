@@ -7,9 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **User documentation refresh** - Added a clearer top-level README, a user-facing architecture overview, and a tutorial for local overlays, publishing to your own origin, and sending changes back upstream.
+- **Repo-local `sbx` starter kit** - Added `sbx-kits/opencode` plus `sbx-kits/README.md` so users can try `git-cross` in a versioned sandbox setup instead of relying on a home-directory kit path.
+- **AI skill documentation pointers** - Expanded the repo docs to point users and agent tools at `.agents/`, `.claude/`, and `.opencode/skills/`.
+- **Whole-upstream tutorial** - Added a second tutorial showing how to vendor an entire upstream repository into a local directory with `remote:.` or `remote:/`.
+- **Claude sandbox starter** - Added `sbx-kits/claude` so repo-local sandbox examples now cover both OpenCode and Claude.
+- **Private fork migration tutorial** - Added a guarded tutorial for migrating an existing private fork or derivative repo to a repo-root `git-cross` patch with explicit backup and override review steps.
+
+### Changed
+- **`.crossignore` entry syntax** - Override review behavior now uses plain non-comment `.crossignore` lines such as `.env` or `config/private` instead of `!override <path>` markers. Wildcard pattern matching is still not supported.
+- **README workflow guidance** - Documented the current `.crossignore` behavior as a review-oriented workflow for local overlay files layered on top of upstream-managed content.
+
 ### Fixed
+- **Rust override diff build failure** - Renamed a Rust loop variable that used the reserved keyword `override`, restoring Rust CLI builds and regression execution on current toolchains.
+- **Just override warning output** - Removed a shell-breaking semicolon from the override review warning so `just cross diff` prints the manual review commands correctly.
 - **P0: Sparse checkout broken on newer Git versions** - `git sparse-checkout set <path>` in `--no-cone` mode no longer reliably checks out directories without trailing `/`. Fixed across all three implementations (Go, Rust, Justfile.cross) by appending `/` to sparse-checkout patterns and using `git read-tree -mu HEAD` instead of bare `git checkout` (which can no-op after `--no-checkout`).
 - **P0: Go build "inconsistent vendoring" in CI** - Tests that build the Go binary now remove stale `vendor/` directory and pass `-mod=mod` as a direct flag. Added `src-go/vendor/` to `.gitignore` to prevent accidental commits.
+- **Whole-repo patching (`:/` and `:.`)** - `cross patch remote:/` and `cross patch remote:.` now correctly patch the entire upstream repo. Previously `/` was rejected as invalid, and `.` produced an empty worktree because sparse-checkout pattern `./` matched nothing. Fix: `/` is normalized to `.`, and `.` skips sparse-checkout entirely (full checkout).
+- **Prune leaves orphaned `.cross/worktrees/` directories** - `cross prune` now scans `.cross/worktrees/` and removes directories not referenced in `metadata.json`. Previously only `git worktree prune` was called, which cleans git's internal registry but not the actual cross-managed directories.
 - **test/014_remove.sh robustness** - Go binary is now reused if already built; gracefully skips Go tests when Go toolchain is unavailable.
 
 ### Added

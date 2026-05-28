@@ -137,6 +137,27 @@ fi
 # Revert the change for clean state
 echo "Updated logic" > vendor/rust-src/logic.rs
 
+log_header "Testing Rust '.crossignore' override status/diff hint..."
+cat > vendor/rust-src/.crossignore <<'EOF'
+.env
+EOF
+status_output=$("$RUST_BIN" status 2>&1)
+echo "$status_output"
+status_line=$(echo "$status_output" | grep "vendor/rust-src" || true)
+if ! echo "$status_line" | grep -q "Override"; then
+    fail "Rust 'status' should mark override patches as Override"
+fi
+
+diff_output=$("$RUST_BIN" diff vendor/rust-src 2>&1 || true)
+echo "$diff_output"
+if ! echo "$diff_output" | grep -q ".crossignore overrides present in vendor/rust-src"; then
+    fail "Rust 'diff' should mention override review when markers exist"
+fi
+if ! echo "$diff_output" | grep -q '.env'; then
+    fail "Rust 'diff' should print manual override file command"
+fi
+rm -f vendor/rust-src/.crossignore
+
 log_header "Testing Rust 'push' command..."
 # Allow pushing to current branch in mock upstream
 pushd "$upstream_path" >/dev/null
@@ -240,5 +261,21 @@ if [ -d "vendor/prune-lib" ]; then
     fail "Rust 'prune' should remove patch directories for that remote"
 fi
 log_success "Rust prune test passed"
+
+log_header "Testing Rust root-target remove guard..."
+cat > Crossfile <<'EOF'
+# git-cross configuration
+cross patch root-remote:main:. .
+EOF
+mkdir -p .cross
+cat > .cross/metadata.json <<'EOF'
+{"patches":[{"id":"root1234","remote":"root-remote","remote_path":".","local_path":".","worktree":".cross/worktrees/root-remote_root1234","branch":"main"}]}
+EOF
+echo "keep me" > keep-root-rust.txt
+
+"$RUST_BIN" remove .
+if [ ! -f "keep-root-rust.txt" ]; then
+    fail "Rust root-target remove deleted repo root contents"
+fi
 
 echo "Rust implementation tests passed!"

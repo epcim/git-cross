@@ -111,6 +111,32 @@ if [ ! -f "vendor/nested-dir/file.txt" ]; then
     fail "Go 'patch' failed to vendor nested dir"
 fi
 
+log_header "Testing Go 'patch' with whole repo root (.: and :/)..."
+# Create a small upstream to patch entirely
+root_upstream=$(create_upstream "root-demo")
+pushd "$root_upstream" >/dev/null
+echo "root file" > root.txt
+mkdir -p sub
+echo "sub file" > sub/data.txt
+git add . && git commit -m "Root content" -q
+popd >/dev/null
+
+"$GO_BIN" use root-demo "file://$root_upstream"
+"$GO_BIN" patch root-demo:. vendor/whole-repo
+if [ ! -f "vendor/whole-repo/root.txt" ]; then
+    fail "Go 'patch' with '.' failed to vendor root.txt"
+fi
+if [ ! -f "vendor/whole-repo/sub/data.txt" ]; then
+    fail "Go 'patch' with '.' failed to vendor sub/data.txt"
+fi
+
+# Also test :/ syntax (should be normalized to .)
+"$GO_BIN" patch root-demo:/ vendor/whole-repo-slash
+if [ ! -f "vendor/whole-repo-slash/root.txt" ]; then
+    fail "Go 'patch' with '/' failed to vendor root.txt"
+fi
+"$GO_BIN" remove vendor/whole-repo-slash
+
 # FIXME: cd and wt commands with --dry flag hang in CI environment
 # These commands work locally but cause test timeouts in automated runs
 # Skipping for now - comprehensive testing in test/010_worktree.sh
@@ -156,6 +182,27 @@ if ! echo "$diff_output" | grep -q "local diff change"; then
 fi
 # Revert the change for clean state
 echo "Updated go logic" > vendor/go-src/logic.go
+
+log_header "Testing Go '.crossignore' override status/diff hint..."
+cat > vendor/go-src/.crossignore <<'EOF'
+.env
+EOF
+status_output=$("$GO_BIN" status 2>&1)
+echo "$status_output"
+status_line=$(echo "$status_output" | grep "vendor/go-src" || true)
+if ! echo "$status_line" | grep -q "Override"; then
+    fail "Go 'status' should mark override patches as Override"
+fi
+
+diff_output=$("$GO_BIN" diff vendor/go-src 2>&1 || true)
+echo "$diff_output"
+if ! echo "$diff_output" | grep -q ".crossignore overrides present in vendor/go-src"; then
+    fail "Go 'diff' should mention override review when markers exist"
+fi
+if ! echo "$diff_output" | grep -q '.env'; then
+    fail "Go 'diff' should print manual override file command"
+fi
+rm -f vendor/go-src/.crossignore
 
 log_header "Testing Go 'push' command..."
 # Allow pushing to current branch in mock upstream
@@ -255,5 +302,21 @@ if [ -d "vendor/prune-lib" ]; then
     fail "Go 'prune' should remove patch directories for that remote"
 fi
 log_success "Go prune test passed"
+
+log_header "Testing Go root-target remove guard..."
+cat > Crossfile <<'EOF'
+# git-cross configuration
+cross patch root-remote:main:. .
+EOF
+mkdir -p .cross
+cat > .cross/metadata.json <<'EOF'
+{"patches":[{"id":"root1234","remote":"root-remote","remote_path":".","local_path":".","worktree":".cross/worktrees/root-remote_root1234","branch":"main"}]}
+EOF
+echo "keep me" > keep-root-go.txt
+
+"$GO_BIN" remove .
+if [ ! -f "keep-root-go.txt" ]; then
+    fail "Go root-target remove deleted repo root contents"
+fi
 
 echo "Go implementation tests passed!"

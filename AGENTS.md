@@ -12,7 +12,7 @@ Instructions for AI agents working on this codebase.
 | **Just + Fish** | `Justfile.cross` | Fish/Bash | Just | `git` CLI + `jq` | Reference |
 | **Rust** (experimental) | `src-rust/src/main.rs` | Rust | Clap | `git2` (minimal) + `duct` | WIP |
 
-Both Go and Rust are single-file implementations (~1500 lines each). Justfile.cross is ~940 lines.
+Both Go and Rust are single-file implementations (~1500 lines each). Justfile.cross is ~960 lines.
 
 ## File Map
 
@@ -21,7 +21,7 @@ Justfile              # Root wrapper: delegates `just cross <cmd>` to Justfile.c
 Justfile.cross        # Shell/Fish reference implementation (all commands)
 Crossfile             # User-facing state: records use/patch commands for replay
 src-go/main.go        # Go CLI (single file, Cobra-based)
-src-go/go.mod         # Go module (go 1.23)
+src-go/go.mod         # Go module (go 1.24)
 src-rust/src/main.rs  # Rust CLI (single file, Clap-based)
 src-rust/Cargo.toml   # Rust dependencies
 .git/cross/           # Internal state directory
@@ -29,7 +29,7 @@ src-rust/Cargo.toml   # Rust dependencies
   worktrees/          # Hidden git worktrees for each patch
 test/common.sh        # Shared test helpers (setup_sandbox, create_upstream, assertions)
 test/run-all.sh       # Test runner: discovers and executes test/NNN_*.sh files
-test/001-017_*.sh     # Individual test files (see coverage matrix below)
+test/001-018_*.sh     # Individual test files (see coverage matrix below)
 ```
 
 ## Commands (all implementations)
@@ -67,7 +67,7 @@ test/001-017_*.sh     # Individual test files (see coverage matrix below)
 
 | Topic | Just/Fish | Go | Rust |
 |-------|-----------|-----|------|
-| **Worktree hash** | `md5sum(local_path)` — branch NOT included | `SHA256(remote+path+branch)[:8]` — no field separator | `DefaultHasher(canonical+branch)[:8]` — **non-deterministic across Rust versions** |
+| **Worktree hash** | `SHA256(remote\0remote_path\0branch)[:8]` — matches Go | `SHA256(remote+path+branch)[:8]` — no field separator | `DefaultHasher(canonical+branch)[:8]` — **non-deterministic across Rust versions** |
 | **Git interface** | Direct `git` CLI everywhere | Mixed: `gogs/git-module` + `os/exec` + `git.Open()` — 3 styles interleaved | `git2` for 2 commands only, `duct`/`run_cmd` for rest — git2 is dead weight |
 | **Metadata `id` field** | Written via jq | **Not in struct** — silently dropped on save | Present with `#[serde(default)]` |
 | **Crossfile removal** | `grep -v "patch"` — removes ALL lines with "patch" | `strings.Contains(line, "patch") && strings.Contains(line, localPath)` — fragile | Same as Go — fragile substring match |
@@ -92,7 +92,7 @@ test/001-017_*.sh     # Individual test files (see coverage matrix below)
 
 ### Test Structure
 
-Tests 001-007 form a chain for Shell/Just (001 is sourced by 002, etc.). Tests 008 (Rust) and 009 (Go) are self-contained monolithic tests. Tests 010-017 are focused feature tests.
+Tests 001-007 form a chain for Shell/Just (001 is sourced by 002, etc.). Tests 008 (Rust) and 009 (Go) are self-contained monolithic tests. Tests 010-018 are focused feature tests.
 
 ### Coverage Matrix
 
@@ -179,7 +179,9 @@ Tests 001-007 form a chain for Shell/Just (001 is sourced by 002, etc.). Tests 0
 - Tests 008/009 are self-contained and build their own binaries.
 - To run a specific test: `bash test/NNN_name.sh`.
 - To run all: `bash test/run-all.sh` or `just cross-test`.
-- CI runs on `ubuntu-latest` and does NOT install Go/Rust toolchains — tests 008/009 must handle this gracefully (skip with message).
+- CI runs on `ubuntu-latest` and does NOT install Go/Rust toolchains — tests 008/009/011 must handle this gracefully (skip with message if build fails).
+- Go binary builds must remove stale `src-go/vendor/` before building and pass `-mod=mod` directly as a flag (not via `GOFLAGS`). The vendor directory is gitignored but may exist locally.
+- Rust tests must handle `cargo build` failures gracefully — skip instead of failing the test.
 
 ### Commit Conventions
 
@@ -191,10 +193,10 @@ Tests 001-007 form a chain for Shell/Just (001 is sourced by 002, etc.). Tests 0
 ## Implementation Details
 
 - **Hidden worktrees**: `.git/cross/worktrees/<remote>_<hash>`.
-- **Sparse checkout**: `git sparse-checkout set <path>` — only specified paths checked out.
+- **Sparse checkout**: `git sparse-checkout init --no-cone` + `git sparse-checkout set <path>/` + `git read-tree -mu HEAD`. The trailing `/` on the pattern is required for reliable directory matching in `--no-cone` mode on newer Git versions (2.43+). `read-tree -mu HEAD` explicitly materializes the worktree (bare `git checkout` can no-op after `--no-checkout`).
 - **Rsync**: `rsync -av --delete --exclude .git` for worktree-to-local sync. `--delete` removes files locally that were deleted upstream.
 - **Crossfile format**: Lines like `cross use <name> <url>` or `cross patch <remote>:<branch>:<path> <local>`. Parsed as bash during `replay`.
-- **Metadata format**: JSON at `.git/cross/metadata.json`. Schema: `{"patches": [{"id", "remote", "remote_path", "local_path", "worktree", "branch"}]}`.
+- **.crossignore**: Located in the root of each local_path, uses gitignore-style patterns to exclude files from status and diff comparisons. Implemented by filtering directory trees using git add and git clean to remove ignored files before comparison.
 
 ## Refactoring Priorities
 

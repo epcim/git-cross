@@ -9,6 +9,12 @@ testdir
 # allow
 !.github
 !.specify
+!.claude
+!.claude/**
+!.agents
+!.agents/**
+!.opencode
+!.opencode/**
 !.gitignore
 !.goreleaser.yaml
 

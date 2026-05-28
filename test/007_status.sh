@@ -44,6 +44,15 @@ check_status() {
 check_status "vendor/docs" "Clean.*Synced"
 
 # ------------------------------------------------------------------
+# Test 1b: override markers switch status to override review
+# ------------------------------------------------------------------
+cat > vendor/docs/.crossignore <<'EOF'
+.env
+EOF
+check_status "vendor/docs" "Override.*Synced"
+rm -f vendor/docs/.crossignore
+
+# ------------------------------------------------------------------
 # Test 2: Modified (Local change)
 # ------------------------------------------------------------------
 echo "Modification" >> vendor/docs/README.md

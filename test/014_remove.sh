@@ -102,4 +102,25 @@ else
     echo "SKIP: Rust binary not available, skipping Rust dedup and list tests"
 fi
 
+# 8. Test root-target remove safety guard (Shell/Just)
+echo "## Testing root-target remove safety guard (Shell/Just)..."
+setup_sandbox
+cd "$SANDBOX"
+
+cat > Crossfile <<'EOF'
+# git-cross configuration
+cross patch root-remote:main:. .
+EOF
+mkdir -p .cross
+cat > .cross/metadata.json <<'EOF'
+{"patches":[{"id":"root1234","remote":"root-remote","remote_path":".","local_path":".","worktree":".cross/worktrees/root-remote_root1234","branch":"main"}]}
+EOF
+echo "keep me" > keep.txt
+
+just cross remove .
+
+if [ ! -f "keep.txt" ]; then fail "root-target remove deleted repo root contents"; fi
+if grep -q 'root-remote:main:. \.$' Crossfile; then fail "root-target remove did not clean Crossfile"; fi
+if [ "$(jq -r '.patches | length' .cross/metadata.json)" != "0" ]; then fail "root-target remove did not clean metadata"; fi
+
 echo "Phase 2 validation passed!"

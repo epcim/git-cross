@@ -1,0 +1,5 @@
+schemaVersion: "1"
+kind: mixin
+name: git-cross-claude
+displayName: git-cross Claude Starter
+description: Adds a repo-local starter layout for running Claude in Docker sbx with git-cross repo guidance.
