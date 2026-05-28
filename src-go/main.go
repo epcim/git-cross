@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/fatih/color"
@@ -58,6 +59,61 @@ func parseCrossOverrides(data string) []string {
 	return overrides
 }
 
+func globMatch(pattern, value string) bool {
+	patternRunes := []rune(pattern)
+	valueRunes := []rune(value)
+	pi, vi := 0, 0
+	star, match := -1, 0
+
+	for vi < len(valueRunes) {
+		if pi < len(patternRunes) && (patternRunes[pi] == valueRunes[vi] || patternRunes[pi] == '?') {
+			pi++
+			vi++
+			continue
+		}
+		if pi < len(patternRunes) && patternRunes[pi] == '*' {
+			star = pi
+			match = vi
+			pi++
+			continue
+		}
+		if star != -1 {
+			pi = star + 1
+			match++
+			vi = match
+			continue
+		}
+		return false
+	}
+
+	for pi < len(patternRunes) && patternRunes[pi] == '*' {
+		pi++
+	}
+	return pi == len(patternRunes)
+}
+
+func matchCrossOverride(pattern, relPath string) (string, bool) {
+	pattern = strings.TrimSuffix(filepath.ToSlash(pattern), "/")
+	relPath = filepath.ToSlash(relPath)
+	if pattern == "" {
+		return "", false
+	}
+	if strings.Contains(pattern, "/") {
+		if relPath == pattern || strings.HasPrefix(relPath, pattern+"/") {
+			return pattern, true
+		}
+		return "", false
+	}
+
+	parts := strings.Split(relPath, "/")
+	for i, part := range parts {
+		if globMatch(pattern, part) {
+			return strings.Join(parts[:i+1], "/"), true
+		}
+	}
+	return "", false
+}
+
 func getCrossOverrides(localPath string) ([]string, error) {
 	data, err := os.ReadFile(filepath.Join(localPath, ".crossignore"))
 	if err != nil {
@@ -66,7 +122,54 @@ func getCrossOverrides(localPath string) ([]string, error) {
 		}
 		return nil, err
 	}
-	return parseCrossOverrides(string(data)), nil
+
+	patterns := parseCrossOverrides(string(data))
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+
+	seen := make(map[string]bool)
+	var overrides []string
+	err = filepath.WalkDir(localPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == localPath {
+			return nil
+		}
+		relPath, err := filepath.Rel(localPath, path)
+		if err != nil {
+			return err
+		}
+		relPath = filepath.ToSlash(relPath)
+		if relPath == ".git" || strings.HasPrefix(relPath, ".git/") {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		for _, pattern := range patterns {
+			matchedPath, ok := matchCrossOverride(pattern, relPath)
+			if !ok {
+				continue
+			}
+			if !seen[matchedPath] {
+				seen[matchedPath] = true
+				overrides = append(overrides, matchedPath)
+			}
+			if d.IsDir() && matchedPath == relPath {
+				return filepath.SkipDir
+			}
+			break
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Strings(overrides)
+	return overrides, nil
 }
 
 

@@ -120,15 +120,25 @@ fi
 
 # --- Test 8: override markers print manual diff commands ---
 log_header "Test 8: override markers print manual diff commands..."
+mkdir -p vendor/alpha/config
+mkdir -p vendor/alpha/subdir
+touch vendor/alpha/subdir/.env vendor/alpha/config/private.yml
 cat > vendor/alpha/.crossignore <<'EOF'
 .env
+config/
 EOF
 output=$(just cross diff vendor/alpha 2>&1 || true)
 echo "$output"
-if ! echo "$output" | grep -q '.env'; then
-    fail "Test 8: diff should print manual override file command"
+if ! echo "$output" | grep -q 'subdir/.env'; then
+    fail "Test 8: diff should print basename override file command from nested directory"
+fi
+if ! echo "$output" | grep -q 'config'; then
+    fail "Test 8: diff should print directory override command"
 fi
 rm -f vendor/alpha/.crossignore
+rm -f vendor/alpha/subdir/.env vendor/alpha/config/private.yml
+rmdir vendor/alpha/subdir 2>/dev/null || true
+rmdir vendor/alpha/config 2>/dev/null || true
 
 echo ""
 echo "All context-aware diff tests passed!"

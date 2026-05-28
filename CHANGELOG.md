@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Private fork migration tutorial** - Added a guarded tutorial for migrating an existing private fork or derivative repo to a repo-root `git-cross` patch with explicit backup and override review steps.
 
 ### Changed
-- **`.crossignore` entry syntax** - Override review behavior now uses plain non-comment `.crossignore` lines such as `.env` or `config/private` instead of `!override <path>` markers. Wildcard pattern matching is still not supported.
+- **`.crossignore` entry syntax** - Override review behavior now uses plain non-comment `.crossignore` lines. Supported forms include basename entries such as `.env` anywhere under the patch, basename globs such as `*.env`, and directory entries such as `config/`. Full `.gitignore` semantics are still not supported.
 - **README workflow guidance** - Documented the current `.crossignore` behavior as a review-oriented workflow for local overlay files layered on top of upstream-managed content.
 
 ### Fixed

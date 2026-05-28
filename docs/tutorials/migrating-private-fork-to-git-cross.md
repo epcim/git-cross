@@ -63,7 +63,7 @@ The safest migration is done in a fresh clone of your private repo.
 
 That way, if the first root patch is not what you expected, you can discard the whole working copy.
 
-## Step 3: Inventory Local-Only Files
+## Step 3: Inventory Local-Only Files And Draft `.crossignore`
 
 Make a list of files that must stay private or local-only.
 
@@ -75,45 +75,56 @@ Typical examples:
 - `config/private/`
 - machine-local certificate files
 
-For current shipped behavior, define them as explicit `.crossignore` entries.
+For current shipped behavior, write them into `.crossignore` first.
 
 Current parsing rules are simple:
 
-- each non-empty, non-comment line is treated as one literal override path
+- each non-empty, non-comment line is one override pattern
+- a plain basename entry such as `.env` matches that name in any subdirectory under the patch
 - plain entries such as `.env` or `config/private` are supported
-- wildcard forms such as `*.env` or `config/*` are **not** supported today
+- basename globs such as `*.env` are supported anywhere under the patch
+- directory entries such as `config` or `config/` are supported
+- full gitignore semantics are **not** supported today
 
 Example list:
 
 ```text
 .env
-.env.local
+*.env
 docker-compose.override.yml
-config/private
+config/
 ```
 
-Examples that are **not** currently supported as patterns:
+Examples that are still **not** promised as full gitignore-style patterns:
 
 ```text
-*.env
 config/*
+**/*.env
+!negation
 ```
 
 ## Step 4: Copy Local-Only Files Out Of The Repo
 
 Before the first `git-cross` root patch, copy those files outside the repository.
 
-Example:
+If you are using the Just implementation during migration, you can reuse the current `.crossignore` matches as the backup source list:
 
 ```bash
 mkdir -p ../private-overrides-backup
-cp .env ../private-overrides-backup/ 2>/dev/null || true
-cp .env.local ../private-overrides-backup/ 2>/dev/null || true
-cp docker-compose.override.yml ../private-overrides-backup/ 2>/dev/null || true
-cp -R config/private ../private-overrides-backup/ 2>/dev/null || true
+just cross _crossignore_overrides "$PWD" \
+  | rsync -avR --files-from=- ./ ../private-overrides-backup/
 ```
 
+If you are not using the Just implementation, use the same `.crossignore` file as your checklist and back up the matching files with `rsync`, `tar`, or your preferred tooling.
+
 If a file is sensitive, verify that your backup location is safe.
+
+Advanced alternatives if you prefer them:
+
+- create a tar archive of the private files before migration
+- temporarily move local-only files out through Git history or branch surgery tools before the root patch
+
+Those approaches are more invasive. The external backup copy is still the simplest migration checkpoint.
 
 ## Step 5: Register The Upstream Remote
 
@@ -150,10 +161,7 @@ Restore the local-only files you copied out earlier.
 Example:
 
 ```bash
-cp ../private-overrides-backup/.env . 2>/dev/null || true
-cp ../private-overrides-backup/.env.local . 2>/dev/null || true
-cp ../private-overrides-backup/docker-compose.override.yml . 2>/dev/null || true
-cp -R ../private-overrides-backup/private ./config/ 2>/dev/null || true
+rsync -av ../private-overrides-backup/ ./ 2>/dev/null || true
 ```
 
 Then write `.crossignore`:
@@ -161,13 +169,13 @@ Then write `.crossignore`:
 ```bash
 cat > .crossignore <<'EOF'
 .env
-.env.local
+*.env
 docker-compose.override.yml
-config/private
+config/
 EOF
 ```
 
-Use explicit literal entries even when it feels repetitive. The current code treats `.crossignore` here as a small override registry, not as full gitignore-style pattern matching.
+Use simple explicit patterns. The current code treats `.crossignore` here as a small override matcher, not as full gitignore-style pattern matching.
 
 ## Step 8: Review The Migrated State
 

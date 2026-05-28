@@ -138,6 +138,8 @@ fi
 echo "Updated logic" > vendor/rust-src/logic.rs
 
 log_header "Testing Rust '.crossignore' override status/diff hint..."
+mkdir -p vendor/rust-src/subdir
+touch vendor/rust-src/subdir/.env
 cat > vendor/rust-src/.crossignore <<'EOF'
 .env
 EOF
@@ -153,10 +155,12 @@ echo "$diff_output"
 if ! echo "$diff_output" | grep -q ".crossignore overrides present in vendor/rust-src"; then
     fail "Rust 'diff' should mention override review when markers exist"
 fi
-if ! echo "$diff_output" | grep -q '.env'; then
-    fail "Rust 'diff' should print manual override file command"
+if ! echo "$diff_output" | grep -q 'subdir/.env'; then
+    fail "Rust 'diff' should print basename override file command from nested directory"
 fi
 rm -f vendor/rust-src/.crossignore
+rm -f vendor/rust-src/subdir/.env
+rmdir vendor/rust-src/subdir 2>/dev/null || true
 
 log_header "Testing Rust 'push' command..."
 # Allow pushing to current branch in mock upstream

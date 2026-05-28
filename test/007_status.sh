@@ -46,11 +46,18 @@ check_status "vendor/docs" "Clean.*Synced"
 # ------------------------------------------------------------------
 # Test 1b: override markers switch status to override review
 # ------------------------------------------------------------------
+mkdir -p vendor/docs/config
+mkdir -p vendor/docs/subdir
+touch vendor/docs/subdir/.env vendor/docs/config/private.yml
 cat > vendor/docs/.crossignore <<'EOF'
 .env
+config/
 EOF
 check_status "vendor/docs" "Override.*Synced"
 rm -f vendor/docs/.crossignore
+rm -f vendor/docs/subdir/.env vendor/docs/config/private.yml
+rmdir vendor/docs/subdir 2>/dev/null || true
+rmdir vendor/docs/config 2>/dev/null || true
 
 # ------------------------------------------------------------------
 # Test 2: Modified (Local change)

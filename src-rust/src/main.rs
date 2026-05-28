@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::io::{ErrorKind, Write};
@@ -143,6 +144,58 @@ fn parse_cross_overrides(content: &str) -> Vec<String> {
     overrides
 }
 
+fn glob_match(pattern: &str, value: &str) -> bool {
+    let pattern: Vec<char> = pattern.chars().collect();
+    let value: Vec<char> = value.chars().collect();
+    let mut pi = 0usize;
+    let mut vi = 0usize;
+    let mut star: Option<usize> = None;
+    let mut matched = 0usize;
+
+    while vi < value.len() {
+        if pi < pattern.len() && (pattern[pi] == value[vi] || pattern[pi] == '?') {
+            pi += 1;
+            vi += 1;
+        } else if pi < pattern.len() && pattern[pi] == '*' {
+            star = Some(pi);
+            matched = vi;
+            pi += 1;
+        } else if let Some(star_idx) = star {
+            pi = star_idx + 1;
+            matched += 1;
+            vi = matched;
+        } else {
+            return false;
+        }
+    }
+
+    while pi < pattern.len() && pattern[pi] == '*' {
+        pi += 1;
+    }
+    pi == pattern.len()
+}
+
+fn match_cross_override(pattern: &str, rel_path: &str) -> Option<String> {
+    let pattern = pattern.trim_end_matches('/');
+    if pattern.is_empty() {
+        return None;
+    }
+    if pattern.contains('/') {
+        if rel_path == pattern || rel_path.starts_with(&format!("{}/", pattern)) {
+            return Some(pattern.to_string());
+        }
+        return None;
+    }
+
+    let parts: Vec<&str> = rel_path.split('/').collect();
+    for idx in 0..parts.len() {
+        if glob_match(pattern, parts[idx]) {
+            return Some(parts[..=idx].join("/"));
+        }
+    }
+    None
+}
+
 fn get_cross_overrides(local_path: &Path) -> Result<Vec<String>> {
     let path = local_path.join(".crossignore");
     if !path.exists() {
@@ -150,11 +203,51 @@ fn get_cross_overrides(local_path: &Path) -> Result<Vec<String>> {
     }
 
     let content = fs::read_to_string(path)?;
-    Ok(parse_cross_overrides(&content))
+    let patterns = parse_cross_overrides(&content);
+    if patterns.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut matches = BTreeSet::new();
+    collect_cross_overrides(local_path, local_path, &patterns, &mut matches)?;
+    Ok(matches.into_iter().collect())
 }
 
 fn has_cross_overrides(local_path: &Path) -> Result<bool> {
     Ok(!get_cross_overrides(local_path)?.is_empty())
+}
+
+fn collect_cross_overrides(
+    root: &Path,
+    current: &Path,
+    patterns: &[String],
+    matches: &mut BTreeSet<String>,
+) -> Result<()> {
+    for entry in fs::read_dir(current)? {
+        let entry = entry?;
+        let path = entry.path();
+        let rel_path = path.strip_prefix(root)?.to_string_lossy().replace('\\', "/");
+        if rel_path == ".git" || rel_path.starts_with(".git/") {
+            continue;
+        }
+
+        let file_type = entry.file_type()?;
+        let mut matched_dir = false;
+        for pattern in patterns {
+            if let Some(matched_path) = match_cross_override(pattern, &rel_path) {
+                matches.insert(matched_path.clone());
+                if file_type.is_dir() && matched_path == rel_path {
+                    matched_dir = true;
+                }
+                break;
+            }
+        }
+
+        if file_type.is_dir() && !matched_dir {
+            collect_cross_overrides(root, &path, patterns, matches)?;
+        }
+    }
+    Ok(())
 }
 
 fn parse_patch_spec(spec: &str) -> Result<PatchSpec> {

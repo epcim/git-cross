@@ -140,7 +140,7 @@ update_crossfile +cmd:
     grep -qF "{{cmd}}" "{{CROSSFILE}}" 2>/dev/null || echo "{{cmd}}" >> "{{CROSSFILE}}"; exit 0
 
 [no-cd]
-_crossignore_overrides local_dir:
+_crossignore_patterns local_dir:
     #!/usr/bin/env fish
     set -l file "{{local_dir}}/.crossignore"
     if not test -f "$file"
@@ -152,6 +152,52 @@ _crossignore_overrides local_dir:
             printf '%s\n' "$trimmed"
         end
     end < "$file"
+
+[no-cd]
+_crossignore_match pattern rel_path:
+    #!/usr/bin/env fish
+    set -l normalized (string trim -r -c '/' -- "{{pattern}}")
+    if test -z "$normalized"
+        exit 1
+    end
+    if string match -q '*/*' -- "$normalized"
+        if test "{{rel_path}}" = "$normalized"; or string match -q -- "$normalized/*" "{{rel_path}}"
+            printf '%s\n' "$normalized"
+            exit 0
+        end
+        exit 1
+    end
+
+    set -l parts (string split / -- "{{rel_path}}")
+    for idx in (seq (count $parts))
+        if string match -q -- "$normalized" "$parts[$idx]"
+            string join / $parts[1..$idx]
+            exit 0
+        end
+    end
+    exit 1
+
+[no-cd]
+_crossignore_overrides local_dir:
+    #!/usr/bin/env fish
+    set -l patterns (just cross _crossignore_patterns "{{local_dir}}")
+    if test (count $patterns) -eq 0
+        exit 0
+    end
+
+    set -l matches
+    set -l entries (find "{{local_dir}}" -mindepth 1 -not -path '*/.git/*' -print0 | string split0)
+    for line in $entries
+        set -l rel (realpath --relative-to="{{local_dir}}" "$line")
+        for pattern in $patterns
+            set -l match_path (just cross _crossignore_match "$pattern" "$rel" 2>/dev/null)
+            if test -n "$match_path"
+                contains -- "$match_path" $matches; or set matches $matches "$match_path"
+                break
+            end
+        end
+    end
+    printf '%s\n' $matches
 
 # Internal: Log message with color
 _log level +message:

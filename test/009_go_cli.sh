@@ -184,6 +184,8 @@ fi
 echo "Updated go logic" > vendor/go-src/logic.go
 
 log_header "Testing Go '.crossignore' override status/diff hint..."
+mkdir -p vendor/go-src/subdir
+touch vendor/go-src/subdir/.env
 cat > vendor/go-src/.crossignore <<'EOF'
 .env
 EOF
@@ -199,10 +201,12 @@ echo "$diff_output"
 if ! echo "$diff_output" | grep -q ".crossignore overrides present in vendor/go-src"; then
     fail "Go 'diff' should mention override review when markers exist"
 fi
-if ! echo "$diff_output" | grep -q '.env'; then
-    fail "Go 'diff' should print manual override file command"
+if ! echo "$diff_output" | grep -q 'subdir/.env'; then
+    fail "Go 'diff' should print basename override file command from nested directory"
 fi
 rm -f vendor/go-src/.crossignore
+rm -f vendor/go-src/subdir/.env
+rmdir vendor/go-src/subdir 2>/dev/null || true
 
 log_header "Testing Go 'push' command..."
 # Allow pushing to current branch in mock upstream
