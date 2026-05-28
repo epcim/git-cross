@@ -115,6 +115,13 @@ compose.override.yaml
 EOF
 ```
 
+Rule of thumb:
+
+- a plain basename entry such as `.env` matches that name in any subdirectory under the patch
+- a directory entry such as `config` or `config/` matches that directory tree
+- a basename glob such as `*.env` also matches anywhere under the patch
+- this is intentionally simpler than full `.gitignore` semantics
+
 What this does today:
 
 - `git cross status` shows `Override` for that patch
