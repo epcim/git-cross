@@ -173,6 +173,7 @@ This lets your main repo keep its local opinionated result while the upstream co
 - [Tutorial: Local Overlays And Upstream Contribution](docs/tutorials/local-overlays-and-upstream.md)
 - [Tutorial: Whole Upstream Into A Local Directory](docs/tutorials/whole-upstream-into-local-dir.md)
 - [Tutorial: Migrate A Private Fork To git-cross](docs/tutorials/migrating-private-fork-to-git-cross.md)
+- [Tutorial: Split One Repo Into A Clean Upstream And A Private Overlay](docs/tutorials/split-repo-into-upstream-and-private.md)
 - [Sandbox Kits](sbx-kits/README.md)
 
 ## Commands

@@ -22,6 +22,8 @@
 
 ## Completed Tasks
 
+- [x] Fix the private-fork migration tutorial so it no longer points users at the internal `_crossignore_overrides` Just recipe, and document the cleaner "seed a public upstream, then track it from the private repo" migration path.
+- [x] Add a standalone tutorial (`docs/tutorials/split-repo-into-upstream-and-private.md`) for splitting one mixed private repo into a clean upstream plus a private git-cross-managed overlay, cross-linked from README and the migration tutorial.
 - [x] Refactor remaining Rust commands to use `duct` for better error visibility.
 - [x] Complete `push` command verification in native implementations.
 - [x] Integrate integration tests (001-009) into a unified test runner.
