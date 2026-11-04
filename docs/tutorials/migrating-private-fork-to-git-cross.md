@@ -39,6 +39,53 @@ Assume:
 - your private repo also contains local-only files such as `.env`, `.env.local`, `docker-compose.override.yml`, or private config directories
 - you want the repo to stay at repo root, not move upstream content into `vendor/...`
 
+## Before Step 1: Decide Where The Upstream Comes From
+
+There are two valid starting points.
+
+### Case A: A Clean Upstream Repo Already Exists
+
+If you already have a real upstream repository that contains only the shareable code, continue with Step 1.
+
+### Case B: Your Current Private Repo Is The Only Copy
+
+If the current private repo is the only place where the code exists and it mixes:
+
+- upstream-worthy project files
+- private files such as `.env`
+- machine-local or company-local overrides
+
+create a clean upstream seed repository first, then come back and migrate the private repo with `git-cross`.
+
+This split has its own focused walkthrough:
+`docs/tutorials/split-repo-into-upstream-and-private.md`.
+
+The core idea there is a single shared rule: one `.crossignore` lists the private
+patterns, and `git ls-files` selects the matching files for both jobs —
+
+```bash
+# back up / keep (rsync): include untracked too
+git ls-files -z --cached --others --ignored --exclude-from=.crossignore
+
+# remove from upstream seed (delete from copy): tracked only
+git ls-files -z --cached --ignored --exclude-from=.crossignore
+```
+
+- the tracked list, deleted with `rm -rf` then `git add -A`, strips those files from the new upstream seed
+- the full list piped to `rsync` in your private repo *backs up and keeps* them
+
+Use `rm` + `git add -A` rather than `git rm` for the seed: `git rm` aborts the
+whole batch on untracked pathspecs or on a submodule it cannot name. Deleting from
+the working tree and restaging handles files, directories, and submodule gitlinks
+uniformly.
+
+Do the split there, then return here at Step 1 with a clean upstream in hand.
+
+Important note:
+
+- if secrets or private files were ever committed into Git history and you plan to publish that history, do a real history rewrite first
+- the split tutorial only covers the working-tree split, not secret-history cleanup
+
 ## Step 1: Make A Safety Snapshot
 
 Before changing anything, create a backup branch or tag.
@@ -131,6 +178,8 @@ Those approaches are more invasive. The external backup copy is still the simple
 If you want upstream contribution later, the cleanest pattern is to register a writable fork from the start.
 
 If you only want to mirror the original upstream first, register the original upstream now and switch to a fork later.
+
+If you created a clean upstream seed repository in the earlier split step, register that repository here.
 
 Example:
 
