@@ -154,55 +154,15 @@ config/*
 
 Before the first `git-cross` root patch, copy those files outside the repository.
 
-`.crossignore` is a pattern prescription, not a literal file list. Some lines
-are globs (`*.env`) or directories (`config/`), and some patterns may not match
-any file that exists yet. So you cannot feed it straight into
-`rsync --files-from`; that treats every line as an exact path and fails on the
-first pattern or missing file.
-
-Instead, expand the patterns against the real working tree with `git`, and back
-up only the files that actually exist. This needs only `git` and `rsync`, both
-already required by `git-cross`:
+If you are using the Just implementation during migration, you can reuse the current `.crossignore` matches as the backup source list:
 
 ```bash
 mkdir -p ../private-overrides-backup
-git ls-files -z --cached --others --ignored --exclude-from=.crossignore \
-  | rsync -av --from0 --files-from=- ./ ../private-overrides-backup/
+just cross _crossignore_overrides "$PWD" \
+  | rsync -avR --files-from=- ./ ../private-overrides-backup/
 ```
 
-Why this works:
-
-- `git ls-files --ignored --exclude-from=.crossignore` matches the
-  gitignore-style patterns against files that exist, so missing patterns are
-  silently skipped instead of erroring
-- `--cached --others` covers both tracked secret files (a committed `.env`) and
-  untracked ones (an uncommitted `.env.secrets`)
-- `-z` / `--from0` handle spaces and unusual filenames safely
-- `--files-from` preserves the relative paths, so restore in Step 7 is a plain
-  `rsync -av ../private-overrides-backup/ ./`
-
-This step is repeatable. The command is a preview until you pipe it anywhere, so
-refine `.crossignore` in a loop: run the preview, read the list, edit
-`.crossignore`, run again — repeat until it lists exactly the private files you
-want removed from upstream and kept locally.
-
-```bash
-# edit .crossignore, then re-run until the list is exactly right
-git ls-files --cached --others --ignored --exclude-from=.crossignore
-```
-
-Nothing is deleted from your repo here. The backup is only a safety copy; your
-private files stay in place and become git-cross overlays after the root patch.
-Only the separate upstream seed (a throwaway copy) has them stripped.
-
-Do not rely on `Justfile.cross` internal helper recipes such as `_crossignore_overrides` for this migration step. Those recipes are implementation internals, not stable user-facing commands, and they are not meant to be invoked directly from another repository.
-
-If you prefer to be fully explicit, list exact paths instead:
-
-```bash
-mkdir -p ../private-overrides-backup
-rsync -avR ./.env ./config/private ../private-overrides-backup/ 2>/dev/null || true
-```
+If you are not using the Just implementation, use the same `.crossignore` file as your checklist and back up the matching files with `rsync`, `tar`, or your preferred tooling.
 
 If a file is sensitive, verify that your backup location is safe.
 
