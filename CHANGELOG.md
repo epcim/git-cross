@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Simplified upstream workflow** - Added `git cross update [path]` to read declarative `use`/`patch` entries from `Crossfile`, fetch upstream, fast-forward sparse worktrees, and install only when the local copy has no edits. Local edits are preserved while the worktree advances for manual comparison.
+- **Manual contribution workflow** - Retired `push`; use `wt`, `compare`, and ordinary Git commands to manually copy and commit desired changes in the sparse worktree. Configure the directory diff command with `git config --global cross.diffTool 'vim "+DirDiff"'`.
+- **Retired replay and arbitrary Crossfile commands** - `update` interprets only `use` and `patch`; hooks and shell commands are no longer run from Crossfile.
+- **Supported implementations** - Go remains primary and Just/Fish the reference. Rust source is retained but no longer maintained; release artifacts are Go-only.
+- **Retired sync workflow** - The prior stash/copy/rebase logic is removed from the supported CLI and Just recipes.
+
 ### Added
 - **User documentation refresh** - Added a clearer top-level README, a user-facing architecture overview, and a tutorial for local overlays, publishing to your own origin, and sending changes back upstream.
 - **Repo-local `sbx` starter kit** - Added `sbx-kits/opencode` plus `sbx-kits/README.md` so users can try `git-cross` in a versioned sandbox setup instead of relying on a home-directory kit path.

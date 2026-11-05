@@ -94,10 +94,10 @@ This publishes the combined result to your own team repository.
 
 That is separate from contributing changes back to the upstream project.
 
-## Step 6: Pull New Upstream Changes Later
+## Step 6: Update From Upstream Later
 
 ```bash
-git cross sync vendor/app
+git cross update vendor/app
 ```
 
 Then review again:
@@ -115,28 +115,19 @@ When you want to send a fix upstream, first separate the changes that belong ups
 
 The cleanest setup is to track a writable fork from the start, then open a PR or MR from that fork to the original project.
 
-If your current patch points at a read-only upstream remote, switch the tracked remote to your fork before using `git cross push`.
+To manually prepare upstream-bound changes:
 
-Before pushing upstream-bound changes:
-
-1. review `git cross diff vendor/app`
-2. make sure local-only overlay files are not part of what you intend to send upstream
-3. keep the upstream contribution limited to upstream-managed files
-
-Then push:
-
-```bash
-git cross push vendor/app --message "Fix parser bug"
-```
-
-After that, open a PR or MR from your fork branch to the original upstream project.
+1. open the sparse worktree with `git cross wt vendor/app`
+2. compare it with local files using `git cross compare vendor/app`
+3. manually copy intended changes into the worktree
+4. commit and push from there with normal Git commands
 
 ## Practical Advice
 
 - Use your main repo `origin` for your final combined product state.
-- Use a fork remote for upstream contribution.
+- Use a fork remote if you plan to contribute upstream.
 - Keep local secrets and machine config clearly marked in `.crossignore`.
-- Treat `.crossignore` entries as review helpers, not as permission to stop thinking about what gets pushed.
+- Treat `.crossignore` entries as review helpers, not as a replacement for manual comparison.
 
 ## When To Use A Sandbox
 

@@ -220,10 +220,6 @@ _log level +message:
             echo "==> {{message}}"
     end
 
-# Execute arbitrary shell command
-exec +CMD:
-    {{CMD}}
-
 # Initialize a new project with Crossfile
 [no-cd]
 init:
@@ -398,7 +394,7 @@ prune remote_name="": check-deps
         end
     popd
 
-# AICONTEXT: "patch" will do sparse checkout of specified branch of remote repository into local path. "remote_spec" is in format "remote_name:branch", where "branch" is optional. local_path is the same are remote_path if not provided. Command shall firs use `git ls-remote --heads ` to identify whether remote is having main or master as default branch if not provided - no more evaluation needed, simply grep "refs/heads" with regexp. Tool shall configure sparse checkout and use `git worktree add` and use `".git/cross/worktrees/$remote"_"$hash"` as working directory. Hash shall be short, but shall be created from path and branch name and humans shall ideally read it. checkout either only need maximum of 1 git history (last commmit version). When the checkout is done, "sync" target is called, to sync just this specific "patch" git worktree into main repository to local_path. Then a placeholder is required for post_sync_hook function to run. Finally call `git add` on local_path in top level repo.
+# Sparse-checkout an upstream path into a local directory and record it in Crossfile.
 # AICONTEXT: for implementation, use "fish" keep it simple, shell comamnds shall be readable. Ideally keep bellow 30 lines. User interaction shall be kept minimal. Debug statements are not needed. Document in comments major logical blocks.
 # Patch a directory from a remote into a local path
 patch remote_spec local_path="": check-deps
@@ -508,183 +504,137 @@ patch remote_spec local_path="": check-deps
 [no-cd]
 @check-initialized:
     cd {{REPO_DIR}} && test -d {{CROSSDIR}}/worktrees && test -f {{METADATA}} \
-        || { just cross _log warn "No patches to sync"; exit 0; }
+        || { just cross _log warn "No patches to update"; exit 0; }
 
-# AICONTEXT: "sync" will sync all or the provided local_path with upstream. Workflow: 1. Stash uncommitted changes in local_path. 2. Rsync git-tracked files from local_path to worktree. 3. Commit changes in worktree. 4. Pull rebase from upstream. 5. If conflicts, exit and ask user to resolve. 6. Rsync worktree back to local_path. 7. Restore stashed changes. 8. Check for conflicts in restored changes.
-# Sync all patches from upstream
+# Update Crossfile-managed patches from upstream. Local edits are preserved and
+# left for manual review against the refreshed sparse worktree.
 [no-cd]
-sync *path="": check-initialized
+_update_patch spec local_path:
     #!/usr/bin/env fish
-    # Query metadata.json
-    just cross _resolve_context2 {{path}} | source \
-        || { just cross _log error "Error: Could not resolve metadata for $path."; exit 1; }
-
-    pushd "{{REPO_DIR}}"
-        just cross _log info "Syncing $local_path with $worktree..."
-        
-        # 0. Ensure local_path exists
-        mkdir -p $local_path
-        
-        # 0.5. Check for uncommitted changes in local_path (detect but don't stash yet)
-        set stashed false
-        set has_changes (git status --porcelain $local_path 2>/dev/null | wc -l | tr -d ' ')
-        if test "$has_changes" -gt 0
-            just cross _log info "Detected uncommitted changes in $local_path..."
-            set stashed true
-        end
-        
-        # 1. Rsync current state (including uncommitted) from local_path to worktree
-        # AICONTEXT: the rsync need to sync only git tracked files in $local_path to $worktree/$remote_path
-        just cross _log info "Syncing local changes to worktree..."
-        if test -d $local_path
-            pushd $local_path
-              # Get tracked files (includes files with uncommitted changes)
-              set tracked (git ls-files .)
-              if test -n "$tracked"
-                  # Rsync tracked files (with their current content, including uncommitted changes)
-                  git ls-files . -z | rsync -0 --files-from=- -av --relative --exclude .git {{REPO_DIR}}/$local_path {{REPO_DIR}}/$worktree/$remote_path
-              end
-            popd
-        end
-        
-        # 1.5. NOW stash uncommitted changes (after copying them to worktree)
-        if test "$stashed" = "true"
-            just cross _log info "Stashing uncommitted changes in $local_path..."
-            # Stash including untracked files, only in local_path
-            git stash push --include-untracked -m "cross-sync-auto-stash: $local_path" -- $local_path
-        end
- 
-
-        # 2. Commit local changes in worktree
-        set dirty (git -C $worktree status --porcelain)
-        if test -n "$dirty"
-            just cross _log info "Committing local changes in $worktree..."
-            git -C $worktree add .
-            git -C $worktree commit -m "Sync local changes"
-        end
-        
-        # 2.5. Check if worktree is in a good state (not detached HEAD, not mid-rebase)
-        pushd $worktree
-            # Check for ongoing rebase/merge FIRST (before anything else)
-            # For worktrees, rebase-merge can be in multiple locations
-            set worktree_name (basename $worktree)
-            set rebase_dirs .git/rebase-merge .git/rebase-apply {{REPO_DIR}}/.git/worktrees/$worktree_name/rebase-merge {{REPO_DIR}}/.git/worktrees/$worktree_name/rebase-apply
-            
-            set needs_cleanup false
-            for dir in $rebase_dirs
-                if test -d $dir
-                    set needs_cleanup true
-                    break
-                end
-            end
-            
-            if test "$needs_cleanup" = "true"
-                just cross _log warn "Worktree has an in-progress operation. Cleaning up..."
-                git rebase --abort 2>/dev/null || true
-                git merge --abort 2>/dev/null || true
-                # Force remove all possible rebase dirs
-                for dir in $rebase_dirs
-                    rm -rf $dir 2>/dev/null || true
-                end
-            end
-            
-            # Check for detached HEAD
-            if not git symbolic-ref -q HEAD >/dev/null 2>&1
-                just cross _log warn "Worktree is in detached HEAD state. Attempting to recover..."
-                # Find the worktree's branch name
-                set branch_name (git for-each-ref --format='%(refname:short)' refs/heads/ | grep -E 'cross/' | head -1)
-                if test -n "$branch_name"
-                    just cross _log info "Checking out branch: $branch_name"
-                    git checkout -B $branch_name 2>/dev/null || true
-                    # Reset to clean state
-                    git fetch $remote 2>/dev/null || true
-                    git reset --hard $remote/$remote_branch 2>/dev/null || true
-                end
-            end
-        popd
-        
-        # 3. Pull rebase from upstream
-        # Refresh index to avoid false conflicts from rsync mtime changes
-        git -C $worktree update-index --refresh -q 2>/dev/null; or true
-        just cross _log info "Pulling from upstream..."
-        if not git -C $worktree pull --rebase
-            just cross _log error "Conflict detected in $worktree. Please resolve manually."
-            just cross _log info "cd $worktree"
-            if test "$stashed" = "true"
-                just cross _log warn "Note: Local changes are stashed. Run 'git stash pop' in $local_path after resolving."
-            end
+    if test "{{local_path}}" = "."
+        just cross _log error "Updating a repository-root patch is not supported safely yet."
+        exit 1
+    end
+    pushd "{{REPO_DIR}}" >/dev/null
+    set fields (string split ':' -- "{{spec}}")
+    set remote $fields[1]
+    set remote_path (string trim -c '/' -- $fields[-1])
+    test -n "$remote_path"; or set remote_path "."
+    set entry (jq -c --arg lp "{{local_path}}" '.patches[]? | select(.local_path == $lp)' {{METADATA}} 2>/dev/null)
+    if test -z "$entry"
+        if test -e "{{REPO_DIR}}/{{local_path}}"
+            just cross _log error "Local path already exists but is not registered; refusing to overwrite it: {{local_path}}"
             exit 1
         end
-        
-        # 4. Sync back to local - ensure directory exists
-        just cross _log info "Syncing back to $local_path..."
-        mkdir -p $local_path
-        
-        # 4.1. Remove files from local_path that were deleted upstream
-        # Only delete files that are:
-        # - Tracked in the main repo (in local_path)
-        # - No longer exist in the worktree
-        pushd $worktree/$remote_path
-          # Get list of tracked files in worktree
-          set worktree_files (git ls-files .)
-          
-          # Create temp file with worktree files list
-          set temp_list (mktemp)
-          echo "$worktree_files" > $temp_list
-          
-          # Get list of tracked files in local_path (from main repo)
-          pushd {{REPO_DIR}}
-            set local_tracked (git ls-files $local_path 2>/dev/null || echo "")
-          popd
-          
-          # Only check tracked files for deletion
-          if test -n "$local_tracked"
-            for tracked_file in $local_tracked
-              # Get just the filename relative to local_path
-              set rel_file (string replace -r "^$local_path/" "" $tracked_file)
-              # Check if this tracked file no longer exists in worktree
-              if not grep -qF "$rel_file" $temp_list 2>/dev/null
-                just cross _log info "Removing deleted file: $rel_file"
-                rm -f {{REPO_DIR}}/$tracked_file
-              end
-            end
-          end
-          
-          rm -f $temp_list
-          
-          # 4.2. Rsync tracked files from worktree to local
-          git ls-files . -z | rsync -0 --files-from=- -av --relative --exclude .git {{REPO_DIR}}/$worktree/$remote_path {{REPO_DIR}}/$local_path 
-        popd
-
-        # 5. Restore stashed changes if they exist
-        if test "$stashed" = "true"
-            just cross _log info "Restoring stashed local changes..."
-            # First, add any new files that came from worktree sync
-            git add $local_path 2>/dev/null || true
-            # Now try to pop the stash (might have conflicts if same files were modified upstream)
-            if git stash pop
-                # Success - check for conflicts
-                set conflicts (git diff --name-only --diff-filter=U -- $local_path 2>/dev/null | wc -l | tr -d ' ')
-                if test "$conflicts" -gt 0
-                    just cross _log error "Conflicts detected after restoring local changes in $local_path:"
-                    git diff --name-only --diff-filter=U -- $local_path
-                    just cross _log info "Resolve conflicts, then run 'git add' and continue."
-                end
-            else
-                # Stash pop failed - likely due to conflicts
-                just cross _log warn "Could not automatically restore stashed changes."
-                just cross _log info "Your changes are preserved in the stash."
-                just cross _log info "Run 'git stash list' to see them, 'git stash show' to view, 'git stash pop' to retry."
-                just cross _log info "Or run 'git stash drop' if you want to discard them."
-            end
+        just cross patch "{{spec}}" "{{local_path}}"
+        exit $status
+    end
+    set wt (echo "$entry" | jq -r '.worktree')
+    set branch (echo "$entry" | jq -r '.branch')
+    set entry_remote (echo "$entry" | jq -r '.remote')
+    set entry_remote_path (echo "$entry" | jq -r '.remote_path')
+    if test "$remote" != "$entry_remote" -o "$remote_path" != "$entry_remote_path"
+        just cross _log error "Crossfile source changed for {{local_path}}; remove and patch it explicitly before updating."
+        exit 1
+    end
+    set spec_parts (string split ':' -- "{{spec}}")
+    if test (count $spec_parts) -eq 3 -a "$spec_parts[2]" != "$branch"
+        just cross _log error "Crossfile branch changed for {{local_path}}; remove and patch it explicitly before updating."
+        exit 1
+    end
+    set local_abs "{{REPO_DIR}}/{{local_path}}"
+    set wt_abs "{{REPO_DIR}}/$wt/$remote_path"
+    set local_changed false
+    if test -d "$local_abs"
+        git diff --no-index --quiet -- "$wt_abs" "$local_abs"
+        set diff_status $status
+        if test $diff_status -eq 1
+            set local_changed true
+        else if test $diff_status -gt 1
+            just cross _log error "Could not compare local path and worktree."
+            exit 1
         end
+    end
+    git fetch $remote $branch; or exit 1
+    set fetched_commit (git rev-parse FETCH_HEAD); or exit 1
+    set worktree_dirty (git -C "$wt" status --porcelain)
+    if test -n "$worktree_dirty"
+        just cross _log error "Worktree has manual changes; leaving it untouched: $wt"
+        exit 1
+    end
+    git -C "$wt" merge --ff-only "$fetched_commit"; or begin
+        just cross _log error "Upstream cannot fast-forward the worktree. Review it manually: $wt"
+        exit 1
+    end
+    if test "$local_changed" = "true"
+        just cross _log warn "Local edits detected; preserving $local_abs. Compare manually:"
+        set tool (git config --get cross.diffTool 2>/dev/null)
+        test -n "$tool"; or set tool 'vim "+DirDiff"'
+        printf '  git cross compare "%s"\n' "{{local_path}}"
+        printf '  %s "%s" "%s"\n' "$tool" "$wt_abs" "$local_abs"
+        exit 0
+    end
+    mkdir -p "$local_abs"
+    rsync -av --delete --exclude .git "$wt_abs/" "$local_abs/"
 
-        just cross _log success "Sync completed for $local_path"
-    popd  
-        
+# Update declarations in Crossfile. Only use and patch lines are interpreted.
+[no-cd]
+update path="": check-deps
+    #!/usr/bin/env fish
+    if not test -f "{{REPO_DIR}}/Crossfile"
+        just cross _log error "Crossfile not found."
+        exit 1
+    end
+    pushd "{{REPO_DIR}}" >/dev/null
+    set updates 0
+    while read -l line
+        set fields (string split -n ' ' -- (string trim -- "$line"))
+        if test (count $fields) -eq 0; or string match -q '#*' -- $fields[1]
+            continue
+        end
+        if test "$fields[1]" = "git" -o "$fields[1]" = "just"
+            if test (count $fields) -lt 3 -o "$fields[2]" != "cross"
+                just cross _log error "Unsupported Crossfile command: $line"
+                exit 1
+            end
+            set fields $fields[3..-1]
+        else if test "$fields[1]" = "cross"
+            set fields $fields[2..-1]
+        end
+        if test "$fields[1]" = "use"
+            if test (count $fields) -ne 3
+                just cross _log error "Invalid use declaration in Crossfile: $line"
+                exit 1
+            end
+            just cross use $fields[2] $fields[3]; or exit 1
+            git fetch $fields[2]; or exit 1
+        else if test "$fields[1]" = "patch"
+            if test (count $fields) -lt 2 -o (count $fields) -gt 3
+                just cross _log error "Invalid patch declaration in Crossfile: $line"
+                exit 1
+            end
+            set remote_path (string split ':' -- "$fields[2]")[-1]
+            set local_path $remote_path
+            if test (count $fields) -ge 3
+                set local_path $fields[3]
+            end
+            test -n "$local_path"; or set local_path "."
+            if test -n "{{path}}" -a "$local_path" != "{{path}}"
+                continue
+            end
+            just cross _update_patch $fields[2] $local_path; or exit 1
+            set updates (math $updates + 1)
+        else
+            just cross _log error "Unsupported Crossfile command: $line (update supports use and patch only)"
+            exit 1
+        end
+    end < "{{REPO_DIR}}/Crossfile"
+    if test -n "{{path}}" -a $updates -eq 0
+        just cross _log error "No Crossfile patch found for {{path}}"
+        exit 1
+    end
+    popd >/dev/null
 
-
-# AICONTEXT: "diff" will diff local vs .git/cross/worktrees/$remote"_"$hash. It will take all "git tracked" files from local_path and rsync them to .git/cross/worktrees/$remote"_"$hash/$remote_path. This function shall be used by "sync" target to manipulate with files between local_path and WT. When on WT, regular `git diff` can be run. (though then CWD shal return to where user was before the execution, which probably just ensure anyway)
 # Diff local vs upstream
 [no-cd]
 diff path="": check-initialized
@@ -732,101 +682,17 @@ diff path="": check-initialized
         end
     popd
 
-# AICONTEXT: "push" works on  .git/cross/worktrees/$remote"_"$hash/$remote_path. Input argument is local_path (or understand user stand in the under git-cross'ed local_path and call this comand). The "sync" shall be run first, then regular git push to remote (as pull request, merge request shall happen to remote), the branch to push MR shall be autocalculated ie: "gituser_$hash" used in WT. User shall be give the optino to force-push, as he can repeate. (feature on git-cross)
-# Push changes back to upstream
+# Open the configured directory comparison tool (git config cross.diffTool).
 [no-cd]
-push path="" branch="" force="false" yes="false" message="": check-initialized
+compare path="": check-initialized
     #!/usr/bin/env fish
-
-    # Query metadata.json
     just cross _resolve_context2 "{{path}}" | source \
-        || { just cross _log error "Error: Could not resolve metadata for '$path'."; exit 1; }
-
-    pushd "{{REPO_DIR}}"
-        just cross _log warn "The 'push' command is experimental. Verify upstream changes after use."
-        if not test -d $worktree
-            just cross _log error "Error: Worktree not found. Run 'just patch' first."
-            exit 1
-        end
-        
-        just cross _log info "Syncing changes from $local_path back to $worktree..."
-        rsync -av --delete --exclude .git $local_path/ $worktree/$remote_path/
-        
-        just cross _log info "---------------------------------------------------"
-        just cross _log info "Worktree updated. Status:"
-        git -C $worktree status
-        just cross _log info "---------------------------------------------------"
-        
-        while true
-            if test "{{yes}}" = "true"
-                set choice "r"
-            else
-                read -P "Run (r), Manual (m), Cancel (c)? " choice
-            end
-
-            switch $choice
-                case r R
-                    just cross _log info "Preparing commit..."
-                    pushd $worktree
-                        git add .
-                        
-                        # Determine commit message
-                        set msg "{{message}}"
-                        
-                        if test -z "$msg"; and test "{{yes}}" = "false"
-                             read -P "Commit message (empty to auto-generate from local log): " user_msg
-                             if test -n "$user_msg"
-                                 set msg "$user_msg"
-                             end
-                        end
-                        
-                        if test -z "$msg"
-                            # Auto-generate from local git log of the path
-                            # We need to find the last commit that touched the local_path in the main repo
-                            # Note: REPO_DIR is the main repo root
-                            set msg (git -C "{{REPO_DIR}}" log -n 1 --pretty=format:%s -- "$local_path")
-                            if test -z "$msg"
-                                set msg "Sync updates from $local_path"
-                            end
-                            just cross _log info "Auto-generated message: $msg"
-                        end
-
-                        git commit -m "$msg"
-
-                        # Determine push target
-                        if test -z "{{branch}}"
-                            set upstream (git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}')
-                            set remote (string split -m1 / $upstream)[1]
-                            set target_branch (string split -m1 / $upstream)[2]
-                        else
-                            set remote "$remote"
-                            set target_branch "{{branch}}"
-                        end
-                        
-                        set push_args "$remote" "HEAD:$target_branch"
-                        if test "{{force}}" = "true"
-                            set push_args $push_args "--force"
-                        end
-
-                        just cross _log info "Pushing to $push_args..."
-                        git push $push_args
-                    popd >/dev/null
-                    break
-                case m M
-                    just cross _log info "Spawning subshell in $worktree..."
-                    just cross _log info "Type 'exit' to return."
-                    pushd $worktree
-                    fish
-                    popd >/dev/null
-                    just cross _log info "Returned from manual mode."
-                case c C
-                    just cross _log warn "Cancelled."
-                    exit 0
-                case '*'
-                    just cross _log error "Invalid choice."
-            end
-        end
-    popd
+        || { just cross _log error "Provide a patch path or run inside a patch directory."; exit 1; }
+    set tool (git config --get cross.diffTool 2>/dev/null)
+    test -n "$tool"; or set tool 'vim "+DirDiff"'
+    set worktree_path "{{REPO_DIR}}/$worktree/$remote_path"
+    set local_path_abs "{{REPO_DIR}}/$local_path"
+    bash -c "$tool \"\$1\" \"\$2\"" cross-compare "$worktree_path" "$local_path_abs"
 
 # AICONTEXT: "list" lists all patches in local repo, by reading Crossfile and `git worktree list` under .git/cross/worktrees. The listing shall be combined with status of each WT and git status of local_path. The logic can be take from "status" implementation.
 # List all patches
@@ -1014,11 +880,7 @@ status: check-deps
         just cross _log info "No patches found."
     end
 
-# Replay commands from Crossfile
-replay: check-deps
-    /usr/bin/env bash -c "cross() { just --justfile '{{JUST_DIR}}/Justfile' cross \"\$@\"; }; git() { if [ \"\${1-}\" = \"cross\" ]; then shift; cross \"\$@\"; else command git \"\$@\"; fi; }; source '{{REPO_DIR}}/Crossfile'"
-
-# Install git alias for git-cross (impl: go, shell, rust)
+# Install git alias for git-cross (impl: go or shell)
 install impl="go":
     #!/usr/bin/env bash
     set -e
@@ -1038,16 +900,8 @@ install impl="go":
             git config --global alias.cross "!just --justfile $CROSS_PATH cross"
             echo "Success: Git alias 'cross' installed."
             ;;
-        rust)
-            echo "==> Building Rust implementation..."
-            (cd "{{JUST_DIR}}/src-rust" && cargo build)
-            EXE="{{JUST_DIR}}/src-rust/target/debug/git-cross-rust"
-            echo "==> Setting up git alias 'cross' -> $EXE"
-            git config --global alias.cross-rust "!$EXE"
-            echo "Success: Git alias 'cross' installed."
-            ;;
         *)
-            echo "ERROR: Unknown implementation '{{impl}}'. Use: go, shell, or rust."
+            echo "ERROR: Unknown implementation '{{impl}}'. Use: go or shell."
             exit 1
             ;;
     esac

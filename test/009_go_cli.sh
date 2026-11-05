@@ -43,6 +43,12 @@ if ! "$GO_BIN" --version >/dev/null 2>&1; then
     echo "Shell tests (001-007) and CI on native hardware validate the Go implementation."
     exit 0
 fi
+command_help=$("$GO_BIN" --help 2>&1)
+for retired_command in sync push replay exec; do
+    if echo "$command_help" | grep -Eq "^[[:space:]]+$retired_command[[:space:]]"; then
+        fail "Retired command '$retired_command' is still exposed in Go CLI help"
+    fi
+done
 # Smoke test: create a temp git repo and run 'use' to exercise gogs/git-module
 # This catches SIGILL from incompatible Go toolchain binaries
 _smoke_dir=$(mktemp -d)
@@ -159,7 +165,7 @@ if ! echo "$status_output" | grep -q "vendor/go-src"; then
     fail "Go 'status' should show patch 'vendor/go-src'"
 fi
 
-log_header "Testing Go 'sync' command..."
+log_header "Testing Go 'update' command..."
 # Mock upstream change
 pushd "$upstream_path" >/dev/null
 echo "Updated go logic" > src/logic.go
@@ -167,9 +173,28 @@ git add src/logic.go
 git commit -m "Update go logic"
 popd >/dev/null
 
-"$GO_BIN" sync
+"$GO_BIN" update vendor/go-src
 if ! grep -q "Updated go logic" "vendor/go-src/logic.go"; then
-    fail "Go 'sync' failed to pull updates"
+    fail "Go 'update' failed to pull updates"
+fi
+
+log_header "Testing Go update preserves local edits while refreshing worktree..."
+echo "local-only edit" >> vendor/go-src/logic.go
+pushd "$upstream_path" >/dev/null
+echo "upstream update after local edit" >> src/logic.go
+git add src/logic.go
+git commit -m "Update logic again" -q
+popd >/dev/null
+update_output=$("$GO_BIN" update vendor/go-src 2>&1)
+echo "$update_output"
+if ! grep -q "local-only edit" vendor/go-src/logic.go; then
+    fail "Go update overwrote the local edit"
+fi
+if ! echo "$update_output" | grep -q "Local edits detected"; then
+    fail "Go update should report local edits"
+fi
+if ! echo "$update_output" | grep -q "DirDiff"; then
+    fail "Go update should print the compare command"
 fi
 
 log_header "Testing Go 'diff' command..."
@@ -182,6 +207,23 @@ if ! echo "$diff_output" | grep -q "local diff change"; then
 fi
 # Revert the change for clean state
 echo "Updated go logic" > vendor/go-src/logic.go
+
+log_header "Testing Go 'compare' command with configured tool..."
+cat > "$SANDBOX/bin/compare-tool" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n%s\n' "$1" "$2" > "$COMPARE_TOOL_ARGS"
+EOF
+chmod +x "$SANDBOX/bin/compare-tool"
+export COMPARE_TOOL_ARGS="$SANDBOX/compare-args.txt"
+git config cross.diffTool "$SANDBOX/bin/compare-tool"
+"$GO_BIN" compare vendor/go-src
+if ! grep -q ".cross/worktrees/demo_" "$COMPARE_TOOL_ARGS"; then
+    fail "Go compare did not pass the sparse worktree path"
+fi
+if ! grep -q "vendor/go-src" "$COMPARE_TOOL_ARGS"; then
+    fail "Go compare did not pass the local patch path"
+fi
+git config --unset cross.diffTool
 
 log_header "Testing Go '.crossignore' override status/diff hint..."
 mkdir -p vendor/go-src/subdir
@@ -208,22 +250,6 @@ rm -f vendor/go-src/.crossignore
 rm -f vendor/go-src/subdir/.env
 rmdir vendor/go-src/subdir 2>/dev/null || true
 
-log_header "Testing Go 'push' command..."
-# Allow pushing to current branch in mock upstream
-pushd "$upstream_path" >/dev/null
-git config receive.denyCurrentBranch ignore
-popd >/dev/null
-
-echo "Local modification" >> vendor/go-src/logic.go
-git add vendor/go-src/logic.go
-git commit -m "Local go change"
-
-"$GO_BIN" push vendor/go-src --yes
-last_msg=$(git -C "$upstream_path" log -1 --pretty=%s)
-if [[ "$last_msg" != "Local go change" ]]; then
-    fail "Go 'push' failed. Expected 'Local go change', got '$last_msg'"
-fi
-
 log_header "Testing Go 'init' command..."
 mkdir -p init-test
 pushd init-test >/dev/null
@@ -233,28 +259,27 @@ if [ ! -f "Crossfile" ]; then
 fi
 popd >/dev/null
 
-log_header "Testing Go 'replay' command..."
-# Create a fresh sandbox for replay test
-replay_dir="$SANDBOX/replay-test"
-mkdir -p "$replay_dir"
-pushd "$replay_dir" >/dev/null
+log_header "Testing Go 'update' from Crossfile in a fresh repository..."
+update_dir="$SANDBOX/update-test"
+mkdir -p "$update_dir"
+pushd "$update_dir" >/dev/null
 git init -q
 git config user.email "test@example.com"
 git config user.name "Test User"
 echo "replay test" > README.md
 git add . && git commit -m "init" -q
 
-# Write a Crossfile manually
+# Write declarative Crossfile configuration
 cat > Crossfile <<CROSSEOF
 cross use demo $upstream_url
-cross patch demo:src vendor/replay-src
+cross patch demo:main:src vendor/update-src
 CROSSEOF
 
-"$GO_BIN" replay
-if [ ! -f "vendor/replay-src/logic.go" ]; then
-    fail "Go 'replay' failed to recreate vendored files"
+"$GO_BIN" update
+if [ ! -f "vendor/update-src/logic.go" ]; then
+    fail "Go 'update' failed to create a missing patch from Crossfile"
 fi
-log_success "Go replay test passed"
+log_success "Go Crossfile update test passed"
 popd >/dev/null
 
 log_header "Testing Go 'remove' command..."

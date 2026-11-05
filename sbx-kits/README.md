@@ -67,7 +67,7 @@ They are meant to be a safe base for:
 3. Start a sandbox with the repo-local kit.
 4. Mount only the vendored path you want the agent to edit.
 5. Review the result on the host with `git cross diff` and `git cross status`.
-6. Publish to your own repo or push upstream separately.
+6. Commit the result to your own repo; compare with the sparse worktree for any manual upstream contribution.
 
 ## Notes
 

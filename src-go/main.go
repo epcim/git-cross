@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/fatih/color"
@@ -172,7 +174,6 @@ func getCrossOverrides(localPath string) ([]string, error) {
 	return overrides, nil
 }
 
-
 func hasCrossOverrides(localPath string) (bool, error) {
 	overrides, err := getCrossOverrides(localPath)
 	if err != nil {
@@ -225,6 +226,11 @@ func parsePatchSpec(spec string) (patchSpec, error) {
 
 	remotePath = strings.TrimPrefix(remotePath, "/")
 	remotePath = strings.TrimSuffix(remotePath, "/")
+	for _, component := range strings.Split(remotePath, "/") {
+		if component == ".." {
+			return patchSpec{}, fmt.Errorf("remote path must not traverse outside the repository")
+		}
+	}
 	// Treat empty path (from "/") as "." meaning whole repo root
 	if remotePath == "" {
 		remotePath = "."
@@ -261,6 +267,44 @@ func logInfo(msg string) {
 func logSuccess(msg string) {
 	color.New(color.Bold, color.FgGreen).Print("==> ")
 	fmt.Println(msg)
+}
+
+func logWarn(msg string) {
+	color.New(color.Bold, color.FgYellow).Print("==> WARNING: ")
+	fmt.Println(msg)
+}
+
+func diffTool() string {
+	if out, err := exec.Command("git", "config", "--get", "cross.diffTool").Output(); err == nil {
+		if tool := strings.TrimSpace(string(out)); tool != "" {
+			return tool
+		}
+	}
+	return `vim "+DirDiff"`
+}
+
+func printDiffCommand(left, right string) {
+	tool := diffTool()
+	fmt.Printf("  git config --global cross.diffTool %s\n", strconv.Quote(tool))
+	fmt.Printf("  %s %q %q\n", tool, left, right)
+}
+
+func runDiffTool(left, right string) error {
+	tool := diffTool()
+	cmd := exec.Command("bash", "-c", tool+` "$@"`, "cross-diff", left, right)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func localDiffersFromWorktree(localPath, worktreePath string) (bool, error) {
+	if _, err := os.Stat(localPath); os.IsNotExist(err) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return directoriesDiffer(worktreePath, localPath)
 }
 
 func logError(msg string) {
@@ -377,6 +421,51 @@ func runSync(src, dst string) error {
 		return fmt.Errorf("rsync failed: %v\nLog: %v", err, task.Log())
 	}
 	return nil
+}
+
+func directoriesDiffer(left, right string) (bool, error) {
+	cmd := exec.Command("git", "diff", "--no-index", "--quiet", "--", left, right)
+	err := cmd.Run()
+	if err == nil {
+		return false, nil
+	}
+	if exitErr, ok := err.(*exec.ExitError); ok {
+		if exitErr.ExitCode() == 1 {
+			return true, nil
+		}
+	}
+	return false, fmt.Errorf("compare %s and %s: %w", left, right, err)
+}
+
+func crossfileCommands(path string) ([][]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var commands [][]string
+	scanner := bufio.NewScanner(file)
+	for lineNumber := 1; scanner.Scan(); lineNumber++ {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && (fields[0] == "git" || fields[0] == "just") && fields[1] == "cross" {
+			fields = fields[2:]
+		} else if len(fields) > 0 && fields[0] == "cross" {
+			fields = fields[1:]
+		}
+		if len(fields) == 0 || (fields[0] != "use" && fields[0] != "patch") {
+			return nil, fmt.Errorf("unsupported Crossfile command on line %d (update accepts only use and patch declarations)", lineNumber)
+		}
+		commands = append(commands, fields)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return commands, nil
 }
 
 func detectDefaultBranch(url string) (string, error) {
@@ -545,6 +634,22 @@ func findPatchForPath(meta Metadata, rel string) *Patch {
 	}
 
 	return selected
+}
+
+func findPatchForPathFromCWD(meta Metadata) (*Patch, error) {
+	root, err := getRepoRoot()
+	if err != nil {
+		return nil, err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(root, cwd)
+	if err != nil {
+		return nil, err
+	}
+	return findPatchForPath(meta, filepath.ToSlash(rel)), nil
 }
 
 // resolvePathToRepoRelative converts any path (relative, absolute, or repo-relative)
@@ -863,8 +968,9 @@ func main() {
 	}
 
 	syncCmd := &cobra.Command{
-		Use:   "sync [path]",
-		Short: "Update patches from upstream",
+		Use:    "sync [path]",
+		Short:  "Update patches from upstream",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := ""
 			if len(args) > 0 {
@@ -1024,6 +1130,244 @@ func main() {
 		},
 	}
 
+	updateCmd := &cobra.Command{
+		Use:   "update [path]",
+		Short: "Update Crossfile patches from upstream",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root, err := getRepoRoot()
+			if err != nil {
+				return err
+			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			if err := os.Chdir(root); err != nil {
+				return err
+			}
+			defer os.Chdir(cwd)
+			crossfile, err := getCrossfilePath()
+			if err != nil {
+				return err
+			}
+			commands, err := crossfileCommands(crossfile)
+			if err != nil {
+				return err
+			}
+			selectedPath := ""
+			if len(args) > 0 {
+				selectedPath, err = resolvePathToRepoRelative(args[0])
+				if err != nil {
+					return err
+				}
+				if selectedPath == "" && (args[0] == "." || args[0] == root) {
+					selectedPath = "."
+				}
+			}
+			meta, err := loadMetadata()
+			if err != nil {
+				return err
+			}
+			localChanges := make(map[string]bool)
+			for _, fields := range commands {
+				if len(fields) == 0 || fields[0] != "patch" || len(fields) < 2 || len(fields) > 3 {
+					continue
+				}
+				spec, err := parsePatchSpec(fields[1])
+				if err != nil {
+					return err
+				}
+				localPath := filepath.Base(spec.RemotePath)
+				if len(fields) == 3 {
+					localPath = fields[2]
+				}
+				localPath = filepath.Clean(localPath)
+				if selectedPath != "" && selectedPath != localPath {
+					continue
+				}
+				for i := range meta.Patches {
+					p := &meta.Patches[i]
+					if filepath.Clean(p.LocalPath) == localPath && p.Remote == spec.Remote && filepath.Clean(p.RemotePath) == filepath.Clean(spec.RemotePath) {
+						localPathAbs := filepath.Join(root, localPath)
+						worktreePath := filepath.Join(root, p.Worktree, p.RemotePath)
+						different, err := localDiffersFromWorktree(localPathAbs, worktreePath)
+						if err != nil {
+							return err
+						}
+						localChanges[localPath] = different
+						break
+					}
+				}
+			}
+			updated := 0
+			matched := 0
+			for _, fields := range commands {
+				if fields[0] == "use" {
+					if len(fields) != 3 {
+						return fmt.Errorf("invalid use declaration in Crossfile: %s", strings.Join(fields, " "))
+					}
+					name, url := fields[1], fields[2]
+					if _, err := exec.Command("git", "-C", root, "remote", "get-url", name).Output(); err != nil {
+						if output, addErr := exec.Command("git", "-C", root, "remote", "add", name, url).CombinedOutput(); addErr != nil {
+							return fmt.Errorf("add remote %s: %s: %w", name, strings.TrimSpace(string(output)), addErr)
+						}
+					} else if output, setErr := exec.Command("git", "-C", root, "remote", "set-url", name, url).CombinedOutput(); setErr != nil {
+						return fmt.Errorf("update remote %s: %s: %w", name, strings.TrimSpace(string(output)), setErr)
+					}
+					branch, err := detectDefaultBranch(url)
+					if err != nil {
+						return fmt.Errorf("detect default branch for %s: %w", name, err)
+					}
+					if output, fetchErr := exec.Command("git", "-C", root, "fetch", name, branch).CombinedOutput(); fetchErr != nil {
+						return fmt.Errorf("fetch %s: %s: %w", name, strings.TrimSpace(string(output)), fetchErr)
+					}
+					continue
+				}
+				if len(fields) < 2 || len(fields) > 3 {
+					return fmt.Errorf("invalid patch declaration in Crossfile: %s", strings.Join(fields, " "))
+				}
+				spec, err := parsePatchSpec(fields[1])
+				if err != nil {
+					return err
+				}
+				localPath := ""
+				if len(fields) == 3 {
+					localPath = fields[2]
+				} else {
+					localPath = filepath.Base(spec.RemotePath)
+				}
+				localPath = filepath.Clean(localPath)
+				if filepath.IsAbs(localPath) || localPath == ".." || strings.HasPrefix(localPath, ".."+string(os.PathSeparator)) {
+					return fmt.Errorf("local path must stay inside the repository: %s", localPath)
+				}
+				if localPath == "." {
+					return fmt.Errorf("updating a repository-root patch is disabled until root overlay safety is implemented")
+				}
+				if selectedPath != "" && selectedPath != localPath {
+					continue
+				}
+				matched++
+				var patch *Patch
+				for i := range meta.Patches {
+					if filepath.Clean(meta.Patches[i].LocalPath) == localPath {
+						patch = &meta.Patches[i]
+						break
+					}
+				}
+				if patch == nil {
+					if _, err := os.Stat(filepath.Join(root, localPath)); err == nil {
+						return fmt.Errorf("local path %s exists but is not registered in metadata; refusing to overwrite it", localPath)
+					}
+					if err := patchCmd.RunE(cmd, []string{fields[1], localPath}); err != nil {
+						return err
+					}
+					meta, err = loadMetadata()
+					if err != nil {
+						return err
+					}
+					updated++
+					continue
+				}
+				if patch.Remote != spec.Remote || filepath.Clean(patch.RemotePath) != filepath.Clean(spec.RemotePath) || (spec.Branch != "" && patch.Branch != spec.Branch) {
+					return fmt.Errorf("Crossfile source for %s changed; remove and re-patch it explicitly before updating", localPath)
+				}
+				if _, err := os.Stat(filepath.Join(root, patch.Worktree)); os.IsNotExist(err) {
+					if _, localErr := os.Stat(filepath.Join(root, localPath)); localErr == nil {
+						return fmt.Errorf("worktree %s is missing while local path %s exists; refusing to overwrite it. Review/remove the patch explicitly, then run update again", patch.Worktree, localPath)
+					}
+					if err := patchCmd.RunE(cmd, []string{fields[1], localPath}); err != nil {
+						return err
+					}
+					meta, err = loadMetadata()
+					if err != nil {
+						return err
+					}
+					updated++
+					continue
+				}
+				if spec.Branch == "" {
+					spec.Branch = patch.Branch
+				}
+				localAbs := filepath.Join(root, localPath)
+				upstreamAbs := filepath.Join(root, patch.Worktree, patch.RemotePath)
+				localChanged := localChanges[localPath]
+				if err := exec.Command("git", "-C", root, "fetch", spec.Remote, spec.Branch).Run(); err != nil {
+					return fmt.Errorf("fetch %s %s: %w", spec.Remote, spec.Branch, err)
+				}
+				fetchHead, err := exec.Command("git", "-C", root, "rev-parse", "FETCH_HEAD").Output()
+				if err != nil {
+					return fmt.Errorf("resolve fetched revision: %w", err)
+				}
+				status, err := exec.Command("git", "-C", patch.Worktree, "status", "--porcelain").Output()
+				if err != nil {
+					return fmt.Errorf("inspect worktree %s: %w", patch.Worktree, err)
+				}
+				if len(status) != 0 {
+					logError(fmt.Sprintf("Worktree has manual changes; leaving it untouched: %s", patch.Worktree))
+					continue
+				}
+				merge := exec.Command("git", "-C", patch.Worktree, "merge", "--ff-only", strings.TrimSpace(string(fetchHead)))
+				if output, err := merge.CombinedOutput(); err != nil {
+					return fmt.Errorf("upstream update for %s requires manual worktree review (%s): %s", localPath, patch.Worktree, strings.TrimSpace(string(output)))
+				}
+				updated++
+				if localChanged {
+					logWarn(fmt.Sprintf("Local edits detected; preserving %s. Compare the worktree and local copy manually:", localPath))
+					printDiffCommand(upstreamAbs, localAbs)
+					continue
+				}
+				if err := os.MkdirAll(localAbs, 0o755); err != nil {
+					return err
+				}
+				if err := runSync(upstreamAbs+string(os.PathSeparator), localAbs+string(os.PathSeparator)); err != nil {
+					return err
+				}
+				logSuccess(fmt.Sprintf("Updated %s", localPath))
+			}
+			if selectedPath != "" && matched == 0 {
+				return fmt.Errorf("no Crossfile patch found for path: %s", selectedPath)
+			}
+			if updated == 0 {
+				logInfo("No patches updated.")
+			}
+			return nil
+		},
+	}
+
+	compareCmd := &cobra.Command{
+		Use:   "compare [path]",
+		Short: "Open the configured directory comparison tool for a patch",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			meta, err := loadMetadata()
+			if err != nil {
+				return err
+			}
+			var patch *Patch
+			if len(args) > 0 {
+				relPath, err := resolvePathToRepoRelative(args[0])
+				if err != nil {
+					return err
+				}
+				patch = findPatchForPath(meta, relPath)
+			} else {
+				patch, err = findPatchForPathFromCWD(meta)
+				if err != nil {
+					return err
+				}
+			}
+			if patch == nil {
+				return fmt.Errorf("patch not found; provide a path or run from inside a patched directory")
+			}
+			root, err := getRepoRoot()
+			if err != nil {
+				return err
+			}
+			return runDiffTool(filepath.Join(root, patch.Worktree, patch.RemotePath), filepath.Join(root, patch.LocalPath))
+		},
+	}
+
 	// Helper: Copy text to clipboard (cross-platform)
 	copyToClipboard := func(text string) error {
 		var cmd *exec.Cmd
@@ -1061,7 +1405,10 @@ func main() {
 
 	// Helper: Open shell in target directory (path must be provided)
 	openShellInDir := func(path string, targetType string) error {
-		meta, _ := loadMetadata()
+		meta, err := loadMetadata()
+		if err != nil {
+			return err
+		}
 		if len(meta.Patches) == 0 {
 			fmt.Println("No patches configured.")
 			return nil
@@ -1119,7 +1466,10 @@ func main() {
 		return &cobra.Command{
 			Use: use, Short: short, Long: long,
 			RunE: func(cmd *cobra.Command, args []string) error {
-				meta, _ := loadMetadata()
+				meta, err := loadMetadata()
+				if err != nil {
+					return err
+				}
 				if len(meta.Patches) == 0 {
 					fmt.Println("No patches configured.")
 					return nil
@@ -1170,7 +1520,10 @@ func main() {
 		Use:   "list",
 		Short: "Show all configured patches and remotes",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			meta, _ := loadMetadata()
+			meta, err := loadMetadata()
+			if err != nil {
+				return err
+			}
 
 			// Collect unique remote names from patches
 			usedRemotes := make(map[string]bool)
@@ -1401,8 +1754,9 @@ patch's diff. Otherwise shows diffs for all patches.`,
 	}
 
 	replayCmd := &cobra.Command{
-		Use:   "replay",
-		Short: "Re-execute all Crossfile commands",
+		Use:    "replay",
+		Short:  "Re-execute all Crossfile commands",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logInfo("Replaying Crossfile...")
 			path, err := getCrossfilePath()
@@ -1433,8 +1787,9 @@ patch's diff. Otherwise shows diffs for all patches.`,
 	var pushMessage string
 
 	pushCmd := &cobra.Command{
-		Use:   "push [path]",
-		Short: "Push changes back upstream",
+		Use:    "push [path]",
+		Short:  "Push changes back upstream",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := ""
 			if len(args) > 0 {
@@ -1526,9 +1881,10 @@ patch's diff. Otherwise shows diffs for all patches.`,
 	pushCmd.Flags().StringVarP(&pushMessage, "message", "m", "", "Commit message")
 
 	execCmd := &cobra.Command{
-		Use:   "exec [cmd]",
-		Short: "Run arbitrary command",
-		Args:  cobra.MinimumNArgs(1),
+		Use:    "exec [cmd]",
+		Short:  "Run arbitrary command",
+		Hidden: true,
+		Args:   cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fullCmd := strings.Join(args, " ")
 			logInfo("Executing custom command: " + fullCmd)
@@ -1694,7 +2050,10 @@ patch's diff. Otherwise shows diffs for all patches.`,
 		},
 	}
 
-	rootCmd.AddCommand(useCmd, patchCmd, syncCmd, removeCmd, pruneCmd, cdCmd, wtCmd, listCmd, statusCmd, diffCmd, replayCmd, pushCmd, execCmd, initCmd)
+	// Retain superseded implementations in source as internal reference, but do
+	// not expose them as supported commands.
+	_, _, _, _ = syncCmd, replayCmd, pushCmd, execCmd
+	rootCmd.AddCommand(useCmd, patchCmd, updateCmd, compareCmd, removeCmd, pruneCmd, cdCmd, wtCmd, listCmd, statusCmd, diffCmd, initCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

@@ -1,5 +1,13 @@
 # TODO - git-cross
 
+## Current Direction
+
+- Supported implementations: Go (primary) and Just/Fish (reference). Rust source is retained but unsupported and unmaintained.
+- Core workflow: `Crossfile` declares `use`/`patch`; `patch` installs an initial sparse upstream path; `update` fetches and refreshes declared patches.
+- If the local patch differs from the previously installed upstream tree, `update` preserves local files, advances the sparse worktree, and provides a manual comparison command. No automatic conflict resolution or back-propagation is provided.
+- `push`, `sync`, and `replay` are retired. Manual upstream contributions use `wt`, a directory comparison tool, and ordinary Git commands.
+- Legacy notes below describe historical work and are not the current product direction.
+
 ## Summary
 
 **Status:** v0.3.1-dev — sparse-checkout fix, vendor build fix, AI sandbox workflow  

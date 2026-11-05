@@ -10,7 +10,7 @@ It does that by keeping:
 - a local copied directory with normal files in your repo
 - a `Crossfile` that records how the setup was created
 
-The local directory is what you edit. The worktree is what `git-cross` uses to sync, diff, and push.
+The local directory is what you edit. The sparse worktree holds the upstream version for updates and manual comparison.
 
 ## Mental Model
 
@@ -31,7 +31,7 @@ upstream repo:path <-> hidden worktree:path <-> local directory
 
 ### `Crossfile`
 
-Human-readable replay log.
+Declarative list of upstream remotes and patches used by `update`.
 
 Example:
 
@@ -44,7 +44,7 @@ cross patch demo:main:src/lib vendor/lib
 
 Hidden worktrees keyed by remote plus hash.
 
-They hold upstream Git state and make `sync`, `diff`, and `push` possible without turning your vendored directory into another Git repository.
+They hold upstream Git state and make `update` and manual comparison possible without turning your vendored directory into another Git repository.
 
 ### `.cross/metadata.json`
 
@@ -62,9 +62,13 @@ Adds a named remote and detects the default branch.
 
 Creates or reuses a hidden worktree, sparse-checks out the requested upstream path, and syncs it into the local directory.
 
-### `sync`
+### `update`
 
-Updates from upstream into the local directory.
+Reads `Crossfile`, fetches each upstream, and fast-forwards its sparse worktree. It installs files locally only when the local copy still matches the previously installed version. If local edits exist, it preserves the local directory, leaves the refreshed upstream in the worktree, and prints a manual comparison command.
+
+### `compare`
+
+Opens the configured directory diff tool for the local path and its sparse worktree. Configure it with `git config --global cross.diffTool 'vim "+DirDiff"'`.
 
 ### `diff`
 
@@ -74,19 +78,11 @@ Compares local files with the hidden worktree copy.
 
 Summarizes local modifications, upstream ahead/behind state, and conflict markers.
 
-### `push`
-
-Copies local changes back into the hidden worktree, commits there, and pushes to the configured upstream remote.
-
-### `replay`
-
-Reconstructs the environment from `Crossfile`.
-
 ### `remove` and `prune`
 
 Remove patch metadata, clean worktrees, and avoid unsafe deletion of repo-root content.
 
-## Three Implementations
+## Supported Implementations
 
 ### Go
 
@@ -99,12 +95,6 @@ Use this if you want the main supported binary.
 Reference implementation.
 
 Use this when you want the clearest behavior or fastest iteration inside the repo.
-
-### Rust
-
-Experimental parity implementation.
-
-Useful for contributors and parity testing, but not the default recommendation for general users yet.
 
 ## Local Overlay Files
 
@@ -133,7 +123,7 @@ Current shipped behavior:
 - `status` shows `Override`
 - `diff` prints manual compare commands for those override paths
 
-This gives you a visible review surface without pretending that local-only files are safe to push blindly.
+This gives you a visible review surface without pretending that local-only files are upstream content.
 
 ## Safety Model
 
@@ -147,16 +137,15 @@ This gives you a visible review surface without pretending that local-only files
 Important current boundary:
 
 - override markers are currently a review aid in `status` and `diff`
-- if a file must never be sent upstream, review it explicitly before `push`
+- if local changes exist, `update` preserves them and asks you to review the local copy against the refreshed worktree
 
 ## Typical Collaboration Pattern
 
 1. Patch an upstream directory into `vendor/...`
 2. Edit files locally as normal
 3. Commit the combined result to your own repo
-4. Pull upstream changes later with `sync`
-5. Push upstream-safe changes back with `git cross push`
-6. Open a PR or MR from the pushed branch if needed
+4. Refresh upstream changes later with `update`
+5. Manually compare and copy any desired contribution into the worktree, then use Git there
 
 ## AI And Sandbox Fit
 
@@ -166,8 +155,7 @@ That means you can:
 
 - mount only `vendor/lib` into a sandbox
 - keep `.git` and hidden worktrees on the host
-- review AI changes with `git cross diff`
-- publish upstream-safe changes with `git cross push`
+- review AI changes with `git cross diff` and `git cross compare`
 
 See:
 

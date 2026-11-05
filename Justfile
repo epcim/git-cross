@@ -13,17 +13,12 @@ import? "git.just"
   REPO_DIR=$(git rev-parse --show-toplevel) \
   just --justfile "{{source_dir()}}/Justfile.cross" test "{{ARGS}}"
 
-# Run the Rust implementation
-[no-cd]
-@cross-rust *ARGS:
-  cargo run --manifest-path "{{source_dir()}}/src-rust/Cargo.toml" -- {{ARGS}}
-
 # Run the Go implementation
 [no-cd]
 @cross-go *ARGS:
   go run -C "{{source_dir()}}/src-go" main.go {{ARGS}}
 
-# Install git alias for git-cross (default: go)
+# Install git alias for git-cross (Go or Just)
 [no-cd]
 @install impl="go":
   just --justfile "{{source_dir()}}/Justfile.cross" install {{impl}}

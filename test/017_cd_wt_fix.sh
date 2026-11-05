@@ -110,25 +110,6 @@ else
     log_warn "Go binary not found at $GO_BIN, skipping Go tests"
 fi
 
-# Test 7: Test Rust implementation
-log_info "Test 7: Testing Rust implementation..."
-RUST_BIN="$REPO_ROOT/src-rust/target/debug/git-cross-rust"
-if [ -f "$RUST_BIN" ]; then
-    if "$RUST_BIN" cd non-existent-path 2>&1 | grep -qE "not found|No patches"; then
-        log_success "Rust: cd correctly reports non-existent path"
-    else
-        log_warn "Rust: cd error handling may need improvement"
-    fi
-    
-    if "$RUST_BIN" wt non-existent-path 2>&1 | grep -qE "not found|No patches"; then
-        log_success "Rust: wt correctly reports non-existent path"
-    else
-        log_warn "Rust: wt error handling may need improvement"
-    fi
-else
-    log_warn "Rust binary not found at $RUST_BIN, skipping Rust tests"
-fi
-
 # Cleanup
 cd /
 rm -rf "$test_repo" "$upstream"

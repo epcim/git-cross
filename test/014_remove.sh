@@ -46,23 +46,6 @@ else
     echo "SKIP: Go binary not available, skipping Go removal test"
 fi
 
-# 3. Test removal in Rust implementation
-echo "## Testing removal in Rust..."
-RUST_BIN="$REPO_ROOT/src-rust/target/debug/git-cross-rust"
-if [ ! -f "$RUST_BIN" ] && command -v cargo >/dev/null 2>&1; then
-    ( cd "$REPO_ROOT/src-rust" && cargo build -q ) || RUST_BIN=""
-fi
-if [ -n "$RUST_BIN" ] && [ -f "$RUST_BIN" ]; then
-    just cross patch repo1:src/lib vendor/app-rust
-    "$RUST_BIN" remove vendor/app-rust
-
-    if [ -d "vendor/app-rust" ]; then fail "vendor/app-rust still exists after remove"; fi
-    if grep -q "vendor/app-rust" Crossfile; then fail "Crossfile still contains patch entry"; fi
-    if grep -q "vendor/app-rust" .cross/metadata.json; then fail "Metadata still contains patch entry"; fi
-else
-    echo "SKIP: Rust binary not available, skipping Rust removal test"
-fi
-
 # 4. Test list command (Go) - need active patch for remotes to show
 if [ -n "$GO_BIN" ] && [ -f "$GO_BIN" ]; then
     echo "## Testing 'list' command (Go)..."
@@ -82,24 +65,6 @@ if [ -n "$GO_BIN" ] && [ -f "$GO_BIN" ]; then
     if [ "$count_after" -ne "$count_before" ]; then fail "Crossfile duplication occurred (Go)"; fi
 else
     echo "SKIP: Go binary not available, skipping Go list and dedup tests"
-    # Still need vendor/dedup-test for Rust dedup test below
-    just cross patch repo1:src/lib vendor/dedup-test
-    count_before=$(grep -c "vendor/dedup-test" Crossfile)
-fi
-
-# 6. Test Crossfile deduplication (Rust)
-echo "## Testing Crossfile deduplication (Rust)..."
-if [ -f "$REPO_ROOT/src-rust/target/debug/git-cross-rust" ]; then
-    "$REPO_ROOT/src-rust/target/debug/git-cross-rust" patch repo1:main:src/lib vendor/dedup-test
-    count_after_rust=$(grep -c "vendor/dedup-test" Crossfile)
-    if [ "$count_after_rust" -ne "$count_before" ]; then fail "Crossfile duplication occurred (Rust)"; fi
-
-    # 7. Test list command (Rust)
-    echo "## Testing 'list' command (Rust)..."
-    list_output_rust=$("$REPO_ROOT/src-rust/target/debug/git-cross-rust" list)
-    if ! echo "$list_output_rust" | grep -q "Configured Remotes"; then fail "Rust list missing Remotes section"; fi
-else
-    echo "SKIP: Rust binary not available, skipping Rust dedup and list tests"
 fi
 
 # 8. Test root-target remove safety guard (Shell/Just)

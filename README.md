@@ -6,7 +6,7 @@
 
 `git-cross` is a small tool for pulling part of one Git repository into another with `git worktree` plus `rsync`.
 
-It is for the cases where you want real files in your tree, not a gitlink, and still want a clean path back upstream.
+It is for the cases where you want real files in your tree, not a gitlink, and want a simple way to refresh them from upstream.
 
 ## Why Use It
 
@@ -15,7 +15,7 @@ It is for the cases where you want real files in your tree, not a gitlink, and s
 - vendor only one subdirectory from another repository
 - keep vendored code as normal files in your own repository
 - pull upstream updates without converting your repo into a submodule setup
-- push changes back to a fork or upstream project without manual worktree plumbing
+- manually compare local edits with the sparse upstream worktree when both have changed
 - let AI tools work on a mounted subfolder instead of your full repository
 
 Compared with submodules or subrepo-style flows, the tradeoff is simple: `git-cross` keeps files physical and visible in your repo, and tracks the upstream relationship separately through hidden worktrees and `Crossfile`.
@@ -26,15 +26,14 @@ Compared with submodules or subrepo-style flows, the tradeoff is simple: `git-cr
 - Keep a shared app template in `vendor/template` and customize it locally
 - Work on an upstream library inside `vendor/lib` with normal editor tooling
 - Let an AI sandbox mount only `vendor/lib` instead of the whole repo
-- Publish your local combined result to your own `origin`, while still being able to send a clean PR or MR upstream later
+- Publish your local combined result to your own `origin`
 
 ## Status
 
-The repository ships three implementations:
+The repository supports two implementations:
 
 1. Go: primary production implementation
 2. Just/Fish: readable reference implementation
-3. Rust: experimental parity implementation
 
 For normal usage, prefer the Go binary.
 
@@ -54,16 +53,10 @@ go build -o git-cross-go main.go
 git config --global alias.cross "!$(pwd)/git-cross-go"
 ```
 
-### Shell Reference
+### Just/Fish Reference
 
 ```bash
 just install shell
-```
-
-### Rust CLI
-
-```bash
-just install rust
 ```
 
 ## Quick Start
@@ -80,12 +73,12 @@ git cross status
 git cross diff vendor/docs
 
 # 4. Pull new upstream changes later
-git cross sync vendor/docs
+git cross update vendor/docs
 ```
 
 ## How It Works
 
-`git-cross` keeps four things in sync:
+`git-cross` connects four things:
 
 1. Your main repository
 2. A hidden worktree for each upstream patch under `.cross/worktrees/`
@@ -97,7 +90,7 @@ In practice:
 - your editor sees normal files
 - AI tools can work on normal files
 - upstream history stays in the hidden worktree
-- `git cross replay` can reconstruct the setup later
+- `Crossfile` records the `use` and `patch` declarations; `git cross update` reads them to refresh patches
 
 ## Local Custom Files On Top Of Upstream
 
@@ -128,9 +121,9 @@ What this does today:
 - `git cross diff vendor/app` prints manual `git diff --no-index ...` commands for the override paths
 - your local files stay in place for normal local work
 
-This is intentionally conservative. `.crossignore` entries are review signals, not a substitute for review before `sync` or `push`.
+This is intentionally conservative. `.crossignore` entries are review signals, not a substitute for review before updating.
 
-If you keep secrets or machine-local files in a patched directory, review them explicitly before sending changes upstream.
+If you keep secrets or machine-local files in a patched directory, review them explicitly before updating.
 
 ## Publish To Your Own Repo And Upstream
 
@@ -148,22 +141,21 @@ git push origin main
 
 Your own repository stores the final combined result, including local overlay files if you choose to commit them there.
 
-### 2. Send changes back to the upstream project
+### 2. Manually contribute changes upstream
 
 When you want to contribute upstream-managed changes back:
 
 ```bash
-git cross diff vendor/app
-git cross push vendor/app --message "Fix upstream bug"
+git cross wt vendor/app
+git config --global cross.diffTool 'vim "+DirDiff"'
+git cross compare vendor/app
 ```
 
 Recommended pattern:
 
-1. Track a writable fork with `git cross use`.
-2. Patch from that fork into your local tree.
-3. Keep local-only overlay files out of the upstream contribution.
-4. Run `git cross push` for the vendored path.
-5. Open a PR or MR from your fork branch to the original upstream project.
+1. Open the sparse worktree with `git cross wt vendor/app`.
+2. Compare it with the local patch using `git cross compare vendor/app` or your own directory diff tool.
+3. Manually copy desired changes into the worktree, then commit and push with Git.
 
 This lets your main repo keep its local opinionated result while the upstream contribution stays focused.
 
@@ -194,13 +186,21 @@ git cross patch <remote>:<path> [local_dest]
 
 Create or reuse a hidden worktree, sparse-check out the upstream path, and sync it into your local directory.
 
-### `sync`
+### `update`
 
 ```bash
-git cross sync [path]
+git cross update [path]
 ```
 
-Pull upstream changes into the local patched directory.
+Read `Crossfile`, fetch upstream updates, and update each patch. If the local copy differs from the previously installed upstream content, `update` preserves local files, advances the sparse worktree, and prints a comparison command for manual review. Configure a directory diff tool with `git config --global cross.diffTool 'vim "+DirDiff"'`.
+
+### `compare`
+
+```bash
+git cross compare [path]
+```
+
+Open the configured directory comparison tool for a local patch and its sparse worktree.
 
 ### `diff`
 
@@ -217,22 +217,6 @@ git cross status
 ```
 
 Show local diff state, upstream divergence, and conflicts.
-
-### `push`
-
-```bash
-git cross push [path] [--force] [--message "msg"]
-```
-
-Sync local changes back into the worktree, commit them there, and push to the upstream remote.
-
-### `replay`
-
-```bash
-git cross replay
-```
-
-Rebuild the full setup from `Crossfile`.
 
 ### `remove`
 
@@ -254,6 +238,7 @@ Remove unused remotes, stale worktrees, or all patches for one remote.
 
 - `remove` and `prune` now guard against deleting repo root contents when a patch targets `.`
 - whole-upstream patching with `remote:.` and `remote:/` works for vendoring into local directories
+- repository-root local targets are not supported by `update` yet
 - override markers in `.crossignore` currently affect review surfaces: `status` and `diff`
 - if you are experimenting with root-target overlay workflows, treat them as advanced usage and verify results carefully
 
@@ -299,7 +284,7 @@ High level:
 
 - Just/Fish is the readable behavior reference
 - Go is the main production CLI
-- Rust is parity-oriented and still experimental
+- Rust source remains in the repository but is not maintained or supported
 
 Detailed architecture notes live in [docs/overview.md](docs/overview.md).
 

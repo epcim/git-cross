@@ -8,7 +8,7 @@ Use this when:
 
 - you want the whole upstream tree, not just one subdirectory
 - you still want normal files in your repository
-- you want to pull updates later or send changes back upstream
+- you want to pull updates later
 
 This tutorial vendors the whole upstream into a local directory, not into repo root.
 
@@ -88,12 +88,12 @@ Current behavior:
 - `git cross status` reports `Override`
 - `git cross diff vendor/upstream-app` prints a manual compare command for `.env`
 
-Treat this as a review aid. Local-only files still need human review before any upstream push.
+Treat this as a review aid. Local-only files remain local and are not copied into the sparse worktree.
 
 ## Step 6: Pull New Upstream Changes Later
 
 ```bash
-git cross sync vendor/upstream-app
+git cross update vendor/upstream-app
 ```
 
 Then review again:
@@ -113,21 +113,16 @@ git commit -m "Update vendored upstream app"
 git push origin main
 ```
 
-## Step 8: Contribute Back Upstream
+## Step 8: Manually Contribute Back Upstream
 
 If some of your changes belong upstream:
 
-1. review `git cross diff vendor/upstream-app`
-2. make sure local-only files are not part of the upstream contribution
-3. prefer tracking a writable fork for the patch remote
+1. open the worktree with `git cross wt vendor/upstream-app`
+2. compare the local directory and worktree with `git cross compare vendor/upstream-app`
+3. manually copy intended changes into the worktree
+4. commit and push from the worktree with normal Git commands
 
-Then push:
-
-```bash
-git cross push vendor/upstream-app --message "Fix upstream issue"
-```
-
-After that, open a PR or MR from your fork branch to the original project.
+Open a PR or MR from your fork branch to the original project when ready.
 
 ## When This Pattern Is Better Than A Subdirectory Patch
 

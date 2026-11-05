@@ -256,27 +256,21 @@ git push origin main
 
 After the migration:
 
-- pull upstream updates with `git cross sync .`
+- repository-root updates are currently blocked until root-overlay safety is implemented
 - review root changes with `git cross diff .`
 - inspect state with `git cross status`
 - publish the combined result to your private `origin` with normal Git
 
-## Step 11: Contribute Changes Back Upstream
+## Step 11: Manually Contribute Changes Back Upstream
 
 If you want to send some changes back upstream later:
 
-1. review `git cross diff .`
-2. make sure private files are not part of the upstream contribution
-3. prefer using a writable fork as the tracked remote
-4. push carefully and verify the resulting branch
+1. open the sparse worktree with `git cross wt .`
+2. compare it with the local repo using `git cross compare .`
+3. manually copy intended upstream changes into the worktree
+4. commit and push from that worktree with normal Git commands
 
-Example:
-
-```bash
-git cross push . --message "Fix upstream behavior"
-```
-
-Then open a PR or MR from the pushed branch.
+Then open a PR or MR from the resulting branch.
 
 ## Practical Recommendation
 
