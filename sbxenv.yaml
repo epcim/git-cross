@@ -1,0 +1,62 @@
+# Docker Sandbox environment file (schema version 1).
+# See https://docs.docker.com/ai/sandboxes/configuration/environment-files/
+#
+# https://docs.docker.com/ai/sandboxes/configuration/environment-files/
+# https://docs.docker.com/ai/sandboxes/configuration/environment-files/#add-v3-kits
+# https://docs.docker.com/ai/sandboxes/customize/use-kits/
+#
+# https://github.com/docker/sbx-kits-contrib/tree/v3
+#
+# https://docs.docker.com/ai/sandboxes/customize/use-kits/#published-v3-workloads
+# https://hub.docker.com/search?type=sbx_kit&badges=verified_publisher
+#
+# sbx env run sbxenv.yaml sbxenv.local.yaml
+
+
+
+schemaVersion: "1"
+workspace: .
+
+# MUST MATCH KIT
+agent: opencode-v2
+#agent: sbx-kit-opencode
+
+# Optional host-global OpenCode extensions. Prefer project-local
+# .opencode/plugins and .opencode/agents where possible. Uncomment only the
+# directories you use, and replace /home/you with your host home directory.
+#additionalWorkspaces:
+#  - path: /home/you/.config/opencode/plugins
+#    target: /home/agent/.config/opencode/plugins
+#    readOnly: true
+#  - path: /home/you/.config/opencode/agent
+#    target: /home/agent/.config/opencode/agent
+#    readOnly: true
+#  - path: /home/you/.config/opencode/agents
+#    target: /home/agent/.config/opencode/agents
+#    readOnly: true
+
+env:
+  OPENCODE_CONFIG: ./opencode.jsonc
+
+kits:
+  # collision with sbx's built-in `opencode` agent.
+  - /home/epcim/.config/sbx-kits/opencode-v2
+
+  # MIXINS
+  # Docker v3 kit sources. Mem0 context and gh are spec examples;
+  # Neovim and Docker Agent mixin are from the contrib catalog.
+  # sbx settings set kit.allowedSources '["docker.io/","github.com/docker/"]'
+  #
+  # - "git+https://github.com/docker/sandbox-kit-spec.git#ref=main&dir=examples/mem0-context"
+  # - "git+https://github.com/docker/sbx-kits-contrib.git#ref=v3&dir=neovim"
+  # - "git+https://github.com/docker/sbx-kits-contrib.git#ref=v3&dir=docker-agent-mixin"
+  # - "git+https://github.com/docker/sandbox-kit-spec.git#ref=main&dir=examples/gh"
+
+  # Add local kits as needed; replace with absolute host paths:
+  - /home/epcim/.config/sbx-kits/requesty
+  - /home/epcim/.config/sbx-kits/apealive
+  # - /home/you/.config/sbx-kits/cuelang
+  # - /home/you/.config/sbx-kits/mxc
+
+# Keep machine-specific overrides in sbxenv.local.yaml and run:
+# sbx env run sbxenv.yaml sbxenv.local.yaml

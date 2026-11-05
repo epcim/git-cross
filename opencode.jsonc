@@ -1,0 +1,52 @@
+// V2-compatible copy of opencode.jsonc.
+// sbx-init-template: ~/.config/opencode/opencode2-requesty.jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "plan",
+  "share": "disabled",
+  "instructions": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "GEMINI.md"
+  ],
+  "lsp": true,
+  "update": "disable",
+  "permissions": [
+    // Don't let the agent push to git.
+    { "action": "shell", "resource": "git push *", "effect": "deny" },
+    // Never decrypt SOPS secrets.
+    { "action": "shell", "resource": "*sops -d*", "effect": "deny" },
+    // Destructive recursive deletion is unnecessary in this sandbox setup.
+    { "action": "shell", "resource": "rm -rf *", "effect": "deny" },
+    { "action": "external_directory", "resource": "~/.local/share/opencode/worktree/*", "effect": "allow" }
+  ],
+  // These local plugins require an image that bundles them under /etc/opencode/plugins/.
+  "plugins": [
+    //"@hueyexe/opencode-ensemble@0.18.0",
+    "@dylanrussell/agent-router@latest"
+    //"github:regolo-ai/brick"
+  ],
+  "providers": {
+    "requesty": {
+      "name": "Requesty",
+      "env": ["REQUESTY_API_KEY"],
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "https://router.requesty.ai/v1",
+        "setCacheKey": true,
+        "timeout": 600000,
+        "headerTimeout": 300000,
+        "chunkTimeout": 180000
+      },
+      "models": {
+        "openai/gpt-6-luna:flex": {
+          "name": "GPT-6 Luna Flex (Global)"
+        },
+        "azure/gpt-6-luna@westeurope": {
+          "name": "GPT-6 Luna (Azure West Europe)"
+        }
+      }
+    }
+  },
+  "model": "requesty/openai/gpt-6-luna:flex"
+}
