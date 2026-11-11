@@ -275,15 +275,56 @@ func logWarn(msg string) {
 	fmt.Println(msg)
 }
 
+// envList splits a comma-separated environment variable into trimmed items.
+func envList(name string) []string {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil
+	}
+	var items []string
+	for _, part := range strings.Split(raw, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			items = append(items, p)
+		}
+	}
+	return items
+}
+
+// vimValue makes a value safe to embed in a vim single-quoted string and in
+// the double-quoted bash argument that carries the +cmd.
+func vimValue(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, `"`, "")
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// vimIgnoreRegexp turns comma-separated keywords into a vim regexp.
+// \V (very nomagic) makes every character literal, so dots etc. need no
+// escaping; \| remains alternation.
+func vimIgnoreRegexp(keywords []string) string {
+	escaped := make([]string, 0, len(keywords))
+	for _, k := range keywords {
+		escaped = append(escaped, strings.ReplaceAll(k, `\`, `\\`))
+	}
+	return `\V` + strings.Join(escaped, `\|`)
+}
+
 // defaultDiffTool returns the built-in diff tool command: nvim when available,
-// otherwise vim. Two separate +cmd arguments: set the exclusion list first,
-// then run DirDiff on the given directories.
+// otherwise vim. Separate +cmd arguments set the exclusions and, when
+// DIRDIFF_IGNORE is set, the diff-content keywords to ignore; then DirDiff runs
+// on the given directories. .git is always excluded.
 func defaultDiffTool() string {
 	editor := "vim"
 	if _, err := exec.LookPath("nvim"); err == nil {
 		editor = "nvim"
 	}
-	return editor + ` "+let g:DirDiffExcludes = '.git'" "+DirDiff {left} {right}"`
+	excludes := append([]string{".git"}, envList("DIRDIFF_EXCLUDES")...)
+	args := []string{fmt.Sprintf(`"+let g:DirDiffExcludes = '%s'"`, vimValue(strings.Join(excludes, ",")))}
+	if keywords := envList("DIRDIFF_IGNORE"); len(keywords) > 0 {
+		args = append(args, fmt.Sprintf(`"+let g:DirDiffIgnore = '%s'"`, vimValue(vimIgnoreRegexp(keywords))))
+	}
+	args = append(args, `"+DirDiff {left} {right}"`)
+	return editor + " " + strings.Join(args, " ")
 }
 
 func diffTool() string {
@@ -955,7 +996,11 @@ To pin it explicitly (recommended):
 
 Strictly vim:
 
-  git config --global cross.diffTool "vim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""`,
+  git config --global cross.diffTool "vim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
+
+Environment variables (used only when cross.diffTool is unset):
+  DIRDIFF_EXCLUDES  extra comma-separated file/dir names to hide; .git is always ignored
+  DIRDIFF_IGNORE    comma-separated keywords ignored in diff content (e.g. github.com,gitlab.com)`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return printPatchRows("")
 		},

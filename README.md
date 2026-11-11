@@ -449,6 +449,26 @@ A custom ignore list passes DirDiff a comma-separated list of names to skip:
 git config --global cross.diffTool "nvim \"+let g:DirDiffExcludes = '.git,ves.io,f5fed.com,volterra.us'\" \"+DirDiff {left} {right}\""
 ```
 
+### Environment variables (when `cross.diffTool` is unset)
+
+Two optional variables feed the built-in default; both are comma-separated:
+
+| Variable | Effect |
+|---|---|
+| `DIRDIFF_EXCLUDES` | Extra file/dir names to hide. `.git` is **always** excluded (permanent prefix). |
+| `DIRDIFF_IGNORE` | Keywords ignored inside the diff content — useful when the upstream is e.g. `github.com` and your copy is `gitlab.com`. |
+
+```bash
+export DIRDIFF_EXCLUDES='vendor,node_modules,dist'
+export DIRDIFF_IGNORE='github.com,gitlab.com'
+git cross compare app   # -> nvim "+let g:DirDiffExcludes = '.git,vendor,node_modules,dist'"
+                        #         "+let g:DirDiffIgnore = '\Vgithub.com\|gitlab.com'" "+DirDiff ..."
+```
+
+`DIRDIFF_IGNORE` is converted to a vim **very-nomagic** regexp (`\V`), so dots
+and other characters match literally; items are joined with `\|` (alternation).
+Unset or empty variables simply omit the corresponding `+let` argument.
+
 In this form the paths are part of the vim `+` command string, which is where
 DirDiff reads them. The repository default already ignores `.git`, so the
 worktree's `.git` pointer file never appears in the comparison.

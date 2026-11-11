@@ -140,7 +140,25 @@ SH
     out=$(PATH="$vim_shims:$no_nvim_path" "$GO_BIN" compare vendor/alpha 2>/dev/null)
     echo "$out"
     assert_contains "$out" "EDITOR:vim" "default tool should fall back to vim when nvim is absent"
-    log_success "editor selection verified (nvim preferred, vim fallback)"
+
+    # environment-driven extras (only when cross.diffTool is unset)
+    out=$(env -u DIRDIFF_IGNORE -u DIRDIFF_EXCLUDES PATH="$both_shims:$PATH" "$GO_BIN" compare vendor/alpha 2>/dev/null)
+    assert_contains "$out" "let g:DirDiffExcludes = '.git'" "minimal default keeps .git excluded"
+    assert_not_contains "$out" "DirDiffIgnore" "no ignore argument should be emitted without DIRDIFF_IGNORE"
+
+    out=$(env -u DIRDIFF_IGNORE DIRDIFF_EXCLUDES="vendor,node_modules" PATH="$both_shims:$PATH" "$GO_BIN" compare vendor/alpha 2>/dev/null)
+    echo "$out"
+    assert_contains "$out" "let g:DirDiffExcludes = '.git,vendor,node_modules'" "DIRDIFF_EXCLUDES should append to the permanent .git"
+
+    out=$(env -u DIRDIFF_EXCLUDES DIRDIFF_IGNORE="github.com,gitlab.com" PATH="$both_shims:$PATH" "$GO_BIN" compare vendor/alpha 2>/dev/null)
+    echo "$out"
+    assert_contains "$out" "let g:DirDiffIgnore" "DIRDIFF_IGNORE should add an ignore argument"
+    assert_contains "$out" "github.com" "ignore regexp should include the first keyword"
+    assert_contains "$out" "gitlab.com" "ignore regexp should include the second keyword"
+    if ! printf '%s\n' "$out" | grep -qF '\V'; then
+        fail "DIRDIFF_IGNORE should use a very-nomagic \\V regexp"
+    fi
+    log_success "editor selection + env extras verified (nvim preferred, vim fallback)"
 
     # --- inside a patched dir: CWD auto-detect, no fzf needed
     log_header "021: CWD auto-detect still wins inside a patch directory"
@@ -227,6 +245,10 @@ if command -v fish >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -
     echo "$out"
     assert_contains "$out" "EDITOR:nvim" "Just default tool should prefer nvim when installed"
     assert_contains "$out" "let g:DirDiffExcludes = '.git'" "Just default tool should set DirDiffExcludes"
+    out=$(env -u DIRDIFF_EXCLUDES DIRDIFF_IGNORE="github.com,gitlab.com" PATH="$just_shims:$PATH" just cross compare vendor/alpha 2>/dev/null)
+    echo "$out"
+    assert_contains "$out" "let g:DirDiffIgnore" "Just DIRDIFF_IGNORE should add an ignore argument"
+    assert_contains "$out" "github.com" "Just ignore regexp should include the keyword"
     log_success "Just editor selection verified"
 
     log_header "021: Just CWD auto-detect inside a patch directory"

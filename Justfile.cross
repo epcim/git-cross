@@ -811,7 +811,21 @@ compare path="": check-initialized
         if command -v nvim >/dev/null 2>&1
             set editor nvim
         end
-        set tool "$editor \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
+        # .git is permanently excluded; DIRDIFF_EXCLUDES appends more names.
+        set -l excludes .git
+        if set -q DIRDIFF_EXCLUDES; and test -n "$DIRDIFF_EXCLUDES"
+            set excludes "$excludes,$DIRDIFF_EXCLUDES"
+        end
+        set -l cmd $editor
+        set -a cmd "\"+let g:DirDiffExcludes = '$excludes'\""
+        # DIRDIFF_IGNORE: comma-separated keywords ignored in diff content.
+        if set -q DIRDIFF_IGNORE; and test -n "$DIRDIFF_IGNORE"
+            set -l items (string split , -- $DIRDIFF_IGNORE)
+            set -l re "\\V"(string join '\\|' $items)
+            set -a cmd "\"+let g:DirDiffIgnore = '$re'\""
+        end
+        set -a cmd "\"+DirDiff {left} {right}\""
+        set tool (string join ' ' $cmd)
     end
     set left "$worktree/$remote_path"
     if test "$remote_path" = "."
