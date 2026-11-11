@@ -108,6 +108,43 @@ In practice:
 - upstream history stays in the hidden worktree
 - `Crossfile` records the `use` and `patch` declarations; `git cross update` reads them to refresh patches
 
+## Conflict Resolution Memory (`rerere`)
+
+`git-cross` enables Git's **rerere** ("reuse recorded resolution") so that
+conflict resolutions survive across updates. This is what solves resolving the
+same update conflict twice:
+
+- `git cross init` turns `rerere.enabled` on and tells you so.
+- `git cross patch` enables it silently.
+- `git cross update` re-enables it when it was turned off, so repositories
+  created before this feature self-heal.
+
+When upstream changes collide with your local copy, resolve the conflict once —
+typically inside the sparse worktree, after entering it with
+`git cross wt <path>` and merging or rebasing there. Git records that
+resolution, and every later update that hits the same conflict replays the
+recorded resolution instead of asking you again: the next merge or rebase over
+the same upstream hunk is resolved without a second manual edit.
+
+Notes:
+
+- The setting lives in the repository's shared Git config, so it applies to the
+  main repository and to every `git-cross` worktree.
+- Recorded resolutions are local to each worktree (its `rr-cache`), so every
+  patch keeps its own conflict memory.
+- `rerere.autoUpdate` is deliberately **not** enabled. Replayed resolutions are
+  applied to the working tree but not staged, so a merge still stops and waits
+  for `git add` + `git commit` (without `rerere.autoUpdate`). To let Git stage
+  what it resolved for you, opt in:
+
+  ```bash
+  git config rerere.autoUpdate true
+  ```
+
+- `git cross update` itself uses `--ff-only` and therefore never conflicts; the
+  recorded resolutions matter in the manual workflow where you merge or rebase
+  upstream inside the worktree.
+
 ## Local Custom Files On Top Of Upstream
 
 One common pattern is to keep local-only files next to upstream-managed files.
@@ -259,6 +296,8 @@ If the local copy still matches the previously installed upstream content, `upda
 ```
 
 Review the differences and merge manually. Whole-repository patches (`remote:.` and `remote:/`) take part in this check correctly: the worktree's `.git` pointer file is not counted as a local edit, so a clean whole-repo patch is updated instead of warned about.
+
+Resolutions you record manually are remembered for later updates — see [Conflict Resolution Memory (`rerere`)](#conflict-resolution-memory-rerere).
 
 ### `compare`
 

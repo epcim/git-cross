@@ -994,6 +994,23 @@ function crosswt --description 'cd into a git-cross worktree'
 end
 `
 
+// ensureRerere enables reuse-recorded-resolution in the shared repo config, so
+// conflict resolutions recorded in any cross worktree (merge/rebase) are
+// replayed automatically when the same conflict reappears on later updates.
+// Returns true when the setting was newly enabled.
+func ensureRerere(root string) bool {
+	if out, err := exec.Command("git", "-C", root, "config", "--get", "rerere.enabled").Output(); err == nil {
+		if strings.TrimSpace(string(out)) == "true" {
+			return false
+		}
+	}
+	if err := exec.Command("git", "-C", root, "config", "rerere.enabled", "true").Run(); err != nil {
+		logWarn(fmt.Sprintf("could not enable rerere: %v", err))
+		return false
+	}
+	return true
+}
+
 // copyToClipboard copies text using the first available platform tool
 // (pbcopy/xclip/xsel).
 //
@@ -1165,6 +1182,9 @@ Environment variables (used only when cross.diffTool is unset):
 			if _, err := git.NewCommand("remote", "get-url", spec.Remote).RunInDir(repo.Path()); err != nil {
 				return fmt.Errorf("remote %s not found", spec.Remote)
 			}
+
+			// Remember conflict resolutions so later updates can reuse them.
+			ensureRerere(repo.Path())
 
 			canonical := canonicalSpec(spec)
 			logInfo(fmt.Sprintf("Patching %s to %s", canonical, localPath))
@@ -1429,6 +1449,9 @@ Environment variables (used only when cross.diffTool is unset):
 			root, err := getRepoRoot()
 			if err != nil {
 				return err
+			}
+			if ensureRerere(root) {
+				logInfo("Enabled rerere: conflict resolutions are remembered for later updates.")
 			}
 			cwd, err := os.Getwd()
 			if err != nil {
@@ -2248,6 +2271,13 @@ if fzf is unavailable it prints the available patches.`,
 		Short:   "Initialize a new project with Crossfile",
 		GroupID: "repo",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if root, rerr := getRepoRoot(); rerr == nil {
+				if ensureRerere(root) {
+					logInfo("Enabled rerere: conflict resolutions are remembered for later updates.")
+				} else {
+					logInfo("rerere already enabled: conflict resolutions are reused.")
+				}
+			}
 			path := "Crossfile"
 			if _, err := os.Stat(path); err == nil {
 				logInfo("Crossfile already exists.")

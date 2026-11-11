@@ -279,6 +279,17 @@ _select_patch *prompt="patch":
 [no-cd]
 init:
     #!/usr/bin/env fish
+    # Remember conflict resolutions for later updates (repo config, not global).
+    set -l repo (git rev-parse --show-toplevel 2>/dev/null)
+    if test -n "$repo"
+        set -l rerere (git -C $repo config --get rerere.enabled 2>/dev/null | string trim)
+        if test "$rerere" = true
+            just cross _log info "rerere already enabled: conflict resolutions are reused."
+        else
+            git -C $repo config rerere.enabled true
+            and just cross _log info "Enabled rerere: conflict resolutions are remembered for later updates."
+        end
+    end
     if test -f "{{CROSSFILE}}"
         just cross _log info "Crossfile already exists."
     else
@@ -483,7 +494,8 @@ patch remote_spec local_path="": check-deps
     set l_path (path normalize "$l_path")
 
     pushd "{{REPO_DIR}}"
-    
+        git config rerere.enabled true 2>/dev/null
+
         # validate remote   
         if not git remote show $remote |grep -vq "^$remote\$" 
             just cross _log error "Error: Remote $remote not found. Run: just cross use $remote URL"
@@ -645,6 +657,11 @@ update path="": check-deps
         exit 1
     end
     pushd "{{REPO_DIR}}" >/dev/null
+    set -l rerere (git config --get rerere.enabled 2>/dev/null | string trim)
+    if test "$rerere" != true
+        git config rerere.enabled true
+        and just cross _log info "Enabled rerere: conflict resolutions are remembered for later updates."
+    end
     set updates 0
     while read -l line
         set fields (string split -n ' ' -- (string trim -- "$line"))

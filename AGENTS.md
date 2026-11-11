@@ -92,7 +92,7 @@ Bare `git cross` prints one `local_path<TAB>worktree` row per patch to stdout (n
 
 ### Test Structure
 
-Tests 001-007 form a chain for Just/Fish (001 is sourced by 002, etc.). Test 009 exercises Go. Rust, push, and replay legacy tests are excluded from the default runner. Tests 010-023 are focused feature tests; 019-023 cover the UX refresh (row listings and whole-repo patches, grouped help, fzf selection, `local_path` normalization).
+Tests 001-007 form a chain for Just/Fish (001 is sourced by 002, etc.). Test 009 exercises Go. Rust, push, and replay legacy tests are excluded from the default runner. Tests 010-024 are focused feature tests; 019-023 cover the UX refresh (row listings and whole-repo patches, grouped help, fzf selection, `local_path` normalization) and 024 covers `rerere` conflict-resolution memory.
 
 ### Coverage Matrix
 
@@ -112,12 +112,13 @@ Tests 001-007 form a chain for Just/Fish (001 is sourced by 002, etc.). Test 009
 | `remove` | 014 | 014, 023 |
 | `prune` | 015 | 009 |
 | `cd`/`wt` (print path) | 017 | 017, 023 |
-| `init` | -- | 009 |
+| `init` | 024 | 009, 024 |
 | `sparse checkout` | 012 | 012 |
 | `sbx/update workflow` | -- | 018 |
 | whole-repo patch (`.git` exclusion) | 019‡ | 019 |
 | grouped `--help` | n/a | 020 |
 | `local_path` normalization | 023‡ | 023 |
+| `rerere` (config + resolution reuse) | 024 | 024 |
 
 `*` = partial/basic assertions only. `--` = not tested. `‡` = variant guarded by Fish availability (skips gracefully when `fish` is absent).
 
@@ -125,7 +126,7 @@ Tests 001-007 form a chain for Just/Fish (001 is sourced by 002, etc.). Test 009
 
 - **Just update behavior**: requires Fish to be installed; run `test/004_update.sh` in an environment with Fish.
 - **Just `list` output**: no dedicated test; `test/019` exercises patch row listings when Fish is available.
-- **Just variants**: `test/019`, `test/021`, `test/023`, and `test/017` include Fish-guarded variants that skip when `fish` is absent; `test/020` is Go-only (grouped help is a Go CLI rendering concern). CI should keep Fish present to avoid silent gaps.
+- **Just variants**: `test/019`, `test/021`, `test/023`, `test/024`, and `test/017` include Fish-guarded variants that skip when `fish` is absent; `test/020` is Go-only (grouped help is a Go CLI rendering concern). CI should keep Fish present to avoid silent gaps.
 
 ## Agent Workflow
 
@@ -196,6 +197,7 @@ Tests 001-007 form a chain for Just/Fish (001 is sourced by 002, etc.). Test 009
 - **Clipboard helper (parked)**: `copyToClipboard` (Go) / `_clip` (Just) remain implemented but are intentionally unused — `cd`/`wt` print a path and `shell-init` provides the real `cd`, which made the clipboard workflow obsolete. Reuse rather than reimplement if a clipboard feature returns.
 - **Patch rows**: bare `git cross`, and path-miss cases in `compare`/`diff`/`remove`/`cd`/`wt`, print `local_path<TAB>worktree` rows to stdout; hints go to stderr and the command exits 1 where nothing was resolved.
 - **`list --raw` schema**: remotes first (`REMOTE_NAME<TAB>REMOTE_URL`), then patches (`REMOTE<TAB>REMOTE_PATH<TAB>LOCAL_PATH<TAB>WORKTREE<TAB>BRANCH`); no banners, no borders, deterministic remote order.
+- **`rerere` (conflict resolution memory)**: `ensureRerere` (Go) / an inline `git config rerere.enabled true` (Just) runs in `init` (announces, and says "already enabled" on repeat), `patch` (silent), and `update` (announces only when it newly enables it, which self-heals older repos). The key is written to the shared repository config, so the main repo and every cross worktree see it; each worktree records resolutions in its own `rr-cache`. `rerere.autoUpdate` is intentionally left unset (opt-in, users enable it themselves). Just's `init` resolves the repo root explicitly so it never writes global config.
 - **Crossfile format**: Lines like `cross use <name> <url>` or `cross patch <remote>:<branch>:<path> <local>`. `update` interprets only these declarative commands; arbitrary shell commands are not executed.
 - **.crossignore**: Located in the root of each local_path, uses gitignore-style patterns to exclude files from status and diff comparisons. Implemented by filtering directory trees using git add and git clean to remove ignored files before comparison.
 
