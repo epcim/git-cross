@@ -79,9 +79,10 @@ setup_sandbox() {
     mkdir -p "$SANDBOX"
     
     # Copy Justfiles to sandbox
-    # We assume we are running from the repo root or test/ directory
-    # The run-all.sh runs from repo root.
-    REPO_ROOT=$(pwd)
+    # We assume we are running from the repo root or test/ directory.
+    # Pin REPO_ROOT on first use: repeated setup_sandbox calls happen after
+    # `cd "$SANDBOX"`, so re-deriving it from $(pwd) would drift to a deleted dir.
+    : "${REPO_ROOT:=$(pwd)}"
     export REPO_ROOT
     
     cp "$REPO_ROOT/Justfile" "$SANDBOX/"

@@ -108,7 +108,11 @@ fi
 _go_ok=false
 _smoke_dir=$(mktemp -d)
 git init -q "$_smoke_dir"
-"$GO_BIN" use _smoke file:///dev/null >/dev/null 2>&1 && _go_ok=true
+printf 'smoke\n' > "$_smoke_dir/file.txt"
+git -C "$_smoke_dir" add file.txt
+git -C "$_smoke_dir" -c user.email=test@example.com -c user.name=test commit -qm init
+"$GO_BIN" use _smoke "file://$_smoke_dir" >/dev/null 2>&1 && _go_ok=true
+rm -rf "$_smoke_dir"
 if [ "$_go_ok" = false ]; then
     log_warn "Go binary not working on this platform, skipping Go-specific diff context tests"
 else
