@@ -102,7 +102,7 @@ Tests 001-007 form a chain for Just/Fish (001 is sourced by 002, etc.). Test 009
 | `update` (upstream/local edit behavior) | 004 | 009, 018, 019 |
 | `diff` (basic) | 003 | 009 |
 | `diff` (context-aware CWD) | 003, 016 | 016, 021 |
-| `diff` (no path: fzf / rows ladder) | -- | 021 |
+| `diff` (no path: fzf / rows ladder) | 021‡ | 021 |
 | `diff` (relative paths) | 003 | -- |
 | `list` (table) | -- | 009, 014 |
 | `list --raw` / `--no-header` | -- | 009, 014 |
@@ -124,7 +124,7 @@ Tests 001-007 form a chain for Just/Fish (001 is sourced by 002, etc.). Test 009
 
 - **Just update behavior**: requires Fish to be installed; run `test/004_update.sh` in an environment with Fish.
 - **Just `list` output**: no dedicated test; `test/019` exercises patch row listings when Fish is available.
-- **Just variants**: `test/019` and `test/023` include Fish-guarded variants that skip when `fish` is absent; `test/020` and `test/021` are Go-only. CI should keep Fish present to avoid silent gaps.
+- **Just variants**: `test/019`, `test/021`, `test/023`, and `test/017` include Fish-guarded variants that skip when `fish` is absent; `test/020` is Go-only (grouped help is a Go CLI rendering concern). CI should keep Fish present to avoid silent gaps.
 
 ## Agent Workflow
 

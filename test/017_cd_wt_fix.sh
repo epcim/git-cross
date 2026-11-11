@@ -88,6 +88,18 @@ if [ -n "$GO_BIN" ]; then
         "Go wt fallback should say fzf is missing"
     log_success "Go fzf-missing fallback verified"
 
+    log_header "017: Go no-path cd/wt auto-detect from CWD"
+    pushd vendor/src >/dev/null
+    out=$(PATH="$nofzf_path" "$GO_BIN" cd 2>/dev/null) \
+        || fail "Go cd without a path inside a patch should auto-detect"
+    assert_one_abs_path "Go cd (CWD auto-detect)" "$out" "$local_abs"
+
+    out=$(PATH="$nofzf_path" "$GO_BIN" wt 2>/dev/null) \
+        || fail "Go wt without a path inside a patch should auto-detect"
+    assert_one_abs_path "Go wt (CWD auto-detect)" "$out" "$wt_abs"
+    popd >/dev/null
+    log_success "Go CWD auto-detect verified"
+
     log_header "017: Go fzf selection prints the selected path"
     shim_dir="$SANDBOX/fzf-shim-bin"
     mkdir -p "$shim_dir"

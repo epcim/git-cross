@@ -60,6 +60,9 @@ if [ -n "$GO_BIN" ]; then
     log_success "metadata stores local_path without './'"
 
     git config cross.diffTool 'echo TOOL {left} {right}'
+    nofzf_path=$(make_path_without_fzf "$SANDBOX/no-fzf-bin")
+    wt_sub=$(jq -r '.patches[] | select(.local_path == "sub") | .worktree' .cross/metadata.json)
+    wt_sub_abs=$(cd "$wt_sub" && pwd -P)
 
     log_header "023: compare/diff/cd/status resolve from inside ./sub"
     pushd sub >/dev/null
@@ -78,6 +81,14 @@ if [ -n "$GO_BIN" ]; then
     out=$("$GO_BIN" cd sub 2>/dev/null) || fail "cd sub inside a './sub' patch should resolve"
     assert_one_abs_path "cd sub inside ./sub" "$out" "$expected"
 
+    # No path at all: CWD auto-detect must win before fzf is consulted.
+    out=$(PATH="$nofzf_path" "$GO_BIN" cd 2>/dev/null) \
+        || fail "cd without a path inside ./sub should auto-detect from CWD"
+    assert_one_abs_path "cd (CWD auto-detect) inside ./sub" "$out" "$expected"
+    out=$(PATH="$nofzf_path" "$GO_BIN" wt 2>/dev/null) \
+        || fail "wt without a path inside ./sub should auto-detect from CWD"
+    assert_one_abs_path "wt (CWD auto-detect) inside ./sub" "$out" "$wt_sub_abs"
+
     out=$("$GO_BIN" status 2>&1) || true
     echo "$out"
     assert_contains "$out" "sub" "status should list the normalized local_path"
@@ -94,6 +105,9 @@ if [ -n "$GO_BIN" ]; then
     expected=$(pwd -P)
     out=$("$GO_BIN" cd sub2 2>/dev/null) || fail "cd sub2 inside a './sub2' patch should resolve"
     assert_one_abs_path "cd sub2 inside ./sub2" "$out" "$expected"
+    out=$(PATH="$nofzf_path" "$GO_BIN" cd 2>/dev/null) \
+        || fail "cd without a path inside ./sub2 should auto-detect from CWD"
+    assert_one_abs_path "cd (CWD auto-detect) inside ./sub2" "$out" "$expected"
     popd >/dev/null
 
     log_header "023: explicit './' path arguments resolve (Go)"

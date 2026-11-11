@@ -58,8 +58,15 @@ for cmd in compare init list status update cd wt diff use patch remove prune; do
     count=$(printf '%s\n' "$help_output" | grep -cE "^  ${cmd}([[:space:]]|$)")
     [ "$count" -eq 1 ] || fail "command '$cmd' should appear exactly once in help (found $count)"
 done
-assert_not_contains "$help_output" "Additional Commands:" \
-    "every visible command must have a GroupID (none may fall into 'Additional Commands:')"
+# Cobra still renders the auto-generated 'help' (and, if enabled, 'completion')
+# command under "Additional Commands:". Tolerate those built-ins, but no
+# documented command may end up ungrouped there.
+additional_section=$(section_body "Additional Commands:")
+for cmd in compare init list status update cd wt diff use patch remove prune; do
+    if printf '%s\n' "$additional_section" | grep -Eq "^  ${cmd}([[:space:]]|$)"; then
+        fail "'$cmd' must not fall into 'Additional Commands:' (missing GroupID)"
+    fi
+done
 if printf '%s\n' "$help_output" | grep -Eq '^  cmp([[:space:]]|$)'; then
     fail "the 'cmp' alias must not get its own help row"
 fi
