@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/epcim/git-cross/workflows/CI/badge.svg)](https://github.com/epcim/git-cross/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://github.com/epcim/git-cross/blob/main/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](https://github.com/epcim/git-cross/blob/main/CHANGELOG.md)
 
 `git-cross` is a small tool for pulling part of one Git repository into another with `git worktree` plus `rsync`.
 

@@ -1025,7 +1025,7 @@ func main() {
 	var dry string
 	rootCmd := &cobra.Command{
 		Use:          "git-cross",
-		Version:      "0.3.0",
+		Version:      "0.4.0",
 		Short:        "Manage vendored cross-repo patches (worktree + rsync)",
 		SilenceUsage: true, // no Usage dump on errors
 		Long: `Manage vendored cross-repo patches (worktree + rsync).
