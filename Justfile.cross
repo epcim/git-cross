@@ -897,45 +897,75 @@ worktree path="":
 [no-cd]
 wt path="":
     #!/usr/bin/env fish
-    if test -n "{{path}}"
-        set -l ctx (just cross _resolve_context2 "{{path}}" 2>/dev/null)
+    set -l resolved_path "{{path}}"
+    # Explicit path: make absolute and ./-prefixed paths repo-relative first
+    if test -n "$resolved_path"
+        if test -e "$resolved_path"
+            set -l dir "$resolved_path"
+            test -d "$dir"; or set dir (dirname "$dir")
+            # git -C: avoid fish's `cd` in a command substitution changing our cwd
+            set resolved_path (git -C "$dir" rev-parse --show-prefix 2>/dev/null | sed 's,/$,,')
+        else
+            set resolved_path (string replace -r '^\./' '' -- "$resolved_path")
+        end
+    end
+    # Resolution ladder: path/CWD auto-detect -> fzf selection -> rows + exit 1
+    set -l ctx (just cross _resolve_context2 "$resolved_path" 2>/dev/null)
+    if test (count $ctx) -eq 0
+        if test -z "$resolved_path"
+            if not command -v fzf >/dev/null 2>&1
+                just cross _list_patches "fzf is not installed, cd manually. Destinations, columns local_path TAB worktree" >&2
+                exit 1
+            end
+            set -l sel (just cross _select_patch patch)
+            test -z "$sel"; and exit 0
+            set resolved_path "$sel"
+            set ctx (just cross _resolve_context2 "$sel" 2>/dev/null)
+        end
         if test (count $ctx) -eq 0
-            just cross _list_patches "No patch detected, available patches, columns local_path TAB worktree"
+            just cross _list_patches "No patch detected, available patches, columns local_path TAB worktree" >&2
             exit 1
         end
-        printf '%s\n' $ctx | source
-        echo "{{REPO_DIR}}/$worktree"
-    else if not command -v fzf >/dev/null 2>&1
-        just cross _list_patches "fzf is not installed, cd manually. Destinations, columns local_path TAB worktree"
-        exit 1
-    else
-        set -l row (just cross _list_patches | fzf --height 40% --select-1 --exit-0 --prompt "Select patch (wt)> ")
-        test -z "$row"; and exit 0
-        set -l cols (string split \t -- $row)
-        echo "{{REPO_DIR}}/$cols[2]"
     end
+    printf '%s\n' $ctx | source
+    echo "{{REPO_DIR}}/$worktree"
 
 # Print a patch local_path to cd into (use: cd (just cross cd [path]))
 [no-cd]
 cd path="":
     #!/usr/bin/env fish
-    if test -n "{{path}}"
-        set -l ctx (just cross _resolve_context2 "{{path}}" 2>/dev/null)
+    set -l resolved_path "{{path}}"
+    # Explicit path: make absolute and ./-prefixed paths repo-relative first
+    if test -n "$resolved_path"
+        if test -e "$resolved_path"
+            set -l dir "$resolved_path"
+            test -d "$dir"; or set dir (dirname "$dir")
+            # git -C: avoid fish's `cd` in a command substitution changing our cwd
+            set resolved_path (git -C "$dir" rev-parse --show-prefix 2>/dev/null | sed 's,/$,,')
+        else
+            set resolved_path (string replace -r '^\./' '' -- "$resolved_path")
+        end
+    end
+    # Resolution ladder: path/CWD auto-detect -> fzf selection -> rows + exit 1
+    set -l ctx (just cross _resolve_context2 "$resolved_path" 2>/dev/null)
+    if test (count $ctx) -eq 0
+        if test -z "$resolved_path"
+            if not command -v fzf >/dev/null 2>&1
+                just cross _list_patches "fzf is not installed, cd manually. Destinations, columns local_path TAB worktree" >&2
+                exit 1
+            end
+            set -l sel (just cross _select_patch patch)
+            test -z "$sel"; and exit 0
+            set resolved_path "$sel"
+            set ctx (just cross _resolve_context2 "$sel" 2>/dev/null)
+        end
         if test (count $ctx) -eq 0
-            just cross _list_patches "No patch detected, available patches, columns local_path TAB worktree"
+            just cross _list_patches "No patch detected, available patches, columns local_path TAB worktree" >&2
             exit 1
         end
-        printf '%s\n' $ctx | source
-        echo "{{REPO_DIR}}/$local_path"
-    else if not command -v fzf >/dev/null 2>&1
-        just cross _list_patches "fzf is not installed, cd manually. Destinations, columns local_path TAB worktree"
-        exit 1
-    else
-        set -l row (just cross _list_patches | fzf --height 40% --select-1 --exit-0 --prompt "Select patch (cd)> ")
-        test -z "$row"; and exit 0
-        set -l cols (string split \t -- $row)
-        echo "{{REPO_DIR}}/$cols[1]"
     end
+    printf '%s\n' $ctx | source
+    echo "{{REPO_DIR}}/$local_path"
 
 
 # AICONTEXT: "status" shows status of current local_path patch vs. WT, and WT upstream. Input argument is local_path (or understand user stand in the under git-cross'ed local_path and call this comand). It shall be called to get status of local_path from "list" command. Either the status of remote WT upstream (as resource consuming, shall be optional or only ocasional)
