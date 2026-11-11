@@ -49,7 +49,7 @@ test/001-023_*.sh     # Individual test files (see coverage matrix below)
 | `cd` | `[path]` | Print absolute local_path to stdout (wrap with `cd "$(git cross cd)"`) |
 | `wt` | `[path]` | Print absolute worktree path to stdout |
 
-Bare `git cross` prints one `local_path<TAB>worktree` row per patch to stdout (hint to stderr); `-h` prints the grouped help. Help grouping is Go-only CLI presentation — Just/Fish exposes the same behavior through recipes, not through a grouped help renderer.
+Bare `git cross` prints one `local_path<TAB>worktree` row per patch to stdout (no hint line; TTY output is space-padded, piped output stays TAB-separated); `-h` prints the grouped help. Help grouping is Go-only CLI presentation — Just/Fish exposes the same behavior through recipes, not through a grouped help renderer.
 
 ## Implementation Comparison
 

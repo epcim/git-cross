@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/fatih/color"
 	"github.com/gogs/git-module"
@@ -325,6 +326,8 @@ func logError(msg string) {
 // printPatchRows prints one row per patch: local_path <TAB> worktree.
 // Rows go to stdout (parseable via cut -f1); hint goes to stderr, so
 // `git cross compare 2>/dev/null | cut -f1` yields local paths.
+// When stdout is a terminal the first column is space-padded so the
+// worktree column lines up; piped output stays pure TAB-separated.
 func printPatchRows(hint string) error {
 	meta, err := loadMetadata()
 	if err != nil {
@@ -337,10 +340,32 @@ func printPatchRows(hint string) error {
 	if hint != "" {
 		fmt.Fprintln(os.Stderr, hint)
 	}
+	if stdoutIsTerminal() {
+		width := 0
+		for _, p := range meta.Patches {
+			if n := utf8.RuneCountInString(p.LocalPath); n > width {
+				width = n
+			}
+		}
+		for _, p := range meta.Patches {
+			fmt.Printf("%-*s  %s\n", width, p.LocalPath, p.Worktree)
+		}
+		return nil
+	}
 	for _, p := range meta.Patches {
 		fmt.Printf("%s\t%s\n", p.LocalPath, p.Worktree)
 	}
 	return nil
+}
+
+// stdoutIsTerminal reports whether stdout is attached to a TTY (interactive
+// output may be padded for readability; pipes keep the TAB contract).
+func stdoutIsTerminal() bool {
+	info, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }
 
 // errPatchNotFound is returned after rows were already printed; commands
@@ -836,7 +861,7 @@ func main() {
 		Short:        "Manage vendored cross-repo patches (worktree + rsync)",
 		SilenceUsage: true, // no Usage dump on errors
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return printPatchRows("Patches (local_path <TAB> worktree). See: git cross --help")
+			return printPatchRows("")
 		},
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 	}

@@ -85,6 +85,10 @@ if [ -n "$GO_BIN" ]; then
     echo "$bare_stdout"
     [ "$bare_rc" -eq 0 ] || fail "bare 'git-cross' should exit 0, got $bare_rc"
     assert_not_contains "$bare_stdout" "Usage:" "bare 'git-cross' should not print a Usage dump"
+    assert_not_contains "$bare_stdout" "Patches (" "bare 'git-cross' should not print a hint line"
+    if ! printf '%s\n' "$bare_stdout" | grep -q "$(printf '\t')"; then
+        fail "piped bare listing must stay TAB-separated"
+    fi
     printf '%s\n' "$bare_stdout" | cut -f1 | grep -qx "sub" \
         || fail "bare listing missing local_path 'sub' in the first column"
     printf '%s\n' "$bare_stdout" | cut -f2 | grep -q '^\.cross/worktrees/up_' \

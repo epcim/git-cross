@@ -196,17 +196,20 @@ Patch Lifecycle:
 `compare` also answers to the short alias `git cross cmp`.
 
 Running `git cross` with no subcommand does not print help. It prints one row
-per configured patch to stdout, `local_path<TAB>worktree`, and a hint to stderr:
+per configured patch to stdout:
 
 ```text
 $ git cross
-Patches (local_path <TAB> worktree). See: git cross --help
-vendor/app	.cross/worktrees/app_1a2b3c4d
+vendor/app        .cross/worktrees/app_1a2b3c4d
+vendor/lib        .cross/worktrees/lib_5e6f7a8b
 ```
 
-Rows are the machine-readable listing used throughout the tool: hints and
-warnings go to stderr, so `git cross 2>/dev/null | cut -f1` yields local paths.
-Use `git cross -h` or `git cross --help` for the grouped help shown above.
+The listing is the machine-readable row format used throughout the tool:
+when stdout is a terminal the first column is space-padded for readability;
+when piped, rows stay `local_path<TAB>worktree` so
+`git cross 2>/dev/null | cut -f1` yields local paths. Warnings and error
+hints go to stderr. Use `git cross -h` or `git cross --help` for the grouped
+help shown above.
 
 ### `use`
 
