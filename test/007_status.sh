@@ -112,4 +112,26 @@ check_status "vendor/docs" ".*1 ahead"
 rm -rf "$wt_dir"
 check_status "vendor/docs" "Missing WT"
 
+# ------------------------------------------------------------------
+# Test 6: Whole-repo patch (.git pointer must not look like a local change)
+# ------------------------------------------------------------------
+log_header "Testing whole-repo patch status stays Clean..."
+setup_sandbox
+cd "$SANDBOX"
+
+whole_upstream=$(create_upstream "whole-status")
+pushd "$whole_upstream" >/dev/null
+mkdir -p nested
+echo "nested content" > nested/file.txt
+git add nested/file.txt
+git commit -m "Add nested content" -q
+popd >/dev/null
+
+just cross use whole "file://$whole_upstream"
+just cross patch "whole:." ./whole
+
+# The sparse worktree root contains a .git pointer that the local copy never
+# has; status must still report Clean.
+check_status "whole" "Clean.*Synced"
+
 echo "Test 007 passed!"

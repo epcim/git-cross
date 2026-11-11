@@ -29,7 +29,7 @@ src-rust/Cargo.toml   # Rust dependencies
   worktrees/          # Hidden git worktrees for each patch
 test/common.sh        # Shared test helpers (setup_sandbox, create_upstream, assertions)
 test/run-all.sh       # Test runner: discovers and executes test/NNN_*.sh files
-test/001-018_*.sh     # Individual test files (see coverage matrix below)
+test/001-023_*.sh     # Individual test files (see coverage matrix below)
 ```
 
 ## Commands (all implementations)
@@ -39,15 +39,17 @@ test/001-018_*.sh     # Individual test files (see coverage matrix below)
 | `use` | `<name> <url>` | Register remote, detect default branch |
 | `patch` | `<remote[:branch]:path> [local_path]` | Sparse-checkout worktree, rsync to local |
 | `update` | `[path]` | Read Crossfile and update upstream patches; preserve local edits |
-| `diff` | `[path]` | `git diff --no-index` between worktree and local (context-aware: auto-detects patch from CWD) |
-| `list` | | Table of remotes and patches |
+| `diff` | `[path]` | Console `git diff --no-index`; resolves patch via CWD auto-detect → fzf → rows + exit 1 |
+| `list` | `[--raw] [--no-header]` | Table (default) or TSV rows of remotes and patches |
 | `status` | | Health: local diffs, upstream divergence, conflicts |
-| `compare` | `[path]` | Open configured directory diff tool between local copy and worktree |
+| `compare` | `[path]` (alias `cmp`) | Open configured directory diff tool; exactly one patch, same resolution ladder as `diff` |
 | `remove` | `<path>` | Delete patch, clean Crossfile and metadata |
 | `prune` | `[remote]` | Remove remote and all its patches, prune stale worktrees |
 | `init` | | Create empty Crossfile |
-| `cd` | `[path]` | Open shell in local_path (or fzf select + clipboard) |
-| `wt` | `[path]` | Open shell in worktree (or fzf select + clipboard) |
+| `cd` | `[path]` | Print absolute local_path to stdout (wrap with `cd "$(git cross cd)"`) |
+| `wt` | `[path]` | Print absolute worktree path to stdout |
+
+Bare `git cross` prints one `local_path<TAB>worktree` row per patch to stdout (hint to stderr); `-h` prints the grouped help. Help grouping is Go-only CLI presentation — Just/Fish exposes the same behavior through recipes, not through a grouped help renderer.
 
 ## Implementation Comparison
 
@@ -79,7 +81,7 @@ test/001-018_*.sh     # Individual test files (see coverage matrix below)
 
 ### Known historical issues
 
-1. **`cd`/`wt` code duplication**: Near-identical blocks in Go (80 lines) and Rust (56 lines). Should be a single parameterized function.
+1. **`cd`/`wt` duplication (resolved)**: Go now uses one parameterized `makeDirCmd`; Just has one recipe per target. Rust retains its own unsupported implementation.
 2. **`remove`/`prune` code duplication**: Prune copy-pastes remove logic. Should call a shared `removePatch()` helper.
 3. The retired `sync` flow rebased local changes. The supported `update` flow fetches upstream, fast-forwards a clean worktree, and preserves local files for manual review if they differ.
 4. **Crossfile removal is fragile**: All three use substring matching that can corrupt unrelated lines.
@@ -89,34 +91,40 @@ test/001-018_*.sh     # Individual test files (see coverage matrix below)
 
 ### Test Structure
 
-Tests 001-007 form a chain for Just/Fish (001 is sourced by 002, etc.). Test 009 exercises Go. Rust, push, and replay legacy tests are excluded from the default runner. Tests 010-018 are focused feature tests.
+Tests 001-007 form a chain for Just/Fish (001 is sourced by 002, etc.). Test 009 exercises Go. Rust, push, and replay legacy tests are excluded from the default runner. Tests 010-023 are focused feature tests; 019-023 cover the UX refresh (row listings and whole-repo patches, grouped help, fzf selection, `local_path` normalization).
 
 ### Coverage Matrix
 
-| Command | Just/Fish | Go |
+| Command / behavior | Just/Fish | Go |
 |---------|:---:|:---:|
 | `use` | 001 | 009 |
-| `patch` | 002 | 009 |
-| `update` (upstream/local edit behavior) | 004 | 009, 018 |
+| `patch` | 002 | 009, 019, 023 |
+| `update` (upstream/local edit behavior) | 004 | 009, 018, 019 |
 | `diff` (basic) | 003 | 009 |
-| `diff` (context-aware CWD) | 003, 016 | 016 |
+| `diff` (context-aware CWD) | 003, 016 | 016, 021 |
+| `diff` (no path: fzf / rows ladder) | -- | 021 |
 | `diff` (relative paths) | 003 | -- |
-| `list` | (017) | 009, 014 |
-| `status` (all states) | 007 | 009* |
-| `compare` | -- | 009 |
-| `remove` | 014 | 014 |
+| `list` (table) | -- | 009, 014 |
+| `list --raw` / `--no-header` | -- | 009, 014 |
+| `status` (all states) | 007 | 009*, 019, 023 |
+| `compare` (incl. `cmp` alias) | -- | 009, 019, 021 |
+| `remove` | 014 | 014, 023 |
 | `prune` | 015 | 009 |
-| `cd`/`wt` | 017 | 017 |
+| `cd`/`wt` (print path) | 017 | 017, 023 |
 | `init` | -- | 009 |
 | `sparse checkout` | 012 | 012 |
 | `sbx/update workflow` | -- | 018 |
+| whole-repo patch (`.git` exclusion) | 019‡ | 019 |
+| grouped `--help` | n/a | 020 |
+| `local_path` normalization | 023‡ | 023 |
 
-`*` = partial/basic assertions only. `--` = not tested.
+`*` = partial/basic assertions only. `--` = not tested. `‡` = variant guarded by Fish availability (skips gracefully when `fish` is absent).
 
 ### Gaps Worth Addressing
 
 - **Just update behavior**: requires Fish to be installed; run `test/004_update.sh` in an environment with Fish.
-- **`list` for Just/Fish**: no dedicated test.
+- **Just `list` output**: no dedicated test; `test/019` exercises patch row listings when Fish is available.
+- **Just variants**: `test/019` and `test/023` include Fish-guarded variants that skip when `fish` is absent; `test/020` and `test/021` are Go-only. CI should keep Fish present to avoid silent gaps.
 
 ## Agent Workflow
 
@@ -179,9 +187,13 @@ Tests 001-007 form a chain for Just/Fish (001 is sourced by 002, etc.). Test 009
 
 ## Implementation Details
 
-- **Hidden worktrees**: `.git/cross/worktrees/<remote>_<hash>`.
+- **Hidden worktrees**: `.cross/worktrees/<remote>_<hash>` (verified in `src-go/main.go`; Justfile.cross uses the same path). A stale `AICONTEXT` comment in `Justfile.cross` (line 697) still says `.git/cross/worktrees/` and should be corrected by the Just owner.
+- **`.git` exclusion**: a worktree root contains a `.git` pointer file that never exists in the local copy (rsync uses `--exclude .git`). Boolean tree comparisons use `rsync -rlcn --delete --exclude=.git --itemize-changes`; the visual diff uses `git diff --no-index <left> <right> -- ':(exclude).git' ':(glob)**'`. Without both exclusions, whole-repo patches always look modified.
 - **Sparse checkout**: `git sparse-checkout init --no-cone` + `git sparse-checkout set <path>/` + `git read-tree -mu HEAD`. The trailing `/` on the pattern is required for reliable directory matching in `--no-cone` mode on newer Git versions (2.43+). `read-tree -mu HEAD` explicitly materializes the worktree (bare `git checkout` can no-op after `--no-checkout`).
 - **Rsync**: `rsync -av --delete --exclude .git` for worktree-to-local sync. `--delete` removes files locally that were deleted upstream.
+- **Directory diff tool**: `cross.diffTool` supports `{left}`/`{right}` placeholders substituted with repo-relative paths, run with cwd = repo root. Default: `vim "+DirDiffIgnore='.git' DirDiff {left} {right}"`. Configs without placeholders fall back to appending both absolute paths (legacy, deprecated — it never invoked DirDiff correctly).
+- **Patch rows**: bare `git cross`, and path-miss cases in `compare`/`diff`/`remove`/`cd`/`wt`, print `local_path<TAB>worktree` rows to stdout; hints go to stderr and the command exits 1 where nothing was resolved.
+- **`list --raw` schema**: remotes first (`REMOTE_NAME<TAB>REMOTE_URL`), then patches (`REMOTE<TAB>REMOTE_PATH<TAB>LOCAL_PATH<TAB>WORKTREE<TAB>BRANCH`); no banners, no borders, deterministic remote order.
 - **Crossfile format**: Lines like `cross use <name> <url>` or `cross patch <remote>:<branch>:<path> <local>`. `update` interprets only these declarative commands; arbitrary shell commands are not executed.
 - **.crossignore**: Located in the root of each local_path, uses gitignore-style patterns to exclude files from status and diff comparisons. Implemented by filtering directory trees using git add and git clean to remove ignored files before comparison.
 
@@ -190,6 +202,5 @@ Tests 001-007 form a chain for Just/Fish (001 is sourced by 002, etc.). Test 009
 When time allows, these structural improvements would most benefit the codebase:
 
 1. **Extract `removePatch()` helper** in Go and Rust — eliminates duplication between `remove` and `prune`.
-2. **Unify `cd`/`wt`** into a single parameterized function in Go and Rust.
-3. **Fix Crossfile removal** — use structured parsing (split line, match local_path field) instead of substring matching.
-4. **Consolidate Go's git interface** — pick either `gogs/git-module` or `os/exec` and use it consistently.
+2. **Fix Crossfile removal** — use structured parsing (split line, match local_path field) instead of substring matching.
+3. **Consolidate Go's git interface** — pick either `gogs/git-module` or `os/exec` and use it consistently.

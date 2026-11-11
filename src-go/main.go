@@ -5,12 +5,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/fatih/color"
@@ -274,28 +274,38 @@ func logWarn(msg string) {
 	fmt.Println(msg)
 }
 
+const defaultDiffTool = `vim "+DirDiffIgnore='.git' DirDiff {left} {right}"`
+
 func diffTool() string {
 	if out, err := exec.Command("git", "config", "--get", "cross.diffTool").Output(); err == nil {
 		if tool := strings.TrimSpace(string(out)); tool != "" {
 			return tool
 		}
 	}
-	return `vim "+DirDiff"`
+	return defaultDiffTool
 }
 
-func printDiffCommand(left, right string) {
+// runDiffTool executes the configured diff tool. If the tool string contains
+// {left}/{right} placeholders, they are substituted with repo-relative paths
+// and the command runs with cwd = repo root. Legacy configs without
+// placeholders keep the old behavior (paths appended as arguments).
+func runDiffTool(root, left, right string) error {
 	tool := diffTool()
-	fmt.Printf("  git config --global cross.diffTool %s\n", strconv.Quote(tool))
-	fmt.Printf("  %s %q %q\n", tool, left, right)
-}
-
-func runDiffTool(left, right string) error {
-	tool := diffTool()
-	cmd := exec.Command("bash", "-c", tool+` "$@"`, "cross-diff", left, right)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	relLeft, errL := filepath.Rel(root, left)
+	relRight, errR := filepath.Rel(root, right)
+	if errL != nil || errR != nil {
+		relLeft, relRight = left, right
+	}
+	var c *exec.Cmd
+	if strings.Contains(tool, "{left}") || strings.Contains(tool, "{right}") {
+		cmdline := strings.NewReplacer("{left}", relLeft, "{right}", relRight).Replace(tool)
+		c = exec.Command("bash", "-c", cmdline, "cross-diff")
+	} else {
+		c = exec.Command("bash", "-c", tool+` "$@"`, "cross-diff", left, right)
+	}
+	c.Dir = root
+	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return c.Run()
 }
 
 func localDiffersFromWorktree(localPath, worktreePath string) (bool, error) {
@@ -312,6 +322,31 @@ func logError(msg string) {
 	fmt.Println(msg)
 }
 
+// printPatchRows prints one row per patch: local_path <TAB> worktree.
+// Rows go to stdout (parseable via cut -f1); hint goes to stderr, so
+// `git cross compare 2>/dev/null | cut -f1` yields local paths.
+func printPatchRows(hint string) error {
+	meta, err := loadMetadata()
+	if err != nil {
+		return err
+	}
+	if len(meta.Patches) == 0 {
+		logInfo("No patches configured.")
+		return nil
+	}
+	if hint != "" {
+		fmt.Fprintln(os.Stderr, hint)
+	}
+	for _, p := range meta.Patches {
+		fmt.Printf("%s\t%s\n", p.LocalPath, p.Worktree)
+	}
+	return nil
+}
+
+// errPatchNotFound is returned after rows were already printed; commands
+// that use it set SilenceErrors+SilenceUsage so nothing extra is printed.
+var errPatchNotFound = errors.New("patch not found")
+
 func loadMetadata() (Metadata, error) {
 	var meta Metadata
 	path, err := getMetadataPath()
@@ -326,7 +361,15 @@ func loadMetadata() (Metadata, error) {
 		return meta, err
 	}
 	err = json.Unmarshal(data, &meta)
-	return meta, err
+	if err != nil {
+		return meta, err
+	}
+	// Self-heal legacy local paths (e.g. "./mxc2" -> "mxc2") so the next
+	// save rewrites normalized paths.
+	for i := range meta.Patches {
+		meta.Patches[i].LocalPath = filepath.ToSlash(filepath.Clean(meta.Patches[i].LocalPath))
+	}
+	return meta, nil
 }
 
 func saveMetadata(meta Metadata) error {
@@ -423,18 +466,19 @@ func runSync(src, dst string) error {
 	return nil
 }
 
+// directoriesDiffer reports whether two directory trees differ, ignoring
+// .git (the worktree's pointer file never exists in the local copy).
+// -c: checksum compare; no -t so time-only changes don't produce lines.
+// --delete: files existing only on the right side are reported.
 func directoriesDiffer(left, right string) (bool, error) {
-	cmd := exec.Command("git", "diff", "--no-index", "--quiet", "--", left, right)
-	err := cmd.Run()
-	if err == nil {
-		return false, nil
+	c := exec.Command("rsync", "-rlcn", "--delete", "--exclude=.git",
+		"--itemize-changes",
+		left+string(os.PathSeparator), right+string(os.PathSeparator))
+	out, err := c.Output()
+	if err != nil {
+		return false, fmt.Errorf("rsync compare %s vs %s: %w\n%s", left, right, err, out)
 	}
-	if exitErr, ok := err.(*exec.ExitError); ok {
-		if exitErr.ExitCode() == 1 {
-			return true, nil
-		}
-	}
-	return false, fmt.Errorf("compare %s and %s: %w", left, right, err)
+	return strings.TrimSpace(string(out)) != "", nil
 }
 
 func crossfileCommands(path string) ([][]string, error) {
@@ -534,7 +578,7 @@ func removeFromCrossfile(localPath string) {
 				break
 			}
 		}
-		if isPatchLine && len(fields) > 0 && fields[len(fields)-1] == localPath {
+		if isPatchLine && len(fields) > 0 && filepath.ToSlash(filepath.Clean(fields[len(fields)-1])) == localPath {
 			continue // skip this line
 		}
 		newLines = append(newLines, line)
@@ -617,11 +661,21 @@ func findPatchForPath(meta Metadata, rel string) *Patch {
 	if rel == "" {
 		return nil
 	}
+	rel = strings.Trim(filepath.ToSlash(filepath.Clean(rel)), "/")
+	if rel == "" {
+		return nil
+	}
 
 	var selected *Patch
 	longest := -1
 	for i := range meta.Patches {
-		lp := strings.Trim(meta.Patches[i].LocalPath, "/")
+		raw := strings.TrimSpace(meta.Patches[i].LocalPath)
+		if raw == "" {
+			continue
+		}
+		// Clean stored paths defensively so legacy metadata (e.g. "./mxc2")
+		// still matches; this heals without a migration step.
+		lp := strings.Trim(filepath.ToSlash(filepath.Clean(raw)), "/")
 		if lp == "" {
 			continue
 		}
@@ -683,11 +737,9 @@ func resolvePathToRepoRelative(inputPath string) (string, error) {
 	absPath = filepath.Clean(absPath)
 
 	// Evaluate symlinks to handle /tmp -> /private/tmp on macOS
-	absPath, err = filepath.EvalSymlinks(absPath)
-	if err != nil {
-		// If EvalSymlinks fails (path doesn't exist), continue with cleaned path
-		// This allows diff to work even if path doesn't exist yet
-		absPath = filepath.Clean(absPath)
+	// If the path doesn't exist yet, keep the cleaned absolute path.
+	if resolved, err := filepath.EvalSymlinks(absPath); err == nil {
+		absPath = resolved
 	}
 
 	// Also evaluate symlinks for root to ensure consistent comparison
@@ -747,13 +799,9 @@ func selectPatchInteractive(meta *Metadata) (*Patch, error) {
 	)
 	cmd.Stdin = strings.NewReader(b.String())
 	out, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-
 	selection := strings.TrimSpace(string(out))
-	if selection == "" {
-		return nil, nil
+	if err != nil || selection == "" {
+		return nil, nil // user cancelled (ESC / empty)
 	}
 
 	parts := strings.Split(selection, "\t")
@@ -783,15 +831,44 @@ func selectPatchInteractive(meta *Metadata) (*Patch, error) {
 func main() {
 	var dry string
 	rootCmd := &cobra.Command{
-		Use:     "git-cross",
-		Version: "0.3.0",
+		Use:          "git-cross",
+		Version:      "0.3.0",
+		Short:        "Manage vendored cross-repo patches (worktree + rsync)",
+		SilenceUsage: true, // no Usage dump on errors
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return printPatchRows("Patches (local_path <TAB> worktree). See: git cross --help")
+		},
+		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 	}
+	rootCmd.AddGroup(
+		&cobra.Group{ID: "repo", Title: "Repository:"},
+		&cobra.Group{ID: "inspect", Title: "Inspect & Navigate:"},
+		&cobra.Group{ID: "patches", Title: "Patch Lifecycle:"},
+	)
+	// Group the builtin help command so no ungrouped visible command remains
+	// (Cobra otherwise renders it under "Additional Commands:").
+	rootCmd.SetHelpCommand(&cobra.Command{
+		Use:     "help [command]",
+		Short:   "Help about any command",
+		GroupID: "repo",
+		Run: func(c *cobra.Command, args []string) {
+			target, _, err := c.Root().Find(args)
+			if target == nil || err != nil {
+				c.Printf("Unknown help topic %q\n", args)
+				_ = c.Root().Usage()
+				return
+			}
+			target.InitDefaultHelpFlag()
+			_ = target.Help()
+		},
+	})
 	rootCmd.PersistentFlags().StringVar(&dry, "dry", "", "Dry run command (e.g. echo)")
 
 	useCmd := &cobra.Command{
-		Use:   "use [name] [url]",
-		Short: "Add a remote repository",
-		Args:  cobra.ExactArgs(2),
+		Use:     "use [name] [url]",
+		Short:   "Add a remote repository",
+		GroupID: "patches",
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, url := args[0], args[1]
 			logInfo(fmt.Sprintf("Adding remote %s (%s)...", name, url))
@@ -834,9 +911,10 @@ func main() {
 	}
 
 	patchCmd := &cobra.Command{
-		Use:   "patch [spec] [local_path]",
-		Short: "Vendor a directory from a remote",
-		Args:  cobra.MinimumNArgs(1),
+		Use:     "patch [spec] [local_path]",
+		Short:   "Vendor a directory from a remote",
+		GroupID: "patches",
+		Args:    cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			specInput := args[0]
 			spec, err := parsePatchSpec(specInput)
@@ -851,6 +929,7 @@ func main() {
 			if localPath == "" {
 				localPath = filepath.Base(spec.RemotePath)
 			}
+			localPath = filepath.ToSlash(filepath.Clean(localPath)) // "./mxc2" -> "mxc2"
 
 			repo, err := git.Open(".")
 			if err != nil {
@@ -1131,9 +1210,10 @@ func main() {
 	}
 
 	updateCmd := &cobra.Command{
-		Use:   "update [path]",
-		Short: "Update Crossfile patches from upstream",
-		Args:  cobra.MaximumNArgs(1),
+		Use:     "update [path]",
+		Short:   "Update Crossfile patches from upstream",
+		GroupID: "repo",
+		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			root, err := getRepoRoot()
 			if err != nil {
@@ -1313,8 +1393,8 @@ func main() {
 				}
 				updated++
 				if localChanged {
-					logWarn(fmt.Sprintf("Local edits detected; preserving %s. Compare the worktree and local copy manually:", localPath))
-					printDiffCommand(upstreamAbs, localAbs)
+					logWarn(fmt.Sprintf("'%s' differs from upstream; local copy preserved. Compare with: git cross diff %s",
+						localPath, localPath))
 					continue
 				}
 				if err := os.MkdirAll(localAbs, 0o755); err != nil {
@@ -1336,9 +1416,13 @@ func main() {
 	}
 
 	compareCmd := &cobra.Command{
-		Use:   "compare [path]",
-		Short: "Open the configured directory comparison tool for a patch",
-		Args:  cobra.MaximumNArgs(1),
+		Use:           "compare [path]",
+		Aliases:       []string{"cmp"},
+		Short:         "Open the configured directory comparison tool for a patch",
+		GroupID:       "repo",
+		Args:          cobra.MaximumNArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			meta, err := loadMetadata()
 			if err != nil {
@@ -1358,168 +1442,125 @@ func main() {
 				}
 			}
 			if patch == nil {
-				return fmt.Errorf("patch not found; provide a path or run from inside a patched directory")
+				selected, serr := selectPatchInteractive(&meta)
+				if serr != nil { // fzf missing
+					if rerr := printPatchRows("fzf is not installed; cd into a patched directory first or pass a path. Patches (local_path <TAB> worktree):"); rerr != nil {
+						return rerr
+					}
+					return errPatchNotFound
+				}
+				if selected == nil {
+					return nil // cancelled
+				}
+				patch = selected
 			}
 			root, err := getRepoRoot()
 			if err != nil {
 				return err
 			}
-			return runDiffTool(filepath.Join(root, patch.Worktree, patch.RemotePath), filepath.Join(root, patch.LocalPath))
+			return runDiffTool(root,
+				filepath.Join(root, patch.Worktree, patch.RemotePath),
+				filepath.Join(root, patch.LocalPath))
 		},
 	}
 
-	// Helper: Copy text to clipboard (cross-platform)
-	copyToClipboard := func(text string) error {
-		var cmd *exec.Cmd
-
-		// Detect platform and use appropriate command
-		if _, err := exec.LookPath("pbcopy"); err == nil {
-			// macOS
-			cmd = exec.Command("pbcopy")
-		} else if _, err := exec.LookPath("xclip"); err == nil {
-			// Linux with xclip
-			cmd = exec.Command("xclip", "-selection", "clipboard")
-		} else if _, err := exec.LookPath("xsel"); err == nil {
-			// Linux with xsel
-			cmd = exec.Command("xsel", "--clipboard", "--input")
-		} else {
-			return fmt.Errorf("no clipboard tool found (pbcopy/xclip/xsel)")
-		}
-
-		cmd.Stdin = strings.NewReader(text)
-		return cmd.Run()
-	}
-
-	// Helper: Get relative path from PWD to target
-	getRelativePath := func(targetPath string) string {
-		pwd, err := os.Getwd()
-		if err != nil {
-			return targetPath // fallback to absolute
-		}
-		relPath, err := filepath.Rel(pwd, targetPath)
-		if err != nil {
-			return targetPath // fallback to absolute
-		}
-		return relPath
-	}
-
-	// Helper: Open shell in target directory (path must be provided)
-	openShellInDir := func(path string, targetType string) error {
-		meta, err := loadMetadata()
-		if err != nil {
-			return err
-		}
-		if len(meta.Patches) == 0 {
-			fmt.Println("No patches configured.")
-			return nil
-		}
-
-		// Find patch for provided path
-		patch := findPatchForPath(meta, path)
-		if patch == nil {
-			for i := range meta.Patches {
-				if meta.Patches[i].LocalPath == path {
-					patch = &meta.Patches[i]
-					break
-				}
-			}
-		}
-		if patch == nil {
-			return fmt.Errorf("patch not found for path: %s", path)
-		}
-
-		// Determine target directory
-		var targetDir string
-		if targetType == "worktree" {
-			targetDir = patch.Worktree
-		} else {
-			targetDir = patch.LocalPath
-		}
-
-		if _, err := os.Stat(targetDir); os.IsNotExist(err) {
-			return fmt.Errorf("%s not found: %s", targetType, targetDir)
-		}
-
-		// Open subshell
-		shell := os.Getenv("SHELL")
-		if shell == "" {
-			shell = "/bin/sh"
-		}
-
-		if dry != "" {
-			fmt.Printf("%s cd %s\n", dry, targetDir)
-			fmt.Printf("%s exec %s\n", dry, shell)
-			return nil
-		}
-
-		logInfo(fmt.Sprintf("Opening shell in %s", targetDir))
-		c := exec.Command(shell)
-		c.Dir = targetDir
-		c.Stdin = os.Stdin
-		c.Stdout = os.Stdout
-		c.Stderr = os.Stderr
-		return c.Run()
-	}
-
-	// Shared logic for cd/wt commands — only the target field differs
+	// Shared logic for cd/wt commands — only the target field differs.
+	// Prints the selected/resolved absolute path to stdout; the caller cds via
+	// `cd "$(git cross cd)"` (a child process cannot change the parent shell).
 	makeDirCmd := func(use, short, long, target string) *cobra.Command {
 		return &cobra.Command{
 			Use: use, Short: short, Long: long,
+			SilenceErrors: true, SilenceUsage: true,
+			GroupID: "inspect",
 			RunE: func(cmd *cobra.Command, args []string) error {
 				meta, err := loadMetadata()
 				if err != nil {
 					return err
 				}
 				if len(meta.Patches) == 0 {
-					fmt.Println("No patches configured.")
+					logInfo("No patches configured.")
 					return nil
 				}
+				var patch *Patch
 				if len(args) > 0 {
-					return openShellInDir(strings.TrimSpace(args[0]), target)
-				}
-				selected, err := selectPatchInteractive(&meta)
-				if err != nil {
-					logInfo("fzf not available. Showing patch list; rerun with a path.")
-					table := tablewriter.NewWriter(os.Stdout)
-					table.Header("REMOTE", "REMOTE PATH", "LOCAL PATH")
-					for _, p := range meta.Patches {
-						table.Append(p.Remote, p.RemotePath, p.LocalPath)
+					arg := strings.TrimSpace(args[0])
+					relPath, rerr := resolvePathToRepoRelative(arg)
+					if rerr != nil {
+						return rerr
 					}
-					table.Render()
-					return nil
+					patch = findPatchForPath(meta, relPath)
+					if patch == nil {
+						cleanArg := filepath.ToSlash(filepath.Clean(arg))
+						for i := range meta.Patches {
+							if meta.Patches[i].LocalPath == cleanArg {
+								patch = &meta.Patches[i]
+								break
+							}
+						}
+					}
+					if patch == nil {
+						if err := printPatchRows("No patch detected; available patches (local_path <TAB> worktree):"); err != nil {
+							return err
+						}
+						return errPatchNotFound
+					}
+				} else {
+					// No path: CWD auto-detect, then fzf, then rows+hint.
+					if detected, derr := findPatchForPathFromCWD(meta); derr == nil && detected != nil {
+						patch = detected
+					} else {
+						selected, err := selectPatchInteractive(&meta)
+						if err != nil { // fzf not available
+							if rerr := printPatchRows("fzf is not installed; cd manually, e.g. `cd <local_path>` or `cd <worktree>`. Destinations (local_path <TAB> worktree):"); rerr != nil {
+								return rerr
+							}
+							return errPatchNotFound
+						}
+						if selected == nil {
+							return nil // no selection made (ESC)
+						}
+						patch = selected
+					}
 				}
-				if selected == nil {
-					logInfo("No selection made.")
-					return nil
-				}
-				targetPath := selected.LocalPath
+				targetPath := patch.LocalPath
 				if target == "worktree" {
-					targetPath = selected.Worktree
+					targetPath = patch.Worktree
 				}
-				relPath := getRelativePath(targetPath)
-				if err := copyToClipboard(relPath); err != nil {
-					return fmt.Errorf("failed to copy to clipboard: %v", err)
+				root, err := getRepoRoot()
+				if err != nil {
+					return err
 				}
-				logSuccess(fmt.Sprintf("Path copied to clipboard: %s", relPath))
+				abs := filepath.Join(root, targetPath)
+				if _, err := os.Stat(abs); os.IsNotExist(err) {
+					return fmt.Errorf("%s not found: %s", target, targetPath)
+				}
+				if dry != "" {
+					fmt.Printf("%s cd %s\n", dry, abs)
+					return nil
+				}
+				fmt.Println(abs) // stdout contract: path only
 				return nil
 			},
 		}
 	}
 
 	cdCmd := makeDirCmd("cd [path]",
-		"Open a shell in the patch local_path (for editing files)",
-		"Open a shell in the patch local_path (for editing files).\n\nWith path: opens subshell in the specified local_path directory.\nWithout path: uses fzf to select a patch, then copies the path to clipboard.",
+		"Print a patch local_path to cd into (use: cd \"$(git cross cd)\")",
+		"Print the absolute path of a patch local_path to stdout (use: cd \"$(git cross cd)\").\n\nWith path: prints the specified local_path.\nWithout path: auto-detects the current patch from the working directory, otherwise uses fzf to select one.",
 		"local_path")
 
 	wtCmd := makeDirCmd("wt [path]",
-		"Open a shell in the patch worktree (for working with git history)",
-		"Open a shell in the patch worktree (for working with git history).\n\nWith path: opens subshell in the specified worktree directory.\nWithout path: uses fzf to select a patch, then copies the path to clipboard.",
+		"Print a patch worktree to cd into (use: cd \"$(git cross wt)\")",
+		"Print the absolute path of a patch worktree to stdout (use: cd \"$(git cross wt)\").\n\nWith path: prints the specified worktree.\nWithout path: auto-detects the current patch from the working directory, otherwise uses fzf to select one.",
 		"worktree")
 
 	listCmd := &cobra.Command{
-		Use:   "list",
-		Short: "Show all configured patches and remotes",
+		Use:     "list",
+		Short:   "Show all configured patches and remotes",
+		GroupID: "repo",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			raw, _ := cmd.Flags().GetBool("raw")
+			noHeader, _ := cmd.Flags().GetBool("no-header")
 			meta, err := loadMetadata()
 			if err != nil {
 				return err
@@ -1531,56 +1572,97 @@ func main() {
 				usedRemotes[p.Remote] = true
 			}
 
+			// Map to track fetch/push URLs per remote for deduplication
+			type remoteInfo struct {
+				fetch string
+				push  string
+			}
+			remoteMap := make(map[string]*remoteInfo)
+
 			repo, err := git.Open(".")
 			if err == nil && len(usedRemotes) > 0 {
 				remotes, _ := git.NewCommand("remote", "-v").RunInDir(repo.Path())
-				if len(remotes) > 0 {
-					logInfo("Configured Remotes:")
-					remotesStr := strings.TrimSpace(string(remotes))
-					lines := strings.Split(remotesStr, "\n")
-
-					// Map to track fetch/push URLs per remote for deduplication
-					type remoteInfo struct {
-						fetch string
-						push  string
+				for _, line := range strings.Split(strings.TrimSpace(string(remotes)), "\n") {
+					fields := strings.Fields(line)
+					if len(fields) < 3 {
+						continue
 					}
-					remoteMap := make(map[string]*remoteInfo)
+					name := fields[0]
+					url := fields[1]
+					rtype := fields[2] // (fetch) or (push)
 
-					for _, line := range lines {
-						fields := strings.Fields(line)
-						if len(fields) >= 3 {
-							name := fields[0]
-							url := fields[1]
-							rtype := fields[2] // (fetch) or (push)
-
-							if !usedRemotes[name] {
-								continue
-							}
-
-							if remoteMap[name] == nil {
-								remoteMap[name] = &remoteInfo{}
-							}
-							if strings.Contains(rtype, "fetch") {
-								remoteMap[name].fetch = url
-							} else if strings.Contains(rtype, "push") {
-								remoteMap[name].push = url
-							}
-						}
+					if !usedRemotes[name] {
+						continue
 					}
 
-					table := tablewriter.NewWriter(os.Stdout)
-					table.Header("NAME", "URL")
-					for name, info := range remoteMap {
-						if info.fetch == info.push || info.push == "" {
-							table.Append(name, info.fetch)
-						} else {
-							table.Append(name, info.fetch+" (fetch)")
-							table.Append(name, info.push+" (push)")
-						}
+					if remoteMap[name] == nil {
+						remoteMap[name] = &remoteInfo{}
 					}
-					table.Render()
-					fmt.Println()
+					if strings.Contains(rtype, "fetch") {
+						remoteMap[name].fetch = url
+					} else if strings.Contains(rtype, "push") {
+						remoteMap[name].push = url
+					}
 				}
+			}
+
+			// Deterministic remote order in both output modes.
+			remoteNames := make([]string, 0, len(remoteMap))
+			for name := range remoteMap {
+				remoteNames = append(remoteNames, name)
+			}
+			sort.Strings(remoteNames)
+
+			if raw {
+				// Machine-readable: tab-separated rows, no banners, no borders.
+				if len(remoteNames) > 0 {
+					if !noHeader {
+						fmt.Printf("REMOTE_NAME\tREMOTE_URL\n")
+					}
+					for _, name := range remoteNames {
+						info := remoteMap[name]
+						if info.fetch == "" {
+							continue
+						}
+						fmt.Printf("%s\t%s\n", name, info.fetch)
+						if info.push != "" && info.push != info.fetch {
+							fmt.Printf("%s\t%s\n", name, info.push)
+						}
+					}
+				}
+				if len(meta.Patches) == 0 {
+					fmt.Fprintln(os.Stderr, "No patches configured.")
+					return nil
+				}
+				if !noHeader {
+					fmt.Printf("REMOTE\tREMOTE_PATH\tLOCAL_PATH\tWORKTREE\tBRANCH\n")
+				}
+				for _, p := range meta.Patches {
+					fmt.Printf("%s\t%s\t%s\t%s\t%s\n", p.Remote, p.RemotePath, p.LocalPath, p.Worktree, p.Branch)
+				}
+				return nil
+			}
+
+			if len(remoteNames) > 0 {
+				logInfo("Configured Remotes:")
+				table := tablewriter.NewWriter(os.Stdout)
+				if !noHeader {
+					table.Header("REMOTE NAME", "REMOTE URL")
+				}
+				for _, name := range remoteNames {
+					info := remoteMap[name]
+					if info.fetch == "" {
+						continue
+					}
+					if info.fetch == info.push || info.push == "" {
+						table.Append(name, info.fetch)
+					} else {
+						table.Append(name, info.fetch+" (fetch)")
+						table.Append(name, info.push+" (push)")
+					}
+				}
+				table.Render()
+				fmt.Println()
 			}
 
 			if len(meta.Patches) == 0 {
@@ -1589,18 +1671,23 @@ func main() {
 			}
 			logInfo("Configured Patches:")
 			table := tablewriter.NewWriter(os.Stdout)
-			table.Header("REMOTE", "REMOTE PATH", "LOCAL PATH", "WORKTREE")
+			if !noHeader {
+				table.Header("REMOTE", "REMOTE PATH", "LOCAL PATH", "WORKTREE", "BRANCH")
+			}
 			for _, p := range meta.Patches {
-				table.Append(p.Remote, p.RemotePath, p.LocalPath, p.Worktree)
+				table.Append(p.Remote, p.RemotePath, p.LocalPath, p.Worktree, p.Branch)
 			}
 			table.Render()
 			return nil
 		},
 	}
+	listCmd.Flags().Bool("raw", false, "machine-readable output: tab-separated rows, no borders, no banners")
+	listCmd.Flags().Bool("no-header", false, "omit header line (applies to table mode and --raw)")
 
 	statusCmd := &cobra.Command{
-		Use:   "status",
-		Short: "Show patch status",
+		Use:     "status",
+		Short:   "Show patch status",
+		GroupID: "repo",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			meta, _ := loadMetadata()
 			if len(meta.Patches) == 0 {
@@ -1626,18 +1713,17 @@ func main() {
 				if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
 					diff = "Missing WT"
 				} else {
-					hasOverrides, err := hasCrossOverrides(filepath.Join(root, p.LocalPath))
+					localAbsPath := filepath.Join(root, p.LocalPath)
+					hasOverrides, err := hasCrossOverrides(localAbsPath)
 					if err != nil {
 						return fmt.Errorf("failed to read .crossignore for %s: %w", p.LocalPath, err)
 					}
 					if hasOverrides {
 						diff = "Override"
 					} else {
-						// Quick diff check - use absolute paths
+						// Quick diff check — .git excluded, checksum-based.
 						upstreamPath := filepath.Join(worktreePath, p.RemotePath)
-						localPath := filepath.Join(root, p.LocalPath)
-						c := exec.Command("git", "diff", "--no-index", "--quiet", upstreamPath, localPath)
-						if err := c.Run(); err != nil {
+						if differ, derr := directoriesDiffer(upstreamPath, localAbsPath); derr == nil && differ {
 							diff = "Modified"
 						}
 					}
@@ -1659,7 +1745,6 @@ func main() {
 					}
 
 					// Also check conflicts in local path (from failed stash restore)
-					localAbsPath := filepath.Join(root, p.LocalPath)
 					if out, _ := git.NewCommand("ls-files", "-u", localAbsPath).RunInDir(root); len(out) > 0 {
 						conflicts = "YES"
 					}
@@ -1671,13 +1756,16 @@ func main() {
 	}
 
 	diffCmd := &cobra.Command{
-		Use:   "diff [path]",
-		Short: "Show changes between local and upstream",
+		Use:           "diff [path]",
+		Short:         "Show changes between local and upstream",
+		GroupID:       "inspect",
+		SilenceErrors: true,
+		SilenceUsage:  true,
 		Long: `Show diff between local vendored files and their upstream worktree source.
 
 When run without a path argument, auto-detects the current patch from the
-working directory: if CWD is inside a patched local_path, shows only that
-patch's diff. Otherwise shows diffs for all patches.`,
+working directory. Outside a patched directory it uses fzf to select a patch;
+if fzf is unavailable it prints the available patches.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := ""
 			if len(args) > 0 {
@@ -1688,20 +1776,30 @@ patch's diff. Otherwise shows diffs for all patches.`,
 				}
 				path = resolved
 			} else {
-				// No explicit path: detect from CWD
-				cwd, err := os.Getwd()
-				if err == nil {
-					root, _ := getRepoRoot()
-					meta, _ := loadMetadata()
-					for _, p := range meta.Patches {
-						absLocal := filepath.Join(root, p.LocalPath)
-						if strings.HasPrefix(cwd+string(os.PathSeparator), absLocal+string(os.PathSeparator)) ||
-							cwd == absLocal {
-							path = p.LocalPath
-							logInfo(fmt.Sprintf("Auto-detected patch from CWD: %s", path))
-							break
+				// No explicit path: CWD auto-detect, then fzf, then rows+hint
+				meta, err := loadMetadata()
+				if err != nil {
+					return err
+				}
+				patch, perr := findPatchForPathFromCWD(meta)
+				if perr == nil && patch != nil {
+					path = patch.LocalPath
+					logInfo(fmt.Sprintf("Auto-detected patch from CWD: %s", path))
+				} else if len(meta.Patches) == 0 {
+					logInfo("No patches configured.")
+					return nil
+				} else {
+					selected, serr := selectPatchInteractive(&meta)
+					if serr != nil { // fzf missing
+						if rerr := printPatchRows("fzf is not installed; cd into a patched directory first or pass a path. Patches (local_path <TAB> worktree):"); rerr != nil {
+							return rerr
 						}
+						return errPatchNotFound
 					}
+					if selected == nil {
+						return nil // cancelled
+					}
+					path = selected.LocalPath
 				}
 			}
 
@@ -1711,7 +1809,10 @@ patch's diff. Otherwise shows diffs for all patches.`,
 				return fmt.Errorf("failed to get repo root: %w", err)
 			}
 
-			meta, _ := loadMetadata()
+			meta, err := loadMetadata()
+			if err != nil {
+				return err
+			}
 			found := false
 			for _, p := range meta.Patches {
 				if path != "" && p.LocalPath != path {
@@ -1739,15 +1840,20 @@ patch's diff. Otherwise shows diffs for all patches.`,
 						fmt.Printf("git diff --no-index %q %q\n", filepath.Join(upstreamPath, override), filepath.Join(localPath, override))
 					}
 				} else {
-					c := exec.Command("git", "diff", "--no-index", upstreamPath, localPath)
+					c := exec.Command("git", "diff", "--no-index",
+						upstreamPath, localPath,
+						"--", ":(exclude).git", ":(glob)**")
 					c.Stdout = os.Stdout
 					c.Stderr = os.Stderr
 					// git diff --no-index returns 1 if there are differences, which cobra might treat as error
 					_ = c.Run()
 				}
 			}
-			if !found && path != "" {
-				return fmt.Errorf("patch not found for path: %s", path)
+			if !found {
+				if err := printPatchRows("No patch detected; available patches (local_path <TAB> worktree):"); err != nil {
+					return err
+				}
+				return errPatchNotFound
 			}
 			return nil
 		},
@@ -1896,8 +2002,9 @@ patch's diff. Otherwise shows diffs for all patches.`,
 	}
 
 	initCmd := &cobra.Command{
-		Use:   "init",
-		Short: "Initialize a new project with Crossfile",
+		Use:     "init",
+		Short:   "Initialize a new project with Crossfile",
+		GroupID: "repo",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := "Crossfile"
 			if _, err := os.Stat(path); err == nil {
@@ -1914,12 +2021,32 @@ patch's diff. Otherwise shows diffs for all patches.`,
 	}
 
 	removeCmd := &cobra.Command{
-		Use:   "remove [path]",
-		Short: "Remove a patch and its worktree",
-		Args:  cobra.ExactArgs(1),
+		Use:           "remove [path]",
+		Short:         "Remove a patch and its worktree",
+		GroupID:       "patches",
+		Args:          cobra.ExactArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			meta, _ := loadMetadata()
-			if err := removeSinglePatch(&meta, args[0]); err != nil {
+			meta, err := loadMetadata()
+			if err != nil {
+				return err
+			}
+			localPath := filepath.ToSlash(filepath.Clean(strings.TrimSpace(args[0])))
+			found := false
+			for _, p := range meta.Patches {
+				if p.LocalPath == localPath {
+					found = true
+					break
+				}
+			}
+			if !found {
+				if err := printPatchRows("No patch detected; available patches (local_path <TAB> worktree):"); err != nil {
+					return err
+				}
+				return errPatchNotFound
+			}
+			if err := removeSinglePatch(&meta, localPath); err != nil {
 				return err
 			}
 			if err := saveMetadata(meta); err != nil {
@@ -1931,9 +2058,10 @@ patch's diff. Otherwise shows diffs for all patches.`,
 	}
 
 	pruneCmd := &cobra.Command{
-		Use:   "prune [remote]",
-		Short: "Prune unused remotes and worktrees, or remove all patches for a specific remote",
-		Args:  cobra.MaximumNArgs(1),
+		Use:     "prune [remote]",
+		Short:   "Prune unused remotes and worktrees, or remove all patches for a specific remote",
+		GroupID: "patches",
+		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			meta, _ := loadMetadata()
 

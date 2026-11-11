@@ -47,8 +47,11 @@ log_header "Testing 'just cross status'..."
 
 # Find worktree
 # AICONTEXT: finding worktree, shall be possible with metadata.yaml and with just cross _resolve_context, better keep the test code DRY principle.
-hash=$(echo "vendor/lib" | md5sum | cut -d' ' -f1 | cut -c1-8)
-wt=".cross/worktrees/repo1_$hash"
+wt=$(jq -r '.patches[] | select(.local_path == "vendor/lib") | .worktree' .cross/metadata.json)
+if [ -z "$wt" ] || [ ! -d "$wt" ]; then
+    echo "Failed: worktree for vendor/lib not found in metadata."
+    exit 1
+fi
 
 git -C "$wt" fetch -q
 

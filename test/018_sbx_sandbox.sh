@@ -6,6 +6,9 @@ setup_sandbox
 cd "$SANDBOX"
 
 GO_BIN="$REPO_ROOT/src-go/git-cross-go"
+if [ -f "$GO_BIN" ] && [ "$REPO_ROOT/src-go/main.go" -nt "$GO_BIN" ]; then
+    rm -f "$GO_BIN"
+fi
 if [ ! -f "$GO_BIN" ]; then
     if ! command -v go >/dev/null 2>&1; then
         echo "SKIP: Go not available"
@@ -36,11 +39,17 @@ echo "$output"
 if ! grep -q "local AI change" vendor/ai-src/app.js; then
     fail "Update overwrote local changes"
 fi
-if ! echo "$output" | grep -q "Local edits detected"; then
-    fail "Update did not report the conflict review workflow"
+if ! echo "$output" | grep -q "differs from upstream"; then
+    fail "Update did not report that the local copy differs from upstream"
 fi
-if ! echo "$output" | grep -q "DirDiff"; then
-    fail "Update did not show the default comparison tool command"
+if ! echo "$output" | grep -q "cross diff vendor/ai-src"; then
+    fail "Update did not point at 'git cross diff <local_path>' for review"
+fi
+if echo "$output" | grep -q "Local edits detected"; then
+    fail "Update still prints the old 'Local edits detected' wording"
+fi
+if echo "$output" | grep -q "DirDiff"; then
+    fail "Update should not print the configured diff tool command"
 fi
 
 wt=$(jq -r '.patches[0].worktree' .cross/metadata.json)

@@ -3,36 +3,15 @@ set -euo pipefail
 
 source "$(dirname "$0")/common.sh"
 
-# The cd/wt commands are only implemented in Go, not in Justfile/shell
+# The cd/wt commands now print a path instead of opening a subshell.
 # Skip this test unless the Go implementation was explicitly requested.
 if [ "${TEST_USE_IMPL:-}" != "go" ]; then
-    echo "Skipping test 010: cd/wt commands are Go-only"
+    echo "Skipping test 010: cd/wt implementation checks are opt-in (TEST_USE_IMPL=go)"
     exit 0
 fi
 
 setup_sandbox
 cd "$SANDBOX"
-
-mkdir -p "$SANDBOX/bin"
-cat > "$SANDBOX/bin/fzf" <<'EOF'
-#!/usr/bin/env bash
-lines=()
-while IFS= read -r line; do
-  lines+=("$line")
-done
-for (( idx=${#lines[@]}-1; idx>=0; idx--)); do
-  line="${lines[$idx]}"
-  trimmed="$(echo "$line" | tr -d '[:space:]')"
-  if [[ -z "$trimmed" ]]; then continue; fi
-  if [[ "$line" == *"REMOTE"* && "$line" != *"/"* ]]; then continue; fi
-  if [[ "$line" =~ ^[-+]+$ ]]; then continue; fi
-  echo "$line"
-  exit 0
-done
-exit 0
-EOF
-chmod +x "$SANDBOX/bin/fzf"
-export PATH="$SANDBOX/bin:$PATH"
 
 upstream_path=$(create_upstream "shell-worktree")
 upstream_url="file://$upstream_path"
@@ -44,20 +23,29 @@ git add src/data.txt
 git commit -m "Add shell data" >/dev/null
 popd >/dev/null
 
-just cross use demo "$upstream_url"
-just cross patch demo:src vendor/shell-src
+just cross use demo "$upstream_url" >/dev/null
+just cross patch demo:src vendor/shell-src >/dev/null
 
-# Test cd with explicit path
-output=$(just cross dry=echo cd vendor/shell-src | grep "exec ")
-if [[ "$output" != *"exec $SHELL"* ]]; then
-    fail "cd with explicit path failed. Output: $output"
+# Test cd with explicit path: stdout is exactly the absolute local path.
+expected_local=$(cd vendor/shell-src && pwd -P)
+output=$(just cross cd vendor/shell-src 2>/dev/null)
+if [ "$output" != "$expected_local" ]; then
+    fail "cd with explicit path returned '$output', expected '$expected_local'"
 fi
 
-# Test cd from patch directory (implicit context)
+# Test wt with explicit path: stdout is exactly the absolute worktree path.
+wt=$(jq -r '.patches[] | select(.local_path == "vendor/shell-src") | .worktree' .cross/metadata.json)
+expected_wt=$(cd "$wt" && pwd -P)
+output=$(just cross wt vendor/shell-src 2>/dev/null)
+if [ "$output" != "$expected_wt" ]; then
+    fail "wt with explicit path returned '$output', expected '$expected_wt'"
+fi
+
+# Test cd from patch directory (implicit context).
 pushd vendor/shell-src >/dev/null
-output=$(just cross dry=echo cd | grep "exec ")
-if [[ "$output" != *"exec $SHELL"* ]]; then
-    fail "cd from patch directory failed. Output: $output"
+output=$(just cross cd 2>/dev/null)
+if [ "$output" != "$expected_local" ]; then
+    fail "cd from patch directory returned '$output', expected '$expected_local'"
 fi
 popd >/dev/null
 

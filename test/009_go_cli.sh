@@ -28,6 +28,10 @@ export PATH="$SANDBOX/bin:$PATH"
 
 # Compile go binary
 GO_BIN="$REPO_ROOT/src-go/git-cross-go"
+# Rebuild if the source changed since the binary was built.
+if [ -f "$GO_BIN" ] && [ "$REPO_ROOT/src-go/main.go" -nt "$GO_BIN" ]; then
+    rm -f "$GO_BIN"
+fi
 if [ ! -f "$GO_BIN" ]; then
     echo "Go binary not found at $GO_BIN. Building..."
     export PATH=$HOME/homebrew/bin:$PATH
@@ -158,6 +162,66 @@ if ! echo "$list_output" | grep -q "vendor/go-src"; then
     fail "Go 'list' should show patch path 'vendor/go-src'"
 fi
 
+log_header "Testing Go 'list --raw' machine-readable output..."
+raw_output=$("$GO_BIN" list --raw 2>/dev/null)
+echo "$raw_output"
+if echo "$raw_output" | grep -q "==>"; then
+    fail "Go 'list --raw' must not print section banners"
+fi
+if echo "$raw_output" | grep -q '^+'; then
+    fail "Go 'list --raw' must not print table borders ('+')"
+fi
+if echo "$raw_output" | grep -q '|'; then
+    fail "Go 'list --raw' must not print table borders ('|')"
+fi
+if ! echo "$raw_output" | grep -q "REMOTE_NAME" || ! echo "$raw_output" | grep -q "REMOTE_URL"; then
+    fail "Go 'list --raw' should print the REMOTE_NAME/REMOTE_URL header"
+fi
+if ! echo "$raw_output" | grep -q "LOCAL_PATH" || ! echo "$raw_output" | grep -q "WORKTREE" || ! echo "$raw_output" | grep -q "BRANCH"; then
+    fail "Go 'list --raw' should print the patch header with LOCAL_PATH, WORKTREE and BRANCH"
+fi
+if ! printf '%s\n' "$raw_output" | cut -f3 | grep -qx "vendor/go-src"; then
+    fail "Go 'list --raw' patches block: 'cut -f3' should yield local paths"
+fi
+if ! printf '%s\n' "$raw_output" | cut -f1 | grep -qx "demo"; then
+    fail "Go 'list --raw' remotes block should start with the remote name"
+fi
+
+raw_again=$("$GO_BIN" list --raw 2>/dev/null)
+if [ "$raw_output" != "$raw_again" ]; then
+    fail "Go 'list --raw' output is not deterministic between runs"
+fi
+
+noheader_output=$("$GO_BIN" list --raw --no-header 2>/dev/null)
+echo "$noheader_output"
+if echo "$noheader_output" | grep -q "REMOTE_NAME" || echo "$noheader_output" | grep -q "LOCAL_PATH"; then
+    fail "Go 'list --raw --no-header' should omit the header lines"
+fi
+if ! printf '%s\n' "$noheader_output" | cut -f3 | grep -qx "vendor/go-src"; then
+    fail "Go 'list --raw --no-header' should still print patch rows"
+fi
+
+table_noheader=$("$GO_BIN" list --no-header 2>&1)
+if echo "$table_noheader" | grep -q "REMOTE PATH" || echo "$table_noheader" | grep -q "LOCAL PATH"; then
+    fail "Go 'list --no-header' should omit the table headers"
+fi
+if ! echo "$table_noheader" | grep -q "vendor/go-src"; then
+    fail "Go 'list --no-header' should still print the patch rows"
+fi
+
+# A remote whose fetch and push URLs differ gets two rows under the same schema.
+git remote set-url --push demo "file://$upstream_path-push"
+pushpull_output=$("$GO_BIN" list --raw 2>/dev/null)
+echo "$pushpull_output"
+demo_rows=$(printf '%s\n' "$pushpull_output" | awk -F'\t' '$1=="demo" && NF==2' | wc -l | tr -d ' ')
+if [ "$demo_rows" -ne 2 ]; then
+    fail "Go 'list --raw' should emit two rows for a fetch!=push remote (got $demo_rows)"
+fi
+if printf '%s\n' "$pushpull_output" | grep -q "(fetch)\|(push)"; then
+    fail "Go 'list --raw' must not add (fetch)/(push) suffixes to URLs"
+fi
+git remote set-url --push demo "$upstream_url"
+
 log_header "Testing Go 'status' command..."
 status_output=$("$GO_BIN" status 2>&1)
 echo "$status_output"
@@ -190,11 +254,17 @@ echo "$update_output"
 if ! grep -q "local-only edit" vendor/go-src/logic.go; then
     fail "Go update overwrote the local edit"
 fi
-if ! echo "$update_output" | grep -q "Local edits detected"; then
-    fail "Go update should report local edits"
+if ! echo "$update_output" | grep -q "differs from upstream"; then
+    fail "Go update should report that the local copy differs from upstream"
 fi
-if ! echo "$update_output" | grep -q "DirDiff"; then
-    fail "Go update should print the compare command"
+if echo "$update_output" | grep -q "Local edits detected"; then
+    fail "Go update still prints the old 'Local edits detected' wording"
+fi
+if echo "$update_output" | grep -q "DirDiff"; then
+    fail "Go update should not print the configured diff tool command"
+fi
+if echo "$update_output" | grep -q "git config --global cross.diffTool"; then
+    fail "Go update should not print the global cross.diffTool hint"
 fi
 
 log_header "Testing Go 'diff' command..."
@@ -215,13 +285,38 @@ printf '%s\n%s\n' "$1" "$2" > "$COMPARE_TOOL_ARGS"
 EOF
 chmod +x "$SANDBOX/bin/compare-tool"
 export COMPARE_TOOL_ARGS="$SANDBOX/compare-args.txt"
-git config cross.diffTool "$SANDBOX/bin/compare-tool"
+# Template form: placeholders are substituted with repo-relative paths.
+git config cross.diffTool "$SANDBOX/bin/compare-tool {left} {right}"
 "$GO_BIN" compare vendor/go-src
 if ! grep -q ".cross/worktrees/demo_" "$COMPARE_TOOL_ARGS"; then
     fail "Go compare did not pass the sparse worktree path"
 fi
 if ! grep -q "vendor/go-src" "$COMPARE_TOOL_ARGS"; then
     fail "Go compare did not pass the local patch path"
+fi
+if grep -q "^/" "$COMPARE_TOOL_ARGS"; then
+    fail "Go compare template should substitute repo-relative paths, got absolute paths"
+fi
+
+# Legacy form (no placeholders) still appends the paths as arguments.
+rm -f "$COMPARE_TOOL_ARGS"
+git config cross.diffTool "$SANDBOX/bin/compare-tool"
+"$GO_BIN" compare vendor/go-src
+if ! grep -q ".cross/worktrees/demo_" "$COMPARE_TOOL_ARGS"; then
+    fail "Go compare legacy form did not pass the sparse worktree path"
+fi
+if ! grep -q "vendor/go-src" "$COMPARE_TOOL_ARGS"; then
+    fail "Go compare legacy form did not pass the local patch path"
+fi
+git config --unset cross.diffTool
+unset COMPARE_TOOL_ARGS
+
+# The 'cmp' alias behaves like 'compare'.
+git config cross.diffTool 'echo TOOL {left} {right}'
+cmp_output=$("$GO_BIN" cmp vendor/go-src 2>&1 || true)
+echo "$cmp_output"
+if ! echo "$cmp_output" | grep -Eq "TOOL \.cross/worktrees/demo_[0-9a-f]+/src vendor/go-src"; then
+    fail "Go 'cmp' alias should resolve and run the diff tool like 'compare'"
 fi
 git config --unset cross.diffTool
 

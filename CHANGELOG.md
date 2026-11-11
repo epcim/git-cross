@@ -7,9 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### UX Refresh — navigation, selection, listing, diff tool
+
+#### Added
+- **`git cross cmp`** - Short alias for `compare`; the canonical name is unchanged.
+- **Grouped `--help` output** - Commands are now listed under `Repository:`, `Inspect & Navigate:`, and `Patch Lifecycle:` instead of one flat list. `git cross -h` still prints full help.
+- **`list --raw` and `list --no-header`** - `--raw` emits tab-separated rows with no table borders and no `==>` banners; `--no-header` omits the header line. Raw column order is documented and fixed: `REMOTE_NAME<TAB>REMOTE_URL` first, then `REMOTE<TAB>REMOTE_PATH<TAB>LOCAL_PATH<TAB>WORKTREE<TAB>BRANCH`. Remote rows are sorted deterministically, remotes with distinct fetch/push URLs produce one row per URL without `(fetch)`/`(push)` suffixes, and the empty-state message goes to stderr in raw mode.
+- **Patch row listings** - Bare `git cross` prints one `local_path<TAB>worktree` row per patch to stdout (hint to stderr) instead of Cobra help. Unresolved `compare` / `diff` / `remove` / `cd` / `wt` invocations print the same rows and exit 1 instead of dumping a usage block.
+- **Tests 019, 020, 021, 023** - Cover whole-repo patches plus row listings, grouped help, fzf-driven `diff`/`compare`, and `local_path` normalization.
+
+#### Changed
+- **BREAKING: `cd` / `wt` print a path instead of opening a shell** - Both commands print the absolute destination path to stdout (hints to stderr). They no longer start a subshell and no longer copy anything to the clipboard. Use `cd "$(git cross cd)"`, `cd "$(git cross wt)"`, or the documented `crosscd`/`crosswt` wrappers for bash/zsh/fish. Without an argument `fzf` selects the patch; if `fzf` is missing, rows plus a hint are printed and the command exits 1.
+- **Behavior change: interactive `diff` selection** - With no path, `diff` now resolves the patch via CWD auto-detect, then `fzf`, then rows + hint + exit 1. Previously, running `diff` from outside a patch directory dumped diffs for all patches.
+- **`compare` selection ladder** - With no path, `compare` uses the same CWD auto-detect → `fzf` → rows + hint + exit 1 ladder and always operates on exactly one patch.
+- **`cross.diffTool` template form** - The configured command may contain `{left}` / `{right}`, replaced with repo-relative paths while running with the repo root as cwd. The default is now `vim "+DirDiffIgnore='.git' DirDiff {left} {right}"`. The legacy append form (for example `vim "+DirDiff"`) is deprecated.
+- **Concise `update` warning** - Local edits now produce one relative, actionable line: `'<local_path>' differs from upstream; local copy preserved. Compare with: git cross diff <local_path>`. The `cross.diffTool` configuration hint and the broken DirDiff invocation are gone.
+
+#### Fixed
+- **DirDiff invocation** - `compare` passed the two paths as vim file arguments, where DirDiff never saw them. Paths now go inside the vim `+` command string.
+- **`.git` false positives in comparisons** - The worktree's `.git` pointer file (never present in the local copy) counted as a local deletion. Boolean checks now use `rsync -rlcn --delete --exclude=.git --itemize-changes`; the visual diff excludes `.git` with the `:(exclude).git` pathspec. As a result, whole-repo patches (`remote:.`) no longer always report `Modified` in `status` or always warn in `update`; clean whole-repo patches now update.
+- **`local_path` normalization** - A local path such as `./mxc2` was stored verbatim and broke CWD auto-detection (`compare`, `diff`, `cd`/`wt`, `remove`). Paths are normalized on ingestion, normalized defensively during matching, and self-healed on metadata load; the `Crossfile` keeps the user's original spelling.
+- **Deterministic `list` ordering** - Remotes are sorted instead of following Go map iteration order.
+
 ### Changed
 - **Simplified upstream workflow** - Added `git cross update [path]` to read declarative `use`/`patch` entries from `Crossfile`, fetch upstream, fast-forward sparse worktrees, and install only when the local copy has no edits. Local edits are preserved while the worktree advances for manual comparison.
-- **Manual contribution workflow** - Retired `push`; use `wt`, `compare`, and ordinary Git commands to manually copy and commit desired changes in the sparse worktree. Configure the directory diff command with `git config --global cross.diffTool 'vim "+DirDiff"'`.
+- **Manual contribution workflow** - Retired `push`; use `wt`, `compare`, and ordinary Git commands to manually copy and commit desired changes in the sparse worktree. The comparison tool is configured with `cross.diffTool` (see the Directory Diff Tool section in `README.md`).
 - **Retired replay and arbitrary Crossfile commands** - `update` interprets only `use` and `patch`; hooks and shell commands are no longer run from Crossfile.
 - **Supported implementations** - Go remains primary and Just/Fish the reference. Rust source is retained but no longer maintained; release artifacts are Go-only.
 - **Retired sync workflow** - The prior stash/copy/rebase logic is removed from the supported CLI and Just recipes.

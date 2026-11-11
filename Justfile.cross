@@ -8,8 +8,6 @@ METADATA := "$CROSSDIR/metadata.json"
 JUST_DIR := env("JUST_DIR", source_dir())
 REPO_DIR := env ("REPO_DIR", "$(git rev-parse --show-toplevel)")
 SHELL := env("SHELL")
-dry := ""
-
 
 # Auto-setup environment on first use
 # AICONTEXT: Optional target to help user to ensure correct setup for tool usage. Taks: Call direnv, loading .envrc and from that .env file. Ideally short implementation. 
@@ -106,6 +104,10 @@ _resolve_context2 path="": check-initialized
     #!/usr/bin/env fish
 
     # Resolve git repo relative path of target
+    if test "$path" = "." -o "$path" = "./"
+        # "." means the caller's directory — same as no path
+        set path ""
+    end
     if test -z "$path"
         # Use USER_CWD (set by root Justfile cross recipe) to preserve caller's CWD
         if test -n "$USER_CWD" -a -n "$REPO_DIR"
@@ -125,12 +127,17 @@ _resolve_context2 path="": check-initialized
     end
     # Query metadata.json and export matching key as env variables
     # Find patch whose local_path is a prefix of (or equal to) the given path
-    # i.e. path starts with local_path — handles both exact match and subdirectory cases
+    # i.e. path starts with local_path — handles both exact match and subdirectory cases.
+    # Paths are normalized ("^\\./" stripped) so "./mxc2" in metadata still matches "mxc2".
     jq -r --arg path "$path" '
         .patches
-        | map(. as $patch | select($path | startswith($patch.local_path)))
-        | map(. + {mlen:(.local_path|length)})
+        | map(. as $patch
+              | ($patch.local_path | ltrimstr("./")) as $lp
+              | select(($path | ltrimstr("./")) | startswith($lp))
+              | $patch + {mlen: ($lp | length)})
         | max_by(.mlen)
+        | select(. != null)
+        | del(.mlen)
         | to_entries | map("set -x \(.key) \(.value|@sh)") | .[]
         ' "{{REPO_DIR}}/{{METADATA}}"
 
@@ -220,6 +227,35 @@ _log level +message:
             echo "==> {{message}}"
     end
 
+# Print one row per patch: local_path<TAB>worktree (machine-parseable).
+# hint is variadic because the Justfile wrapper word-splits arguments.
+[no-cd]
+_list_patches *hint="":
+    #!/usr/bin/env fish
+    if not test -f "{{REPO_DIR}}/.cross/metadata.json"
+        just cross _log info "No patches configured."
+        exit 0
+    end
+    set -l hint_text "{{hint}}"
+    if test -n "$hint_text"
+        echo "$hint_text" >&2
+    end
+    jq -r '.patches[] | "\(.local_path)\t\(.worktree)"' "{{REPO_DIR}}/.cross/metadata.json"
+
+# Interactive patch selection; prints the selected local_path.
+# Cancels silently (empty output). If fzf is missing: rows+hint to stderr, exit 1.
+[no-cd]
+_select_patch *prompt="patch":
+    #!/usr/bin/env fish
+    if not command -v fzf >/dev/null 2>&1
+        just cross _list_patches "fzf is not installed, cd into a patched directory first or pass a path. Patches, columns local_path TAB worktree" >&2
+        exit 1
+    end
+    set -l row (just cross _list_patches | fzf --height 40% --select-1 --exit-0 --prompt "Select {{prompt}}> ")
+    test -z "$row"; and exit 0
+    set -l cols (string split \t -- $row)
+    echo "$cols[1]"
+
 # Initialize a new project with Crossfile
 [no-cd]
 init:
@@ -248,15 +284,16 @@ use name url: check-deps
 [no-cd]
 remove path: check-deps
     #!/usr/bin/env fish
-    set l_path "{{path}}"
+    set l_path (path normalize "{{path}}")
     pushd "{{REPO_DIR}}"
         if not test -f {{METADATA}}
             just cross _log error "No metadata found."
             exit 1
         end
 
-        set entry (jq -r --arg lp "$l_path" '.patches[] | select(.local_path == $lp)' {{METADATA}})
+        set entry (jq -r --arg lp "$l_path" '.patches[] | select((.local_path | ltrimstr("./")) == $lp)' {{METADATA}})
         if test -z "$entry"
+            just cross _list_patches "No patch detected, available patches, columns local_path TAB worktree"
             just cross _log error "Patch not found for path: $l_path"
             exit 1
         end
@@ -282,7 +319,7 @@ remove path: check-deps
                 for f in $fields
                     test "$f" = "patch" && set is_patch true
                 end
-                if test "$is_patch" = true -a (count $fields) -gt 0 -a "$fields[-1]" = "$l_path"
+                if test "$is_patch" = true -a (count $fields) -gt 0 -a (path normalize "$fields[-1]") = "$l_path"
                     continue  # skip this line
                 end
                 echo "$line" >> "$tmp"
@@ -293,7 +330,7 @@ remove path: check-deps
         # 3. Update metadata
         just cross _log info "Updating metadata..."
         set tmp_meta (mktemp)
-        jq --arg lp "$l_path" '.patches |= map(select(.local_path != $lp))' {{METADATA}} > "$tmp_meta"
+        jq --arg lp "$l_path" '.patches |= map(select((.local_path | ltrimstr("./")) != $lp))' {{METADATA}} > "$tmp_meta"
         mv "$tmp_meta" {{METADATA}}
 
         # 4. Remove local directory (with root guard)
@@ -409,7 +446,7 @@ patch remote_spec local_path="": check-deps
             set remote $parts[1]
             set remote_path $parts[2]
         case '*'
-            just cross _log error "Error: Invalid format Use remote[:branch]:remote_path [local_path]"
+            just cross _log error "Error: Invalid format. Use remote[:branch]:remote_path LOCAL_PATH"
             exit 1
     end
 
@@ -419,16 +456,18 @@ patch remote_spec local_path="": check-deps
 
     set l_path "{{local_path}}"
     if test -z "$l_path" -a "$r_path" = "."
-        just cross _log error "Error: local_path is required when patching whole repo (path is '.')"
+        just cross _log error "Error: local_path is required when patching whole repo, path is '.'"
         exit 1
     end
     test -n "$l_path"; or set l_path "$r_path"
+    # Normalize the local path so "./mxc2" is stored/matched as "mxc2"
+    set l_path (path normalize "$l_path")
 
     pushd "{{REPO_DIR}}"
     
         # validate remote   
         if not git remote show $remote |grep -vq "^$remote\$" 
-            just cross _log error "Error: Remote $remote not found. Run: just use $remote <url>"
+            just cross _log error "Error: Remote $remote not found. Run: just cross use $remote URL"
             exit 1
         end
 
@@ -504,14 +543,16 @@ patch remote_spec local_path="": check-deps
 [no-cd]
 @check-initialized:
     cd {{REPO_DIR}} && test -d {{CROSSDIR}}/worktrees && test -f {{METADATA}} \
-        || { just cross _log warn "No patches to update"; exit 0; }
+        || { just cross _log warn "No patches to update" >&2; exit 0; }
 
 # Update Crossfile-managed patches from upstream. Local edits are preserved and
 # left for manual review against the refreshed sparse worktree.
 [no-cd]
 _update_patch spec local_path:
     #!/usr/bin/env fish
-    if test "{{local_path}}" = "."
+    # Normalize the local path so "./mxc2" in Crossfile matches "mxc2" in metadata
+    set l_path (path normalize "{{local_path}}")
+    if test "$l_path" = "."
         just cross _log error "Updating a repository-root patch is not supported safely yet."
         exit 1
     end
@@ -520,13 +561,13 @@ _update_patch spec local_path:
     set remote $fields[1]
     set remote_path (string trim -c '/' -- $fields[-1])
     test -n "$remote_path"; or set remote_path "."
-    set entry (jq -c --arg lp "{{local_path}}" '.patches[]? | select(.local_path == $lp)' {{METADATA}} 2>/dev/null)
+    set entry (jq -c --arg lp "$l_path" '.patches[]? | select((.local_path | ltrimstr("./")) == $lp)' {{METADATA}} 2>/dev/null)
     if test -z "$entry"
-        if test -e "{{REPO_DIR}}/{{local_path}}"
-            just cross _log error "Local path already exists but is not registered; refusing to overwrite it: {{local_path}}"
+        if test -e "{{REPO_DIR}}/$l_path"
+            just cross _log error "Local path already exists but is not registered, refusing to overwrite it: $l_path"
             exit 1
         end
-        just cross patch "{{spec}}" "{{local_path}}"
+        just cross patch "{{spec}}" "$l_path"
         exit $status
     end
     set wt (echo "$entry" | jq -r '.worktree')
@@ -534,32 +575,35 @@ _update_patch spec local_path:
     set entry_remote (echo "$entry" | jq -r '.remote')
     set entry_remote_path (echo "$entry" | jq -r '.remote_path')
     if test "$remote" != "$entry_remote" -o "$remote_path" != "$entry_remote_path"
-        just cross _log error "Crossfile source changed for {{local_path}}; remove and patch it explicitly before updating."
+        just cross _log error "Crossfile source changed for $l_path, remove and patch it explicitly before updating."
         exit 1
     end
     set spec_parts (string split ':' -- "{{spec}}")
     if test (count $spec_parts) -eq 3 -a "$spec_parts[2]" != "$branch"
-        just cross _log error "Crossfile branch changed for {{local_path}}; remove and patch it explicitly before updating."
+        just cross _log error "Crossfile branch changed for $l_path, remove and patch it explicitly before updating."
         exit 1
     end
-    set local_abs "{{REPO_DIR}}/{{local_path}}"
+    set local_abs "{{REPO_DIR}}/$l_path"
     set wt_abs "{{REPO_DIR}}/$wt/$remote_path"
+    # Detect local edits with an rsync itemized dry-run (excludes .git, the
+    # worktree's pointer file never exists in the local copy).
     set local_changed false
     if test -d "$local_abs"
-        git diff --no-index --quiet -- "$wt_abs" "$local_abs"
-        set diff_status $status
-        if test $diff_status -eq 1
-            set local_changed true
-        else if test $diff_status -gt 1
+        set itemized (rsync -rlcn --delete --exclude=.git --itemize-changes "$wt_abs/" "$local_abs/")
+        set rsync_status $status
+        if test $rsync_status -ne 0
             just cross _log error "Could not compare local path and worktree."
             exit 1
+        end
+        if test (count $itemized) -gt 0
+            set local_changed true
         end
     end
     git fetch $remote $branch; or exit 1
     set fetched_commit (git rev-parse FETCH_HEAD); or exit 1
     set worktree_dirty (git -C "$wt" status --porcelain)
     if test -n "$worktree_dirty"
-        just cross _log error "Worktree has manual changes; leaving it untouched: $wt"
+        just cross _log error "Worktree has manual changes, leaving it untouched: $wt"
         exit 1
     end
     git -C "$wt" merge --ff-only "$fetched_commit"; or begin
@@ -567,11 +611,7 @@ _update_patch spec local_path:
         exit 1
     end
     if test "$local_changed" = "true"
-        just cross _log warn "Local edits detected; preserving $local_abs. Compare manually:"
-        set tool (git config --get cross.diffTool 2>/dev/null)
-        test -n "$tool"; or set tool 'vim "+DirDiff"'
-        printf '  git cross compare "%s"\n' "{{local_path}}"
-        printf '  %s "%s" "%s"\n' "$tool" "$wt_abs" "$local_abs"
+        just cross _log warn "'$l_path' differs from upstream; local copy preserved. Compare with: git cross diff $l_path"
         exit 0
     end
     mkdir -p "$local_abs"
@@ -619,13 +659,18 @@ update path="": check-deps
                 set local_path $fields[3]
             end
             test -n "$local_path"; or set local_path "."
-            if test -n "{{path}}" -a "$local_path" != "{{path}}"
-                continue
+            # Normalize so "./mxc2" and "mxc2" identify the same patch
+            set local_path (path normalize "$local_path")
+            if test -n "{{path}}"
+                set filter_path (path normalize "{{path}}")
+                if test "$local_path" != "$filter_path"
+                    continue
+                end
             end
             just cross _update_patch $fields[2] $local_path; or exit 1
             set updates (math $updates + 1)
         else
-            just cross _log error "Unsupported Crossfile command: $line (update supports use and patch only)"
+            just cross _log error "Unsupported Crossfile command: $line. update supports use and patch only"
             exit 1
         end
     end < "{{REPO_DIR}}/Crossfile"
@@ -662,15 +707,34 @@ diff path="": check-initialized
         popd >/dev/null
     end
 
-    # Query metadata.json
-    just cross _resolve_context2 "$resolved_path" | source \
-        || { just cross _log error "Error: Could not resolve metadata for '$resolved_path'."; exit 1; }
+    # Resolve metadata: explicit path, CWD auto-detect, then fzf selection.
+    # An empty resolution means either no path/target or no matching patch.
+    set -l ctx (just cross _resolve_context2 "$resolved_path" 2>/dev/null)
+    if test (count $ctx) -eq 0
+        if test -z "$resolved_path"
+            if not command -v fzf >/dev/null 2>&1
+                just cross _list_patches "fzf is not installed, cd into a patched directory first or pass a path. Patches, columns local_path TAB worktree"
+                exit 1
+            end
+            set -l sel (just cross _select_patch patch)
+            test -z "$sel"; and exit 0
+            set resolved_path "$sel"
+            set ctx (just cross _resolve_context2 "$sel" 2>/dev/null)
+        end
+        if test (count $ctx) -eq 0
+            just cross _list_patches "No patch detected, available patches, columns local_path TAB worktree"
+            exit 1
+        end
+    end
+    printf '%s\n' $ctx | source
 
     pushd "{{REPO_DIR}}"  
         if test -d $worktree
             set overrides (just cross _crossignore_overrides "{{REPO_DIR}}/$local_path")
             if test -z "$overrides[1]"
-                git diff --no-index $worktree/$remote_path $local_path || true
+                # Exclude .git (worktree pointer file has no local counterpart) while
+                # keeping real content diffs and the difference exit status.
+                git diff --no-index $worktree/$remote_path $local_path -- ':(exclude).git' ':(glob)**' || true
             else
                 for override in $overrides
                     printf 'git diff --no-index "%s" "%s"\n' "{{REPO_DIR}}/$worktree/$remote_path/$override" "{{REPO_DIR}}/$local_path/$override"
@@ -686,140 +750,191 @@ diff path="": check-initialized
 [no-cd]
 compare path="": check-initialized
     #!/usr/bin/env fish
-    just cross _resolve_context2 "{{path}}" | source \
-        || { just cross _log error "Provide a patch path or run inside a patch directory."; exit 1; }
-    set tool (git config --get cross.diffTool 2>/dev/null)
-    test -n "$tool"; or set tool 'vim "+DirDiff"'
-    set worktree_path "{{REPO_DIR}}/$worktree/$remote_path"
-    set local_path_abs "{{REPO_DIR}}/$local_path"
-    bash -c "$tool \"\$1\" \"\$2\"" cross-compare "$worktree_path" "$local_path_abs"
+    # cross.diffTool may contain {left}/{right} placeholders (repo-relative paths);
+    # without placeholders the paths are appended as arguments (legacy form).
+    # Resolve metadata: explicit path, CWD auto-detect, then fzf selection
+    set -l ctx (just cross _resolve_context2 "{{path}}" 2>/dev/null)
+    if test (count $ctx) -eq 0
+        if test -z "{{path}}"
+            if not command -v fzf >/dev/null 2>&1
+                just cross _list_patches "fzf is not installed, cd into a patched directory first or pass a path. Patches, columns local_path TAB worktree"
+                exit 1
+            end
+            set -l sel (just cross _select_patch patch)
+            test -z "$sel"; and exit 0
+            set ctx (just cross _resolve_context2 "$sel" 2>/dev/null)
+        end
+        if test (count $ctx) -eq 0
+            just cross _list_patches "No patch detected, available patches, columns local_path TAB worktree"
+            exit 1
+        end
+    end
+    printf '%s\n' $ctx | source
 
-# AICONTEXT: "list" lists all patches in local repo, by reading Crossfile and `git worktree list` under .git/cross/worktrees. The listing shall be combined with status of each WT and git status of local_path. The logic can be take from "status" implementation.
-# List all patches
+    set tool (git config --get cross.diffTool 2>/dev/null)
+    test -n "$tool"; or set tool "vim \"+DirDiffIgnore='.git' DirDiff {left} {right}\""
+    set left "$worktree/$remote_path"
+    set right "$local_path"
+    if string match -q "*{left}*" -- $tool; or string match -q "*{right}*" -- $tool
+        set cmd (string replace -a '{right}' "$right" "$tool")
+        set cmd (string replace -a '{left}' "$left" "$cmd")
+        pushd "{{REPO_DIR}}" >/dev/null
+        bash -c "$cmd"
+        popd >/dev/null
+    else
+        bash -c "$tool \"\$1\" \"\$2\"" cross-compare "{{REPO_DIR}}/$left" "{{REPO_DIR}}/$right"
+    end
+
+# Alias for: compare
 [no-cd]
-list: check-deps
+cmp path="": (compare path)
+
+# AICONTEXT: "list" lists remotes used by patches and all patches from .cross/metadata.json
+# (worktrees live under .cross/worktrees/). raw: TSV rows with no banners/borders;
+# no_header: omit header lines. Output order is fixed: remotes first, then patches.
+# Usage: list [raw] [no_header]  (e.g. `just cross list 1`, `just cross list raw=1 no_header=1`)
+# List all remotes and patches
+[no-cd]
+list raw="" no_header="": check-deps
     #!/usr/bin/env fish
+    # just binds recipe parameters positionally; tolerate both `1` and `raw=1` tokens
+    set -l raw_arg "{{raw}}"
+    set -l header_arg "{{no_header}}"
+    set -l show_raw false
+    set -l show_header true
+    if test -n "$raw_arg"
+        if string match -q 'no_header=*' -- $raw_arg
+            set header_arg $raw_arg
+        else
+            set show_raw true
+        end
+    end
+    test -n "$header_arg"; and set show_header false
     pushd "{{REPO_DIR}}" >/dev/null
         if test -f .cross/metadata.json
             # Get unique remotes used by patches
             set used_remotes (jq -r '.patches[].remote' .cross/metadata.json | sort -u)
-            
+
             if test (count $used_remotes) -gt 0
-                just cross _log info "Configured Remotes:"
-                printf "%-20s %s\n" "NAME" "URL"
-                printf "%s\n" (string repeat -n 70 "-")
-                
-                # Build grep pattern for used remotes
-                set pattern (string join "|" $used_remotes)
-                
-                # Get remotes, filter by used, deduplicate fetch/push
-                git remote -v | grep -E "^($pattern)\s" | awk '
-                    {
-                        name=$1; url=$2; type=$3
-                        if (!(name in seen)) {
-                            seen[name] = url
-                            types[name] = type
-                        } else if (seen[name] != url) {
-                            # Different fetch/push URLs
-                            printf "%-20s %s\n", name, seen[name] " " types[name]
-                            printf "%-20s %s\n", name, url " " type
-                            delete seen[name]
-                        }
-                    }
-                    END {
-                        for (name in seen) {
-                            printf "%-20s %s\n", name, seen[name]
-                        }
-                    }
-                '
-                echo ""
+                if $show_raw
+                    if $show_header
+                        printf 'REMOTE_NAME\tREMOTE_URL\n'
+                    end
+                else
+                    just cross _log info "Configured Remotes:"
+                    if $show_header
+                        printf "%-20s %s\n" "REMOTE NAME" "REMOTE URL"
+                        printf "%s\n" (string repeat -n 70 "-")
+                    end
+                end
+
+                # Deterministic order: remotes sorted, fetch URL first, then push-only URLs
+                for name in $used_remotes
+                    set -l urls (git remote get-url --all $name 2>/dev/null)
+                    for url in (git remote get-url --push --all $name 2>/dev/null)
+                        contains $url $urls; or set urls $urls $url
+                    end
+                    for url in $urls
+                        if $show_raw
+                            printf '%s\t%s\n' $name $url
+                        else
+                            printf "%-20s %s\n" $name $url
+                        end
+                    end
+                end
+
+                if not $show_raw
+                    echo ""
+                end
             end
         end
 
         if not test -f Crossfile
-            just cross _log warn "No patches found (Crossfile missing)."
+            if $show_raw
+                echo "No patches found, Crossfile missing." >&2
+            else
+                just cross _log warn "No patches found, Crossfile missing."
+            end
             popd >/dev/null
             exit 0
         end
-        
-        just cross _log info "Configured Patches:"
-        printf "%-20s %-30s %-20s\n" "REMOTE" "REMOTE PATH" "LOCAL PATH"
-        printf "%s\n" (string repeat -n 70 "-")
-        
-        if test -f .cross/metadata.json
-            jq -r '.patches[] | "\(.remote) \(.remote_path) \(.local_path)"' .cross/metadata.json | while read -l remote rpath lpath
-                 printf "%-20s %-30s %-20s\n" $remote $rpath $lpath
+
+        if $show_raw
+            if $show_header
+                printf 'REMOTE\tREMOTE_PATH\tLOCAL_PATH\tWORKTREE\tBRANCH\n'
             end
         else
-            just cross _log info "No patches found. Run 'just cross patch <remote> <path>' to start."
+            just cross _log info "Configured Patches:"
+            if $show_header
+                printf "%-20s %-30s %-20s %-26s %-15s\n" "REMOTE" "REMOTE PATH" "LOCAL PATH" "WORKTREE" "BRANCH"
+                printf "%s\n" (string repeat -n 70 "-")
+            end
+        end
+
+        if test -f .cross/metadata.json
+            set -l patch_rows (jq -r '.patches[] | [.remote, .remote_path, .local_path, .worktree, .branch] | @tsv' .cross/metadata.json | sort)
+            for row in $patch_rows
+                if $show_raw
+                    printf '%s\n' $row
+                else
+                    set -l cols (string split \t -- $row)
+                    printf "%-20s %-30s %-20s %-26s %-15s\n" $cols[1] $cols[2] $cols[3] $cols[4] $cols[5]
+                end
+            end
+        else if $show_raw
+            echo "No patches found. Run: just cross patch REMOTE_PATH LOCAL_PATH" >&2
+        else
+            just cross _log info "No patches found. Run: just cross patch REMOTE_PATH LOCAL_PATH"
         end
     popd >/dev/null
 
 # wt wrapper
 [no-cd]
 worktree path="":
-    just cross cd "{{path}}" dry="{{dry}}"
+    just cross wt "{{path}}"
 
-# Internal: Copy text to clipboard (cross-platform)
-[no-cd]
-_copy_to_clipboard text:
-    #!/usr/bin/env bash
-    if command -v pbcopy >/dev/null 2>&1; then
-        # macOS
-        echo "{{text}}" | pbcopy
-    elif command -v xclip >/dev/null 2>&1; then
-        # Linux with xclip
-        echo "{{text}}" | xclip -selection clipboard
-    elif command -v xsel >/dev/null 2>&1; then
-        # Linux with xsel
-        echo "{{text}}" | xsel --clipboard --input
-    else
-        echo "Error: No clipboard tool found (pbcopy/xclip/xsel)"
-        exit 1
-    fi
-
-# Internal: Open shell in target directory
-# target: "local_path" or "worktree"
-# path: must be provided (non-empty)
-[no-cd]
-_open_shell target path:
-    #!/usr/bin/env fish
-    just cross _resolve_context2 "{{path}}" | source || exit 1
-    set -l dir (test "{{target}}" = "local_path" && echo $local_path || echo $worktree)
-    cd {{REPO_DIR}}/$dir && exec $SHELL
-
-# Go to worktree directory (for working with git history)
-# With path: opens subshell
-# Without path: uses fzf selection and copies to clipboard
+# Print a patch worktree to cd into (use: cd (just cross wt [path]))
 [no-cd]
 wt path="":
     #!/usr/bin/env fish
     if test -n "{{path}}"
-        just cross _open_shell worktree "{{path}}"
+        set -l ctx (just cross _resolve_context2 "{{path}}" 2>/dev/null)
+        if test (count $ctx) -eq 0
+            just cross _list_patches "No patch detected, available patches, columns local_path TAB worktree"
+            exit 1
+        end
+        printf '%s\n' $ctx | source
+        echo "{{REPO_DIR}}/$worktree"
+    else if not command -v fzf >/dev/null 2>&1
+        just cross _list_patches "fzf is not installed, cd manually. Destinations, columns local_path TAB worktree"
+        exit 1
     else
-        set -l selected (just cross list | tail -n +3 | fzf --height 40% --select-1 --exit-0 --prompt "Select patch (wt)> " 2>/dev/null | awk '{print $NF}')
-        test -z "$selected" && exit 0
-        just cross _resolve_context2 "$selected" | source || exit 1
-        set -l rel_dir (realpath -m --relative-to=$PWD {{REPO_DIR}}/$worktree)
-        just cross _copy_to_clipboard $rel_dir
-        just cross _log success "Path copied: $rel_dir"
+        set -l row (just cross _list_patches | fzf --height 40% --select-1 --exit-0 --prompt "Select patch (wt)> ")
+        test -z "$row"; and exit 0
+        set -l cols (string split \t -- $row)
+        echo "{{REPO_DIR}}/$cols[2]"
     end
 
-# Go to local_path directory (for editing patched files)
-# With path: opens subshell
-# Without path: uses fzf selection and copies to clipboard
+# Print a patch local_path to cd into (use: cd (just cross cd [path]))
 [no-cd]
 cd path="":
     #!/usr/bin/env fish
     if test -n "{{path}}"
-        just cross _open_shell local_path "{{path}}"
+        set -l ctx (just cross _resolve_context2 "{{path}}" 2>/dev/null)
+        if test (count $ctx) -eq 0
+            just cross _list_patches "No patch detected, available patches, columns local_path TAB worktree"
+            exit 1
+        end
+        printf '%s\n' $ctx | source
+        echo "{{REPO_DIR}}/$local_path"
+    else if not command -v fzf >/dev/null 2>&1
+        just cross _list_patches "fzf is not installed, cd manually. Destinations, columns local_path TAB worktree"
+        exit 1
     else
-        set -l selected (just cross list | tail -n +3 | fzf --height 40% --select-1 --exit-0 --prompt "Select patch (cd)> " 2>/dev/null | awk '{print $NF}')
-        test -z "$selected" && exit 0
-        just cross _resolve_context2 "$selected" | source || exit 1
-        set -l rel_dir (realpath -m --relative-to=$PWD {{REPO_DIR}}/$local_path)
-        just cross _copy_to_clipboard $rel_dir
-        just cross _log success "Path copied: $rel_dir"
+        set -l row (just cross _list_patches | fzf --height 40% --select-1 --exit-0 --prompt "Select patch (cd)> ")
+        test -z "$row"; and exit 0
+        set -l cols (string split \t -- $row)
+        echo "{{REPO_DIR}}/$cols[1]"
     end
 
 
@@ -848,7 +963,10 @@ status: check-deps
                 set overrides (just cross _crossignore_overrides "{{REPO_DIR}}/$local_path")
                 if test (count $overrides) -gt 0
                     set diff_stat "Override"
-                else if not git diff --no-index --quiet $wt/$rpath $local_path 2>/dev/null
+                else if not test -d $local_path
+                    set diff_stat "Modified"
+                else if test (rsync -rlcn --delete --exclude=.git --itemize-changes "$wt/$rpath/" "$local_path/" 2>/dev/null | count) -gt 0
+                    # .git excluded: the worktree pointer file has no local counterpart
                     set diff_stat "Modified"
                 end
                 
