@@ -994,7 +994,11 @@ function crosswt --description 'cd into a git-cross worktree'
 end
 `
 
-// copyToClipboard copies text using the first available platform tool.
+// copyToClipboard copies text using the first available platform tool
+// (pbcopy/xclip/xsel).
+//
+// Currently unused: cd/wt print a path and shell-init provides the real cd, so
+// the clipboard workflow is obsolete. Kept isolated for possible reuse.
 func copyToClipboard(text string) error {
 	candidates := [][]string{
 		{"pbcopy"},
@@ -1746,12 +1750,6 @@ Environment variables (used only when cross.diffTool is unset):
 					return nil
 				}
 				fmt.Println(abs) // stdout contract: path only
-				if clip, _ := cmd.Flags().GetBool("clip"); clip {
-					if cerr := copyToClipboard(abs); cerr != nil {
-						return cerr
-					}
-					fmt.Fprintln(os.Stderr, "Path copied to clipboard.")
-				}
 				return nil
 			},
 		}
@@ -1759,16 +1757,13 @@ Environment variables (used only when cross.diffTool is unset):
 
 	cdCmd := makeDirCmd("cd [path]",
 		"Print a patch local_path to cd into (use: cd \"$(git cross cd)\")",
-		"Print the absolute path of a patch local_path to stdout (use: cd \"$(git cross cd)\").\n\nWith path: prints the specified local_path.\nWithout path: auto-detects the current patch from the working directory, otherwise uses fzf to select one.\n\nUse --clip to also copy the path to the clipboard.\nFor real directory changes add shell integration:\n  eval \"$(git cross shell-init)\"    # then: crosscd [path]",
+		"Print the absolute path of a patch local_path to stdout (use: cd \"$(git cross cd)\").\n\nWith path: prints the specified local_path.\nWithout path: auto-detects the current patch from the working directory, otherwise uses fzf to select one.\n\nFor real directory changes add shell integration:\n  eval \"$(git cross shell-init)\"    # then: crosscd [path]",
 		"local_path")
 
 	wtCmd := makeDirCmd("wt [path]",
 		"Print a patch worktree to cd into (use: cd \"$(git cross wt)\")",
-		"Print the absolute path of a patch worktree to stdout (use: cd \"$(git cross wt)\").\n\nWith path: prints the specified worktree.\nWithout path: auto-detects the current patch from the working directory, otherwise uses fzf to select one.\n\nUse --clip to also copy the path to the clipboard.\nFor real directory changes add shell integration:\n  eval \"$(git cross shell-init)\"    # then: crosswt [path]",
+		"Print the absolute path of a patch worktree to stdout (use: cd \"$(git cross wt)\").\n\nWith path: prints the specified worktree.\nWithout path: auto-detects the current patch from the working directory, otherwise uses fzf to select one.\n\nFor real directory changes add shell integration:\n  eval \"$(git cross shell-init)\"    # then: crosswt [path]",
 		"worktree")
-
-	cdCmd.Flags().Bool("clip", false, "also copy the printed path to the clipboard")
-	wtCmd.Flags().Bool("clip", false, "also copy the printed path to the clipboard")
 
 	shellInitCmd := &cobra.Command{
 		Use:     "shell-init [bash|zsh|fish]",

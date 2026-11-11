@@ -46,8 +46,8 @@ test/001-023_*.sh     # Individual test files (see coverage matrix below)
 | `remove` | `<path>` | Delete patch, clean Crossfile and metadata |
 | `prune` | `[remote]` | Remove remote and all its patches, prune stale worktrees |
 | `init` | | Create empty Crossfile |
-| `cd` | `[path] [--clip]` | Print absolute local_path to stdout; shell integration via `shell-init` (`crosscd`) |
-| `wt` | `[path] [--clip]` | Print absolute worktree path to stdout; `crosswt` wrapper |
+| `cd` | `[path]` | Print absolute local_path to stdout; shell integration via `shell-init` (`crosscd`) |
+| `wt` | `[path]` | Print absolute worktree path to stdout; `crosswt` wrapper |
 | `shell-init` | `[bash\|zsh\|fish]` | Print shell functions that `cd` into patches/worktrees (child processes cannot) |
 
 Bare `git cross` prints one `local_path<TAB>worktree` row per patch to stdout (no hint line; TTY output is space-padded, piped output stays TAB-separated); `-h` prints the grouped help. Help grouping is Go-only CLI presentation — Just/Fish exposes the same behavior through recipes, not through a grouped help renderer.
@@ -188,11 +188,12 @@ Tests 001-007 form a chain for Just/Fish (001 is sourced by 002, etc.). Test 009
 
 ## Implementation Details
 
-- **Hidden worktrees**: `.cross/worktrees/<remote>_<hash>` (verified in `src-go/main.go`; Justfile.cross uses the same path). A stale `AICONTEXT` comment in `Justfile.cross` (line 697) still says `.git/cross/worktrees/` and should be corrected by the Just owner.
+- **Hidden worktrees**: `.cross/worktrees/<remote>_<hash>` (verified in `src-go/main.go`; Justfile.cross uses the same path).
 - **`.git` exclusion**: a worktree root contains a `.git` pointer file that never exists in the local copy (rsync uses `--exclude .git`). Boolean tree comparisons use `rsync -rlcn --delete --exclude=.git --itemize-changes`; the visual diff (`git diff --no-index`) is run against a temporary `.git`-free mirror of the worktree, because pathspec excludes like `:(exclude).git` are rejected by older git versions with a usage error. Without both exclusions, whole-repo patches always look modified.
 - **Sparse checkout**: `git sparse-checkout init --no-cone` + `git sparse-checkout set <path>/` + `git read-tree -mu HEAD`. The trailing `/` on the pattern is required for reliable directory matching in `--no-cone` mode on newer Git versions (2.43+). `read-tree -mu HEAD` explicitly materializes the worktree (bare `git checkout` can no-op after `--no-checkout`).
 - **Rsync**: `rsync -av --delete --exclude .git` for worktree-to-local sync. `--delete` removes files locally that were deleted upstream.
 - **Directory diff tool**: `cross.diffTool` supports `{left}`/`{right}` placeholders substituted with repo-relative paths, run with cwd = repo root. Default: `nvim` when installed, else `vim`, using `"+let g:DirDiffExcludes = '.git'" "+DirDiff {left} {right}"` (two separate `+cmd` arguments; `DirDiffIgnore=...` is not a vim command). When unset, env vars extend the default: `DIRDIFF_EXCLUDES` appends names to the exclusion list (`.git` stays permanent) and `DIRDIFF_IGNORE` adds `g:DirDiffIgnore` with a very-nomagic (`\V`) alternation of the comma-separated keywords. Empty/unset vars omit the corresponding argument. Configs without placeholders fall back to appending both absolute paths (legacy, deprecated — it never invoked DirDiff correctly).
+- **Clipboard helper (parked)**: `copyToClipboard` (Go) / `_clip` (Just) remain implemented but are intentionally unused — `cd`/`wt` print a path and `shell-init` provides the real `cd`, which made the clipboard workflow obsolete. Reuse rather than reimplement if a clipboard feature returns.
 - **Patch rows**: bare `git cross`, and path-miss cases in `compare`/`diff`/`remove`/`cd`/`wt`, print `local_path<TAB>worktree` rows to stdout; hints go to stderr and the command exits 1 where nothing was resolved.
 - **`list --raw` schema**: remotes first (`REMOTE_NAME<TAB>REMOTE_URL`), then patches (`REMOTE<TAB>REMOTE_PATH<TAB>LOCAL_PATH<TAB>WORKTREE<TAB>BRANCH`); no banners, no borders, deterministic remote order.
 - **Crossfile format**: Lines like `cross use <name> <url>` or `cross patch <remote>:<branch>:<path> <local>`. `update` interprets only these declarative commands; arbitrary shell commands are not executed.

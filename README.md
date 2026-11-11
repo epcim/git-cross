@@ -85,6 +85,22 @@ git cross update vendor/docs
 3. A local physical directory such as `vendor/docs`
 4. A `Crossfile` that records how to rebuild the setup
 
+On disk:
+
+```text
+your-repo/
+├── Crossfile                      # declarative use/patch records
+├── .cross/
+│   ├── metadata.json              # patch registry (worktree, branch, paths)
+│   └── worktrees/
+│       └── <remote>_<hash>/       # sparse git worktree; contains a .git pointer FILE
+│           └── <remote_path>/     # checked-out upstream subtree
+└── vendor/docs/                   # rsynced files; no .git at all
+```
+
+Worktrees live in the repository tree under `.cross/` (gitignored), and the
+local directory holds plain rsynced files with no `.git` of its own.
+
 In practice:
 
 - your editor sees normal files
@@ -397,13 +413,6 @@ A child process cannot change the working directory of the shell that started
 it, so the tool cannot `cd` for you. The wrapper does the `cd` in your shell
 using the path the tool prints. Keeping stdout path-only also makes the output
 composable in scripts (`dir=$(git cross cd vendor/app)`).
-
-If you prefer the old clipboard workflow, add `--clip` to copy the printed path
-as well (stdout stays path-only; the confirmation goes to stderr):
-
-```bash
-git cross wt --clip vendor/app
-```
 
 With an explicit path the patch is resolved directly. Without one, `fzf` is
 used to select a patch. If `fzf` is not installed, the command prints the

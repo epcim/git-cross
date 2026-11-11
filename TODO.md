@@ -65,7 +65,7 @@
 - [x] **Fix `cross cd` and `cross wt` commands** - Correct behavior for navigation
   - **Issue:** Commands needed proper separation of concerns and clipboard functionality
   - **Design Intent:**
-    - `cross wt [path]` → Navigate to WORKTREE (`.git/cross/worktrees/`) - for git history operations
+    - `cross wt [path]` → Navigate to WORKTREE (`.cross/worktrees/<remote>_<hash>`) - for git history operations
     - `cross cd [path]` → Navigate to LOCAL_PATH (patched directory) - for editing files
     - With explicit path: Open subshell in target directory
     - Without path (fzf): Copy selected path to clipboard for flexibility

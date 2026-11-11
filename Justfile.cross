@@ -956,7 +956,7 @@ worktree path="":
 
 # Print a patch worktree to cd into (use: cd (just cross wt [path]))
 [no-cd]
-wt path="" clip="":
+wt path="":
     #!/usr/bin/env fish
     set -l resolved_path "{{path}}"
     # Explicit path: make absolute and ./-prefixed paths repo-relative first
@@ -990,13 +990,10 @@ wt path="" clip="":
     end
     printf '%s\n' $ctx | source
     echo "{{REPO_DIR}}/$worktree"
-    if test -n "{{clip}}"
-        printf '%s' "{{REPO_DIR}}/$worktree" | just cross _clip
-        or exit 1
-        echo "Path copied to clipboard." >&2
-    end
 
 # Internal: copy stdin to the clipboard (pbcopy/xclip/xsel).
+# Currently unused: cd/wt print a path and shell-init provides the real cd.
+# Kept isolated for possible reuse.
 [no-cd]
 _clip:
     #!/usr/bin/env bash
@@ -1043,7 +1040,7 @@ shell-init shell="":
 
 # Print a patch local_path to cd into (use: cd (just cross cd [path]))
 [no-cd]
-cd path="" clip="":
+cd path="":
     #!/usr/bin/env fish
     set -l resolved_path "{{path}}"
     # Explicit path: make absolute and ./-prefixed paths repo-relative first
@@ -1077,11 +1074,6 @@ cd path="" clip="":
     end
     printf '%s\n' $ctx | source
     echo "{{REPO_DIR}}/$local_path"
-    if test -n "{{clip}}"
-        printf '%s' "{{REPO_DIR}}/$local_path" | just cross _clip
-        or exit 1
-        echo "Path copied to clipboard." >&2
-    end
 
 
 # AICONTEXT: "status" shows status of current local_path patch vs. WT, and WT upstream. Input argument is local_path (or understand user stand in the under git-cross'ed local_path and call this comand). It shall be called to get status of local_path from "list" command. Either the status of remote WT upstream (as resource consuming, shall be optional or only ocasional)
