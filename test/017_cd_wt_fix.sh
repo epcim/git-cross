@@ -98,6 +98,36 @@ if [ -n "$GO_BIN" ]; then
         || fail "Go wt without a path inside a patch should auto-detect"
     assert_one_abs_path "Go wt (CWD auto-detect)" "$out" "$wt_abs"
     popd >/dev/null
+
+    log_header "017: Go --clip copies the path and keeps stdout clean"
+    clip_dir="$SANDBOX/clip-shims"
+    mkdir -p "$clip_dir"
+    cat > "$clip_dir/pbcopy" <<'SH'
+#!/bin/sh
+cat > "$CLIP_FILE"
+SH
+    chmod +x "$clip_dir/pbcopy"
+    out=$(CLIP_FILE="$SANDBOX/clipped.txt" PATH="$clip_dir:$PATH" \
+        "$GO_BIN" cd vendor/src --clip 2>"$SANDBOX/clip.err") \
+        || fail "Go cd --clip should succeed with a clipboard tool"
+    assert_one_abs_path "Go cd --clip stdout" "$out" "$local_abs"
+    [ "$(cat "$SANDBOX/clipped.txt")" = "$local_abs" ] \
+        || fail "Go cd --clip should copy the absolute path"
+    assert_contains "$(cat "$SANDBOX/clip.err")" "copied to clipboard" \
+        "clipboard confirmation belongs on stderr"
+    log_success "Go --clip verified"
+
+    log_header "017: Go shell-init prints cd wrappers"
+    init_bash=$("$GO_BIN" shell-init bash 2>&1) || fail "shell-init bash should exit 0"
+    assert_contains "$init_bash" "crosscd()" "bash init should define crosscd"
+    assert_contains "$init_bash" "crosswt()" "bash init should define crosswt"
+    printf '%s\n' "$init_bash" | bash -n || fail "bash init must be valid bash"
+    init_fish=$("$GO_BIN" shell-init fish 2>&1) || fail "shell-init fish should exit 0"
+    assert_contains "$init_fish" "function crosscd" "fish init should define crosscd"
+    init_rc=0
+    "$GO_BIN" shell-init powershell >/dev/null 2>&1 || init_rc=$?
+    [ "$init_rc" -eq 1 ] || fail "unsupported shell should exit 1, got $init_rc"
+    log_success "Go shell-init verified"
     log_success "Go CWD auto-detect verified"
 
     log_header "017: Go fzf selection prints the selected path"
@@ -155,6 +185,28 @@ if command -v fish >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -
     [ "$wt_rc" -eq 1 ] || fail "Just wt without fzf should exit 1, got $wt_rc"
     assert_contains "$wt_out" "fzf is not installed" "Just wt fallback should say fzf is missing"
     log_success "Just fzf-missing fallback verified"
+
+    log_header "017: Just clip + shell-init"
+    clip_dir="$SANDBOX/clip-shims"
+    mkdir -p "$clip_dir"
+    cat > "$clip_dir/pbcopy" <<'SH'
+#!/bin/sh
+cat > "$CLIP_FILE"
+SH
+    chmod +x "$clip_dir/pbcopy"
+    out=$(CLIP_FILE="$SANDBOX/clipped-just.txt" PATH="$clip_dir:$PATH" \
+        just cross cd vendor/src 1 2>"$SANDBOX/clip-just.err") \
+        || fail "Just cd with clip should succeed with a clipboard tool"
+    assert_one_abs_path "Just cd clip stdout" "$out" "$local_abs"
+    [ "$(cat "$SANDBOX/clipped-just.txt")" = "$local_abs" ] \
+        || fail "Just cd clip should copy the absolute path"
+    assert_contains "$(cat "$SANDBOX/clip-just.err")" "copied to clipboard" \
+        "Just clipboard confirmation belongs on stderr"
+
+    init_bash=$(just cross shell-init bash 2>&1) || fail "Just shell-init bash should exit 0"
+    assert_contains "$init_bash" "crosscd()" "Just bash init should define crosscd"
+    printf '%s\n' "$init_bash" | bash -n || fail "Just bash init must be valid bash"
+    log_success "Just clip + shell-init verified"
 else
     echo "SKIP: fish and/or jq/just unavailable; skipping Just cd/wt assertions"
 fi

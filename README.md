@@ -190,8 +190,8 @@ Repository:
 
 Inspect & Navigate:
   cd          Print a patch local_path to cd into
-  diff        Show changes between local and upstream
   wt          Print a patch worktree to cd into
+  diff        Show changes between local and upstream
 ```
 
 `compare` also answers to the short alias `git cross cmp`.
@@ -373,35 +373,37 @@ Print the absolute destination path for one patch: `cd` targets the local copy
 (`local_path`), `wt` targets the hidden sparse worktree.
 
 The path is the only thing written to stdout; hints and errors go to stderr.
-These commands do not start a subshell and do not copy anything to the
-clipboard; they print a path for your shell to `cd` into:
+These commands do not start a subshell. For a real directory change, add the
+shell integration once:
 
 ```bash
-cd "$(git cross cd vendor/app)"      # local copy
-cd "$(git cross wt vendor/app)"      # sparse worktree
+# bash / zsh (~/.bashrc, ~/.zshrc)
+eval "$(git cross shell-init)"
+
+# fish (~/.config/fish/config.fish)
+eval (git cross shell-init fish)
 ```
 
-For convenience, add wrappers to your shell configuration.
-
-bash / zsh:
+That defines `crosscd` and `crosswt`, which `cd` into the path printed by the
+tool (or keep using the direct form):
 
 ```bash
-crosscd() { cd "$(git cross cd "$@")"; }
-crosswt() { cd "$(git cross wt "$@")"; }
-```
-
-fish:
-
-```fish
-function crosscd; cd (git cross cd $argv); end
-function crosswt; cd (git cross wt $argv); end
+crosscd vendor/app     # cd into the local copy (fzf if omitted)
+crosswt vendor/app     # cd into the sparse worktree
+cd "$(git cross cd vendor/app)"
 ```
 
 A child process cannot change the working directory of the shell that started
 it, so the tool cannot `cd` for you. The wrapper does the `cd` in your shell
 using the path the tool prints. Keeping stdout path-only also makes the output
-composable in scripts (`dir=$(git cross cd vendor/app)`) and editor
-integrations.
+composable in scripts (`dir=$(git cross cd vendor/app)`).
+
+If you prefer the old clipboard workflow, add `--clip` to copy the printed path
+as well (stdout stays path-only; the confirmation goes to stderr):
+
+```bash
+git cross wt --clip vendor/app
+```
 
 With an explicit path the patch is resolved directly. Without one, `fzf` is
 used to select a patch. If `fzf` is not installed, the command prints the

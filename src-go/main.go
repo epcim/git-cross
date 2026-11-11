@@ -974,6 +974,47 @@ func runNoIndexDiff(upstreamPath, localPath string) {
 	_ = c.Run()
 }
 
+const posixShellInit = `# git-cross shell integration (add to ~/.bashrc or ~/.zshrc):
+#   eval "$(git cross shell-init)"
+crosscd() { local p; p="$(git cross cd "$@")" || return; [ -n "$p" ] && cd "$p"; }
+crosswt() { local p; p="$(git cross wt "$@")" || return; [ -n "$p" ] && cd "$p"; }
+`
+
+const fishShellInit = `# git-cross shell integration (add to ~/.config/fish/config.fish):
+#   eval (git cross shell-init fish)
+function crosscd --description 'cd into a git-cross patch'
+    set -l p (git cross cd $argv)
+    or return
+    test -n "$p"; and cd $p
+end
+function crosswt --description 'cd into a git-cross worktree'
+    set -l p (git cross wt $argv)
+    or return
+    test -n "$p"; and cd $p
+end
+`
+
+// copyToClipboard copies text using the first available platform tool.
+func copyToClipboard(text string) error {
+	candidates := [][]string{
+		{"pbcopy"},
+		{"xclip", "-selection", "clipboard"},
+		{"xsel", "--clipboard", "--input"},
+	}
+	for _, cand := range candidates {
+		if _, err := exec.LookPath(cand[0]); err != nil {
+			continue
+		}
+		c := exec.Command(cand[0], cand[1:]...)
+		c.Stdin = strings.NewReader(text)
+		if err := c.Run(); err != nil {
+			return fmt.Errorf("%s failed: %w", cand[0], err)
+		}
+		return nil
+	}
+	return errors.New("no clipboard tool found (pbcopy/xclip/xsel)")
+}
+
 func main() {
 	// Keep authored order in --help: use/patch must come first.
 	cobra.EnableCommandSorting = false
@@ -1705,6 +1746,12 @@ Environment variables (used only when cross.diffTool is unset):
 					return nil
 				}
 				fmt.Println(abs) // stdout contract: path only
+				if clip, _ := cmd.Flags().GetBool("clip"); clip {
+					if cerr := copyToClipboard(abs); cerr != nil {
+						return cerr
+					}
+					fmt.Fprintln(os.Stderr, "Path copied to clipboard.")
+				}
 				return nil
 			},
 		}
@@ -1712,13 +1759,49 @@ Environment variables (used only when cross.diffTool is unset):
 
 	cdCmd := makeDirCmd("cd [path]",
 		"Print a patch local_path to cd into (use: cd \"$(git cross cd)\")",
-		"Print the absolute path of a patch local_path to stdout (use: cd \"$(git cross cd)\").\n\nWith path: prints the specified local_path.\nWithout path: auto-detects the current patch from the working directory, otherwise uses fzf to select one.",
+		"Print the absolute path of a patch local_path to stdout (use: cd \"$(git cross cd)\").\n\nWith path: prints the specified local_path.\nWithout path: auto-detects the current patch from the working directory, otherwise uses fzf to select one.\n\nUse --clip to also copy the path to the clipboard.\nFor real directory changes add shell integration:\n  eval \"$(git cross shell-init)\"    # then: crosscd [path]",
 		"local_path")
 
 	wtCmd := makeDirCmd("wt [path]",
 		"Print a patch worktree to cd into (use: cd \"$(git cross wt)\")",
-		"Print the absolute path of a patch worktree to stdout (use: cd \"$(git cross wt)\").\n\nWith path: prints the specified worktree.\nWithout path: auto-detects the current patch from the working directory, otherwise uses fzf to select one.",
+		"Print the absolute path of a patch worktree to stdout (use: cd \"$(git cross wt)\").\n\nWith path: prints the specified worktree.\nWithout path: auto-detects the current patch from the working directory, otherwise uses fzf to select one.\n\nUse --clip to also copy the path to the clipboard.\nFor real directory changes add shell integration:\n  eval \"$(git cross shell-init)\"    # then: crosswt [path]",
 		"worktree")
+
+	cdCmd.Flags().Bool("clip", false, "also copy the printed path to the clipboard")
+	wtCmd.Flags().Bool("clip", false, "also copy the printed path to the clipboard")
+
+	shellInitCmd := &cobra.Command{
+		Use:     "shell-init [bash|zsh|fish]",
+		Short:   "Print shell functions that cd into patches and worktrees",
+		GroupID: "repo",
+		Args:    cobra.MaximumNArgs(1),
+		Long: `Print shell functions to evaluate in your shell profile. They wrap
+'git cross cd' / 'git cross wt' with cd, because a child process cannot change
+the caller's working directory by itself.
+
+  bash/zsh:  eval "$(git cross shell-init)"
+  fish:      eval (git cross shell-init fish)
+
+After that, 'crosscd' and 'crosswt' change directory directly, with the same
+optional path argument and fzf selection as the git-cross commands.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			shell := ""
+			if len(args) > 0 {
+				shell = strings.ToLower(strings.TrimSpace(args[0]))
+			} else {
+				shell = filepath.Base(os.Getenv("SHELL"))
+			}
+			switch shell {
+			case "fish":
+				fmt.Print(fishShellInit)
+			case "bash", "zsh", "":
+				fmt.Print(posixShellInit)
+			default:
+				return fmt.Errorf("unsupported shell %q (use bash, zsh or fish)", shell)
+			}
+			return nil
+		},
+	}
 
 	listCmd := &cobra.Command{
 		Use:     "list",
@@ -2345,7 +2428,7 @@ if fzf is unavailable it prints the available patches.`,
 	// Retain superseded implementations in source as internal reference, but do
 	// not expose them as supported commands.
 	_, _, _, _ = syncCmd, replayCmd, pushCmd, execCmd
-	rootCmd.AddCommand(useCmd, patchCmd, removeCmd, pruneCmd, initCmd, listCmd, statusCmd, updateCmd, compareCmd, cdCmd, wtCmd, diffCmd)
+	rootCmd.AddCommand(useCmd, patchCmd, removeCmd, pruneCmd, initCmd, listCmd, statusCmd, updateCmd, compareCmd, shellInitCmd, cdCmd, wtCmd, diffCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

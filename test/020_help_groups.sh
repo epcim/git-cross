@@ -39,7 +39,7 @@ repo_section=$(section_body "Repository:")
 inspect_section=$(section_body "Inspect & Navigate:")
 patches_section=$(section_body "Patch Lifecycle:")
 
-for cmd in compare init list status update; do
+for cmd in compare init list status update shell-init; do
     printf '%s\n' "$repo_section" | grep -Eq "^  ${cmd}([[:space:]]|$)" \
         || fail "'$cmd' should be listed under 'Repository:'"
 done
@@ -53,8 +53,14 @@ for cmd in use patch remove prune; do
 done
 log_success "commands grouped correctly"
 
+log_header "020: cd and wt stay adjacent"
+inspect_order=$(printf '%s\n' "$inspect_section" | awk '/^  [a-z]/{print $1}')
+adjacent=$(printf '%s\n' "$inspect_order" | awk 'prev=="cd" && $0=="wt" {found=1} {prev=$0} END{print found?"yes":"no"}')
+[ "$adjacent" = "yes" ] || fail "cd and wt must be listed next to each other (got: $(printf '%s ' $inspect_order))"
+log_success "cd/wt adjacency verified"
+
 log_header "020: every visible command appears exactly once"
-for cmd in compare init list status update cd wt diff use patch remove prune; do
+for cmd in compare init list status update shell-init cd wt diff use patch remove prune; do
     count=$(printf '%s\n' "$help_output" | grep -cE "^  ${cmd}([[:space:]]|$)")
     [ "$count" -eq 1 ] || fail "command '$cmd' should appear exactly once in help (found $count)"
 done
@@ -62,7 +68,7 @@ done
 # command under "Additional Commands:". Tolerate those built-ins, but no
 # documented command may end up ungrouped there.
 additional_section=$(section_body "Additional Commands:")
-for cmd in compare init list status update cd wt diff use patch remove prune; do
+for cmd in compare init list status update shell-init cd wt diff use patch remove prune; do
     if printf '%s\n' "$additional_section" | grep -Eq "^  ${cmd}([[:space:]]|$)"; then
         fail "'$cmd' must not fall into 'Additional Commands:' (missing GroupID)"
     fi
