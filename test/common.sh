@@ -2,6 +2,11 @@
 
 # Common test helpers
 
+# Direct `bash test/NNN.sh` runs may chain-source earlier tests that reference
+# $TESTDIR; run-all.sh exports it, so provide a temp default otherwise.
+: "${TESTDIR:=$(mktemp -d)}"
+export TESTDIR
+
 log_header() {
     # Bold Blue
     if [ -t 1 ]; then

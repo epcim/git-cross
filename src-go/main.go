@@ -275,7 +275,7 @@ func logWarn(msg string) {
 	fmt.Println(msg)
 }
 
-const defaultDiffTool = `vim "+DirDiffIgnore='.git' DirDiff {left} {right}"`
+const defaultDiffTool = `vim "+let g:DirDiffExcludes='.git'" "+DirDiff {left} {right}"`
 
 func diffTool() string {
 	if out, err := exec.Command("git", "config", "--get", "cross.diffTool").Output(); err == nil {
@@ -356,6 +356,46 @@ func printPatchRows(hint string) error {
 		fmt.Printf("%s\t%s\n", p.LocalPath, p.Worktree)
 	}
 	return nil
+}
+
+// printRawRows writes rows as TAB-separated values when piped, or as
+// space-aligned columns when stdout is a terminal (readable interactively
+// without breaking the TAB contract for scripts).
+func printRawRows(rows [][]string) {
+	if len(rows) == 0 {
+		return
+	}
+	if !stdoutIsTerminal() {
+		for _, row := range rows {
+			fmt.Println(strings.Join(row, "\t"))
+		}
+		return
+	}
+	var widths []int
+	for _, row := range rows {
+		for i, col := range row {
+			if i >= len(widths) {
+				widths = append(widths, 0)
+			}
+			if n := utf8.RuneCountInString(col); n > widths[i] {
+				widths[i] = n
+			}
+		}
+	}
+	for _, row := range rows {
+		var b strings.Builder
+		for i, col := range row {
+			if i > 0 {
+				b.WriteString("  ")
+			}
+			if i < len(row)-1 {
+				fmt.Fprintf(&b, "%-*s", widths[i], col)
+			} else {
+				b.WriteString(col)
+			}
+		}
+		fmt.Println(b.String())
+	}
 }
 
 // stdoutIsTerminal reports whether stdout is attached to a TTY (interactive
@@ -853,7 +893,40 @@ func selectPatchInteractive(meta *Metadata) (*Patch, error) {
 	return nil, fmt.Errorf("selected patch not found: %s", localPath)
 }
 
+// runNoIndexDiff prints a unified diff between the upstream worktree directory
+// and the local copy. A worktree root contains a `.git` pointer file that the
+// local copy never has; pathspec excludes are not portable across git versions
+// (older gits reject them with a usage error), so when `.git` is present we
+// diff against a temporary mirror that omits it.
+func runNoIndexDiff(upstreamPath, localPath string) {
+	left := upstreamPath
+	cleanup := func() {}
+	if _, err := os.Stat(filepath.Join(upstreamPath, ".git")); err == nil {
+		if tmp, terr := os.MkdirTemp("", "cross-diff-"); terr == nil {
+			// --link-dest hardlinks unchanged files, so the mirror is cheap.
+			cmd := exec.Command("rsync", "-a", "--exclude=.git",
+				"--link-dest="+upstreamPath+string(os.PathSeparator),
+				upstreamPath+string(os.PathSeparator), tmp+string(os.PathSeparator))
+			if _, rerr := cmd.CombinedOutput(); rerr == nil {
+				left = tmp
+				cleanup = func() { os.RemoveAll(tmp) }
+			} else {
+				os.RemoveAll(tmp)
+			}
+		}
+	}
+	defer cleanup()
+
+	c := exec.Command("git", "diff", "--no-index", left, localPath)
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	// git diff --no-index returns 1 when differences exist; that is not an error.
+	_ = c.Run()
+}
+
 func main() {
+	// Keep authored order in --help: use/patch must come first.
+	cobra.EnableCommandSorting = false
 	var dry string
 	rootCmd := &cobra.Command{
 		Use:          "git-cross",
@@ -866,9 +939,9 @@ func main() {
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 	}
 	rootCmd.AddGroup(
+		&cobra.Group{ID: "patches", Title: "Patch Lifecycle:"},
 		&cobra.Group{ID: "repo", Title: "Repository:"},
 		&cobra.Group{ID: "inspect", Title: "Inspect & Navigate:"},
-		&cobra.Group{ID: "patches", Title: "Patch Lifecycle:"},
 	)
 	// Group the builtin help command so no ungrouped visible command remains
 	// (Cobra otherwise renders it under "Additional Commands:").
@@ -1639,32 +1712,36 @@ func main() {
 			sort.Strings(remoteNames)
 
 			if raw {
-				// Machine-readable: tab-separated rows, no banners, no borders.
+				// Machine-readable rows; aligned on a TTY, TAB-separated when piped.
+				var rows [][]string
 				if len(remoteNames) > 0 {
 					if !noHeader {
-						fmt.Printf("REMOTE_NAME\tREMOTE_URL\n")
+						rows = append(rows, []string{"REMOTE_NAME", "REMOTE_URL"})
 					}
 					for _, name := range remoteNames {
 						info := remoteMap[name]
 						if info.fetch == "" {
 							continue
 						}
-						fmt.Printf("%s\t%s\n", name, info.fetch)
+						rows = append(rows, []string{name, info.fetch})
 						if info.push != "" && info.push != info.fetch {
-							fmt.Printf("%s\t%s\n", name, info.push)
+							rows = append(rows, []string{name, info.push})
 						}
 					}
+					printRawRows(rows)
 				}
 				if len(meta.Patches) == 0 {
 					fmt.Fprintln(os.Stderr, "No patches configured.")
 					return nil
 				}
+				rows = nil
 				if !noHeader {
-					fmt.Printf("REMOTE\tREMOTE_PATH\tLOCAL_PATH\tWORKTREE\tBRANCH\n")
+					rows = append(rows, []string{"REMOTE", "REMOTE_PATH", "LOCAL_PATH", "WORKTREE", "BRANCH"})
 				}
 				for _, p := range meta.Patches {
-					fmt.Printf("%s\t%s\t%s\t%s\t%s\n", p.Remote, p.RemotePath, p.LocalPath, p.Worktree, p.Branch)
+					rows = append(rows, []string{p.Remote, p.RemotePath, p.LocalPath, p.Worktree, p.Branch})
 				}
+				printRawRows(rows)
 				return nil
 			}
 
@@ -1865,13 +1942,7 @@ if fzf is unavailable it prints the available patches.`,
 						fmt.Printf("git diff --no-index %q %q\n", filepath.Join(upstreamPath, override), filepath.Join(localPath, override))
 					}
 				} else {
-					c := exec.Command("git", "diff", "--no-index",
-						upstreamPath, localPath,
-						"--", ":(exclude).git", ":(glob)**")
-					c.Stdout = os.Stdout
-					c.Stderr = os.Stderr
-					// git diff --no-index returns 1 if there are differences, which cobra might treat as error
-					_ = c.Run()
+					runNoIndexDiff(upstreamPath, localPath)
 				}
 			}
 			if !found {
@@ -2206,7 +2277,7 @@ if fzf is unavailable it prints the available patches.`,
 	// Retain superseded implementations in source as internal reference, but do
 	// not expose them as supported commands.
 	_, _, _, _ = syncCmd, replayCmd, pushCmd, execCmd
-	rootCmd.AddCommand(useCmd, patchCmd, updateCmd, compareCmd, removeCmd, pruneCmd, cdCmd, wtCmd, listCmd, statusCmd, diffCmd, initCmd)
+	rootCmd.AddCommand(useCmd, patchCmd, removeCmd, pruneCmd, initCmd, listCmd, statusCmd, updateCmd, compareCmd, cdCmd, wtCmd, diffCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

@@ -227,6 +227,25 @@ _log level +message:
             echo "==> {{message}}"
     end
 
+# Internal: print TSV rows aligned on a terminal, unchanged (TAB) when piped.
+[no-cd]
+_print_rows:
+    #!/usr/bin/env fish
+    if not test -t 1
+        cat
+        return
+    end
+    awk -F'\t' '
+        { for (i = 1; i <= NF; i++) if (length($i) > w[i]) w[i] = length($i); rows[NR] = $0 }
+        END {
+            for (r = 1; r <= NR; r++) {
+                n = split(rows[r], a, "\t"); line = ""
+                for (i = 1; i <= n; i++)
+                    line = line (i < n ? sprintf("%-*s  ", w[i], a[i]) : a[i])
+                print line
+            }
+        }'
+
 # Print one row per patch: local_path<TAB>worktree (machine-parseable).
 # hint is variadic because the Justfile wrapper word-splits arguments.
 [no-cd]
@@ -732,9 +751,24 @@ diff path="": check-initialized
         if test -d $worktree
             set overrides (just cross _crossignore_overrides "{{REPO_DIR}}/$local_path")
             if test -z "$overrides[1]"
-                # Exclude .git (worktree pointer file has no local counterpart) while
-                # keeping real content diffs and the difference exit status.
-                git diff --no-index $worktree/$remote_path $local_path -- ':(exclude).git' ':(glob)**' || true
+                # Worktree roots contain a `.git` pointer file with no local
+                # counterpart. Pathspec excludes are not portable across git
+                # versions, so diff against a .git-free mirror when needed.
+                set -l left $worktree/$remote_path
+                set -l tmp ""
+                if test -e "$left/.git"
+                    set tmp (mktemp -d)
+                    if rsync -a --exclude=.git --link-dest=(realpath "$left")/ "$left/" "$tmp/" >/dev/null 2>&1
+                        set left $tmp
+                    else
+                        rm -rf "$tmp"
+                        set tmp ""
+                    end
+                end
+                git diff --no-index "$left" "$local_path" || true
+                if test -n "$tmp"
+                    rm -rf "$tmp"
+                end
             else
                 for override in $overrides
                     printf 'git diff --no-index "%s" "%s"\n' "{{REPO_DIR}}/$worktree/$remote_path/$override" "{{REPO_DIR}}/$local_path/$override"
@@ -772,8 +806,11 @@ compare path="": check-initialized
     printf '%s\n' $ctx | source
 
     set tool (git config --get cross.diffTool 2>/dev/null)
-    test -n "$tool"; or set tool "vim \"+DirDiffIgnore='.git' DirDiff {left} {right}\""
+    test -n "$tool"; or set tool "vim \"+let g:DirDiffExcludes='.git'\" \"+DirDiff {left} {right}\""
     set left "$worktree/$remote_path"
+    if test "$remote_path" = "."
+        set left "$worktree"
+    end
     set right "$local_path"
     if string match -q "*{left}*" -- $tool; or string match -q "*{right}*" -- $tool
         set cmd (string replace -a '{right}' "$right" "$tool")
@@ -816,9 +853,10 @@ list raw="" no_header="": check-deps
             set used_remotes (jq -r '.patches[].remote' .cross/metadata.json | sort -u)
 
             if test (count $used_remotes) -gt 0
+                set -l remote_rows
                 if $show_raw
                     if $show_header
-                        printf 'REMOTE_NAME\tREMOTE_URL\n'
+                        set -a remote_rows (string join \t -- REMOTE_NAME REMOTE_URL)
                     end
                 else
                     just cross _log info "Configured Remotes:"
@@ -836,14 +874,18 @@ list raw="" no_header="": check-deps
                     end
                     for url in $urls
                         if $show_raw
-                            printf '%s\t%s\n' $name $url
+                            set -a remote_rows (string join \t -- $name $url)
                         else
                             printf "%-20s %s\n" $name $url
                         end
                     end
                 end
 
-                if not $show_raw
+                if $show_raw
+                    if test (count $remote_rows) -gt 0
+                        printf '%s\n' $remote_rows | just cross _print_rows
+                    end
+                else
                     echo ""
                 end
             end
@@ -859,24 +901,23 @@ list raw="" no_header="": check-deps
             exit 0
         end
 
-        if $show_raw
-            if $show_header
-                printf 'REMOTE\tREMOTE_PATH\tLOCAL_PATH\tWORKTREE\tBRANCH\n'
-            end
-        else
-            just cross _log info "Configured Patches:"
-            if $show_header
-                printf "%-20s %-30s %-20s %-26s %-15s\n" "REMOTE" "REMOTE PATH" "LOCAL PATH" "WORKTREE" "BRANCH"
-                printf "%s\n" (string repeat -n 70 "-")
-            end
-        end
-
+        set -l patch_rows
         if test -f .cross/metadata.json
-            set -l patch_rows (jq -r '.patches[] | [.remote, .remote_path, .local_path, .worktree, .branch] | @tsv' .cross/metadata.json | sort)
-            for row in $patch_rows
-                if $show_raw
-                    printf '%s\n' $row
-                else
+            set patch_rows (jq -r '.patches[] | [.remote, .remote_path, .local_path, .worktree, .branch] | @tsv' .cross/metadata.json | sort)
+            if $show_raw
+                if $show_header
+                    set patch_rows (string join \t -- REMOTE REMOTE_PATH LOCAL_PATH WORKTREE BRANCH) $patch_rows
+                end
+                if test (count $patch_rows) -gt 0
+                    printf '%s\n' $patch_rows | just cross _print_rows
+                end
+            else
+                just cross _log info "Configured Patches:"
+                if $show_header
+                    printf "%-20s %-30s %-20s %-26s %-15s\n" "REMOTE" "REMOTE PATH" "LOCAL PATH" "WORKTREE" "BRANCH"
+                    printf "%s\n" (string repeat -n 70 "-")
+                end
+                for row in $patch_rows
                     set -l cols (string split \t -- $row)
                     printf "%-20s %-30s %-20s %-26s %-15s\n" $cols[1] $cols[2] $cols[3] $cols[4] $cols[5]
                 end

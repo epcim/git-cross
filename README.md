@@ -171,26 +171,27 @@ This lets your main repo keep its local opinionated result while the upstream co
 
 ## Commands
 
-`git cross --help` groups commands by intent:
+`git cross --help` groups commands by intent, starting with the two you need
+first — `use`, then `patch`:
 
 ```text
+Patch Lifecycle:
+  use         Add a remote repository
+  patch       Create a patch from a remote path
+  remove      Remove a patch
+  prune       Remove a remote and all its patches
+
 Repository:
-  compare     Open the configured directory comparison tool for a patch
   init        Create an empty Crossfile
   list        Show all configured patches and remotes
   status      Show patch status
   update      Update patches from Crossfile declarations
+  compare     Open the configured directory comparison tool for a patch
 
 Inspect & Navigate:
   cd          Print a patch local_path to cd into
   diff        Show changes between local and upstream
   wt          Print a patch worktree to cd into
-
-Patch Lifecycle:
-  patch       Create a patch from a remote path
-  prune       Remove a remote and all its patches
-  remove      Remove a patch
-  use         Add a remote repository
 ```
 
 `compare` also answers to the short alias `git cross cmp`.
@@ -295,20 +296,21 @@ Show configured remotes and patches. Default output is a table with
 `Configured Remotes:` / `Configured Patches:` banners and descriptive column
 headers.
 
-`--raw` switches to machine-readable output: tab-separated rows, no table
-borders, and no banners. `--no-header` omits the header line in both table and
-raw mode. In raw mode the section order is fixed — all remotes first, then all
-patches:
+`--raw` switches to machine-readable output: no table borders and no banners.
+When stdout is a terminal, columns are space-padded so they line up; when
+piped, rows are plain `TAB`-separated values. `--no-header` omits the header
+line in both table and raw mode. In raw mode the section order is fixed — all
+remotes first, then all patches:
 
 ```text
-REMOTE_NAME	REMOTE_URL
-REMOTE	REMOTE_PATH	LOCAL_PATH	WORKTREE	BRANCH
+REMOTE_NAME  REMOTE_URL
+REMOTE       REMOTE_PATH  LOCAL_PATH     WORKTREE                               BRANCH
 ```
 
 Each remote with a different fetch and push URL produces one row per URL; both
 rows stay in the two-column schema, so the URL field is never decorated with
-`(fetch)` / `(push)` suffixes. Remote rows are sorted by name. Header rows are
-themselves tab-separated, so use `--no-header` in pipelines.
+`(fetch)` / `(push)` suffixes. Remote rows are sorted by name. In pipes, header
+rows are themselves tab-separated, so use `--no-header` in pipelines.
 
 Parsing examples:
 
@@ -427,19 +429,21 @@ repository root as its working directory. The default, used when
 `cross.diffTool` is unset, is:
 
 ```text
-vim "+DirDiffIgnore='.git' DirDiff {left} {right}"
+vim "+let g:DirDiffExcludes='.git'" "+DirDiff {left} {right}"
 ```
 
-To make it explicit:
+Note the two separate `+cmd` arguments: `DirDiffIgnore=` is not a vim command,
+so the exclusion is set with `let` first, then `DirDiff` runs. To make it
+explicit:
 
 ```bash
-git config --global cross.diffTool "vim \"+DirDiffIgnore='.git' DirDiff {left} {right}\""
+git config --global cross.diffTool "vim \"+let g:DirDiffExcludes='.git'\" \"+DirDiff {left} {right}\""
 ```
 
 A custom ignore list passes DirDiff a comma-separated list of names to skip:
 
 ```bash
-git config --global cross.diffTool "nvim \"+DirDiffIgnore='ves.io,f5fed.com,volterra.us' DirDiff {left} {right}\""
+git config --global cross.diffTool "nvim \"+let g:DirDiffExcludes='.git,ves.io,f5fed.com,volterra.us'\" \"+DirDiff {left} {right}\""
 ```
 
 In this form the paths are part of the vim `+` command string, which is where
