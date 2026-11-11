@@ -806,7 +806,13 @@ compare path="": check-initialized
     printf '%s\n' $ctx | source
 
     set tool (git config --get cross.diffTool 2>/dev/null)
-    test -n "$tool"; or set tool "vim \"+let g:DirDiffExcludes='.git'\" \"+DirDiff {left} {right}\""
+    if test -z "$tool"
+        set -l editor vim
+        if command -v nvim >/dev/null 2>&1
+            set editor nvim
+        end
+        set tool "$editor \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
+    end
     set left "$worktree/$remote_path"
     if test "$remote_path" = "."
         set left "$worktree"

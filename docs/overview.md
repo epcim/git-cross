@@ -68,7 +68,7 @@ Reads `Crossfile`, fetches each upstream, and fast-forwards its sparse worktree.
 
 ### `compare`
 
-Opens the configured directory diff tool for the local path and its sparse worktree. Configure it with `git config --global cross.diffTool 'vim "+DirDiff"'`.
+Opens the configured directory diff tool for the local path and its sparse worktree. Default: `nvim` when installed else `vim`, invoked as `"+let g:DirDiffExcludes = '.git'" "+DirDiff {left} {right}"`. Override with `git config --global cross.diffTool '<command> {left} {right}'`.
 
 ### `diff`
 

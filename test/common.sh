@@ -213,8 +213,10 @@ ensure_go_bin() {
 # A symlink farm is used because a directory cannot "hide" a binary that lives
 # in another PATH entry. This makes the "fzf is not installed" fallbacks
 # testable deterministically, even on hosts/CI images that ship fzf.
-make_path_without_fzf() {
+make_path_without() {
     local farm=$1
+    shift
+    local excludes=" $* "
     local IFS=:
     local dir entry base
     if [ -z "$farm" ]; then
@@ -227,12 +229,16 @@ make_path_without_fzf() {
         for entry in "$dir"/*; do
             [ -f "$entry" ] && [ -x "$entry" ] || continue
             base=${entry##*/}
-            [ "$base" = "fzf" ] && continue
+            case "$excludes" in *" $base "*) continue;; esac
             [ -e "$farm/$base" ] && continue
             ln -s "$entry" "$farm/$base" 2>/dev/null || true
         done
     done
     printf '%s\n' "$farm"
+}
+
+make_path_without_fzf() {
+    make_path_without "$1" fzf
 }
 
 cleanup() {

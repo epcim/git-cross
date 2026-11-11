@@ -109,6 +109,39 @@ if [ -n "$GO_BIN" ]; then
     git config --unset cross.diffTool || true
     log_success "fzf selection drives diff/compare"
 
+    # --- default diff tool: nvim preferred, vim fallback
+    log_header "021: default diffTool prefers nvim, falls back to vim"
+    git config --unset cross.diffTool || true
+    both_shims="$SANDBOX/editor-shims"
+    vim_shims="$SANDBOX/vim-shims"
+    mkdir -p "$both_shims" "$vim_shims"
+    for ed in nvim vim; do
+        cat > "$both_shims/$ed" <<SH
+#!/bin/sh
+printf 'EDITOR:$ed\n'
+printf 'ARG:%s\n' "\$@"
+SH
+        chmod +x "$both_shims/$ed"
+    done
+    cat > "$vim_shims/vim" <<'SH'
+#!/bin/sh
+printf 'EDITOR:vim\n'
+printf 'ARG:%s\n' "$@"
+SH
+    chmod +x "$vim_shims/vim"
+
+    out=$(PATH="$both_shims:$PATH" "$GO_BIN" compare vendor/alpha 2>/dev/null)
+    echo "$out"
+    assert_contains "$out" "EDITOR:nvim" "default tool should prefer nvim when installed"
+    assert_contains "$out" "let g:DirDiffExcludes = '.git'" "default tool should set DirDiffExcludes for .git"
+    assert_contains "$out" "DirDiff .cross/worktrees/" "both paths should be inside the DirDiff command"
+
+    no_nvim_path=$(make_path_without "$SANDBOX/no-nvim-bin" nvim)
+    out=$(PATH="$vim_shims:$no_nvim_path" "$GO_BIN" compare vendor/alpha 2>/dev/null)
+    echo "$out"
+    assert_contains "$out" "EDITOR:vim" "default tool should fall back to vim when nvim is absent"
+    log_success "editor selection verified (nvim preferred, vim fallback)"
+
     # --- inside a patched dir: CWD auto-detect, no fzf needed
     log_header "021: CWD auto-detect still wins inside a patch directory"
     pushd vendor/alpha >/dev/null
@@ -182,6 +215,19 @@ if command -v fish >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -
     assert_contains "$out" "vendor/alpha" "Just compare should resolve the selected local path"
     assert_contains "$out" "TOOL .cross/worktrees/upstream_" "Just compare should run the tool on the selected worktree"
     git config --unset cross.diffTool || true
+
+    log_header "021: Just default diffTool prefers nvim"
+    just_shims="$SANDBOX/editor-shims-just"
+    mkdir -p "$just_shims"
+    for ed in nvim vim; do
+        printf '#!/bin/sh\nprintf "EDITOR:%s\\n"\nprintf "ARG:%%s\\n" "$@"\n' "$ed" > "$just_shims/$ed"
+        chmod +x "$just_shims/$ed"
+    done
+    out=$(PATH="$just_shims:$PATH" just cross compare vendor/alpha 2>/dev/null)
+    echo "$out"
+    assert_contains "$out" "EDITOR:nvim" "Just default tool should prefer nvim when installed"
+    assert_contains "$out" "let g:DirDiffExcludes = '.git'" "Just default tool should set DirDiffExcludes"
+    log_success "Just editor selection verified"
 
     log_header "021: Just CWD auto-detect inside a patch directory"
     pushd vendor/alpha >/dev/null

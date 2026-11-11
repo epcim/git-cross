@@ -79,4 +79,14 @@ assert_contains "$short_help" "Inspect & Navigate:"
 assert_contains "$short_help" "Patch Lifecycle:"
 log_success "-h works"
 
+log_header "020: help suggests the cross.diffTool setup"
+assert_contains "$help_output" "cross.diffTool" "help should mention cross.diffTool setup"
+assert_contains "$help_output" "--unset cross.diffTool" "help should show how to reset to the built-in default"
+assert_contains "$help_output" "let g:DirDiffExcludes = '.git'" "help should show the correct DirDiff exclusion syntax"
+assert_contains "$help_output" "DirDiff {left} {right}" "help should show the placeholder form"
+if printf '%s\n' "$help_output" | grep -q "DirDiffIgnore="; then
+    fail "help must not suggest the invalid 'DirDiffIgnore=' command"
+fi
+log_success "diffTool setup guidance present"
+
 echo "Test 020 passed!"

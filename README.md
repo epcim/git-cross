@@ -425,25 +425,28 @@ before the command is run:
 - `{right}` — the patch's local copy
 
 The substituted paths are **repo-relative**, and the command runs with the
-repository root as its working directory. The default, used when
-`cross.diffTool` is unset, is:
+repository root as its working directory. When `cross.diffTool` is unset the
+built-in default is used — `nvim` if it is installed, otherwise `vim`:
 
 ```text
-vim "+let g:DirDiffExcludes='.git'" "+DirDiff {left} {right}"
+nvim "+let g:DirDiffExcludes = '.git'" "+DirDiff {left} {right}"
+vim  "+let g:DirDiffExcludes = '.git'" "+DirDiff {left} {right}"
 ```
 
-Note the two separate `+cmd` arguments: `DirDiffIgnore=` is not a vim command,
-so the exclusion is set with `let` first, then `DirDiff` runs. To make it
-explicit:
+Note the two separate `+cmd` arguments: `DirDiffIgnore=...` is not a vim
+command, so the exclusion is set with `let` first, then `DirDiff` runs with the
+directories as arguments. To pin a specific editor, set it explicitly:
 
 ```bash
-git config --global cross.diffTool "vim \"+let g:DirDiffExcludes='.git'\" \"+DirDiff {left} {right}\""
+git config --global cross.diffTool "nvim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
+# strictly vim:
+git config --global cross.diffTool "vim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
 ```
 
 A custom ignore list passes DirDiff a comma-separated list of names to skip:
 
 ```bash
-git config --global cross.diffTool "nvim \"+let g:DirDiffExcludes='.git,ves.io,f5fed.com,volterra.us'\" \"+DirDiff {left} {right}\""
+git config --global cross.diffTool "nvim \"+let g:DirDiffExcludes = '.git,ves.io,f5fed.com,volterra.us'\" \"+DirDiff {left} {right}\""
 ```
 
 In this form the paths are part of the vim `+` command string, which is where

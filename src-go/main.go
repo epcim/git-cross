@@ -275,7 +275,16 @@ func logWarn(msg string) {
 	fmt.Println(msg)
 }
 
-const defaultDiffTool = `vim "+let g:DirDiffExcludes='.git'" "+DirDiff {left} {right}"`
+// defaultDiffTool returns the built-in diff tool command: nvim when available,
+// otherwise vim. Two separate +cmd arguments: set the exclusion list first,
+// then run DirDiff on the given directories.
+func defaultDiffTool() string {
+	editor := "vim"
+	if _, err := exec.LookPath("nvim"); err == nil {
+		editor = "nvim"
+	}
+	return editor + ` "+let g:DirDiffExcludes = '.git'" "+DirDiff {left} {right}"`
+}
 
 func diffTool() string {
 	if out, err := exec.Command("git", "config", "--get", "cross.diffTool").Output(); err == nil {
@@ -283,7 +292,7 @@ func diffTool() string {
 			return tool
 		}
 	}
-	return defaultDiffTool
+	return defaultDiffTool()
 }
 
 // runDiffTool executes the configured diff tool. If the tool string contains
@@ -933,6 +942,20 @@ func main() {
 		Version:      "0.3.0",
 		Short:        "Manage vendored cross-repo patches (worktree + rsync)",
 		SilenceUsage: true, // no Usage dump on errors
+		Long: `Manage vendored cross-repo patches (worktree + rsync).
+
+Directory diff tool (compare / cmp): when cross.diffTool is unset, nvim is used
+if installed, otherwise vim, with .git ignored. To use the built-in default:
+
+  git config --global --unset cross.diffTool
+
+To pin it explicitly (recommended):
+
+  git config --global cross.diffTool "nvim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
+
+Strictly vim:
+
+  git config --global cross.diffTool "vim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return printPatchRows("")
 		},
