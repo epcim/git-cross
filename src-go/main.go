@@ -1087,9 +1087,7 @@ To pin it explicitly (recommended):
 
   git config --global cross.diffTool "nvim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
 
-Strictly vim:
-
-  git config --global cross.diffTool "vim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
+Replace nvim with vim to pin vim instead.
 
 Environment variables (used only when cross.diffTool is unset):
   DIRDIFF_EXCLUDES  extra comma-separated file/dir names to hide; .git is always ignored

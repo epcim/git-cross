@@ -92,6 +92,11 @@ assert_contains "$help_output" "cross.diffTool" "help should mention cross.diffT
 assert_contains "$help_output" "--unset cross.diffTool" "help should show how to reset to the built-in default"
 assert_contains "$help_output" "let g:DirDiffExcludes = '.git'" "help should show the correct DirDiff exclusion syntax"
 assert_contains "$help_output" "DirDiff {left} {right}" "help should show the placeholder form"
+pin_lines=$(printf '%s\n' "$help_output" | grep -c 'cross.diffTool "')
+[ "$pin_lines" -eq 1 ] || fail "help should show the explicit diffTool config line exactly once (found $pin_lines)"
+if printf '%s\n' "$help_output" | grep -q "Strictly vim"; then
+    fail "help must not repeat the same config line for vim"
+fi
 if printf '%s\n' "$help_output" | grep -q "DirDiffIgnore="; then
     fail "help must not suggest the invalid 'DirDiffIgnore=' command"
 fi
