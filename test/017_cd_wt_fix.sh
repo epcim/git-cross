@@ -159,7 +159,14 @@ if [ -n "$GO_BIN" ]; then
     mkdir -p "$shim_dir"
     cat > "$shim_dir/fzf" <<'EOF'
 #!/usr/bin/env bash
-cat >/dev/null
+if [ -n "${FZF_STDIN_FILE:-}" ]; then
+    cat > "$FZF_STDIN_FILE"
+else
+    cat >/dev/null
+fi
+if [ -n "${FZF_ARGS_FILE:-}" ]; then
+    printf '%s\n' "$@" > "$FZF_ARGS_FILE"
+fi
 if [ -n "${FZF_SELECT:-}" ]; then
     printf '%b\n' "$FZF_SELECT"
     exit 0
@@ -167,7 +174,8 @@ fi
 exit 130
 EOF
     chmod +x "$shim_dir/fzf"
-    selection="demo\tsrc\tvendor/src"
+    # New picker contract: "<aligned display><TAB><local_path>"
+    selection="vendor/src       demo:src\tvendor/src"
 
     out=$(FZF_SELECT="$selection" PATH="$shim_dir:$PATH" "$GO_BIN" cd 2>/dev/null) \
         || fail "Go cd with an fzf selection failed"
@@ -176,6 +184,59 @@ EOF
     out=$(FZF_SELECT="$selection" PATH="$shim_dir:$PATH" "$GO_BIN" wt 2>/dev/null) \
         || fail "Go wt with an fzf selection failed"
     assert_one_abs_path "Go wt (fzf)" "$out" "$wt_abs"
+
+    log_header "017: Go fzf picker aligns local_path and labels"
+    long_upstream=$(create_upstream "mxc-library")
+    # Idempotent: the Go and Just sections share the sandbox.
+    if ! git -C "$long_upstream" rev-parse --verify feature >/dev/null 2>&1; then
+        pushd "$long_upstream" >/dev/null
+        mkdir -p src pkg
+        echo "src" > src/s.txt
+        echo "pkg" > pkg/p.txt
+        git add -A
+        git commit -m "Add src and pkg" -q
+        git checkout -q -b feature
+        echo "more" >> pkg/p.txt
+        git commit -qam "Feature change" -q
+        popd >/dev/null
+    fi
+    "$GO_BIN" use mxc-library "file://$long_upstream" >/dev/null
+    "$GO_BIN" patch mxc-library:main:src vendor/mxcsrc >/dev/null 2>&1
+    "$GO_BIN" patch mxc-library:feature:pkg vendor/mxcpkg >/dev/null 2>&1
+
+    maxlen=$(jq -r '[.patches[].local_path | length] | max' .cross/metadata.json)
+    width=$((maxlen + 2))
+    [ "$width" -lt 16 ] && width=16
+    [ "$width" -gt 48 ] && width=48
+    stdin_file="$SANDBOX/fzf-stdin.txt"
+    args_file="$SANDBOX/fzf-args.txt"
+    FZF_STDIN_FILE="$stdin_file" FZF_ARGS_FILE="$args_file" \
+        PATH="$shim_dir:$PATH" "$GO_BIN" cd >/dev/null 2>&1 || true
+    [ -s "$stdin_file" ] || fail "fzf picker should receive candidate rows"
+
+    # Every row is "<display padded to width><TAB><local_path>"; the label must
+    # start at column width+1, past the two-space gap.
+    awk -F'\t' -v w="$width" '
+        NF != 2 { bad = 1 }
+        substr($1, w + 1, 1) == " " { bad = 1 }
+        substr($1, w, 1) != " " { bad = 1 }
+        $2 == "" { bad = 1 }
+        END { exit bad ? 1 : 0 }
+    ' "$stdin_file" || fail "picker rows must align at column $((width + 1)) and end with a TAB key"
+
+    awk -F'\t' '$1 ~ /mxc-library:pkg \(feature\)$/ { found = 1 } END { exit found ? 0 : 1 }' "$stdin_file" \
+        || fail "picker should show the branch for non-main patches"
+    if awk -F'\t' '$1 ~ /mxc-library:src/ && $1 ~ /\(main\)/ { f = 1 } END { exit f ? 0 : 1 }' "$stdin_file"; then
+        fail "picker should not show '(main)' for the default branch"
+    fi
+
+    header_val=$(awk '/^--header$/{ getline; print; exit }' "$args_file")
+    expected_header="LOCAL_PATH$(printf '%*s' "$((width - 10))" '')REMOTE:REMOTE_PATH"
+    [ "$header_val" = "$expected_header" ] \
+        || fail "padded header mismatch: got '$header_val', want '$expected_header'"
+    assert_contains "$(cat "$args_file")" "--with-nth=1" "picker should hide the key field"
+    assert_contains "$(cat "$args_file")" "--delimiter" "picker should use TAB as the field delimiter"
+    log_success "Go fzf picker alignment verified"
     log_success "Go fzf selection verified"
 else
     echo "SKIP: Go CLI unavailable; skipping Go cd/wt assertions"
@@ -209,6 +270,49 @@ if command -v fish >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -
     [ "$wt_rc" -eq 1 ] || fail "Just wt without fzf should exit 1, got $wt_rc"
     assert_contains "$wt_out" "fzf is not installed" "Just wt fallback should say fzf is missing"
     log_success "Just fzf-missing fallback verified"
+
+    log_header "017: Just fzf picker aligns local_path and labels"
+    long_upstream=$(create_upstream "mxc-library")
+    # Idempotent: the Go and Just sections share the sandbox.
+    if ! git -C "$long_upstream" rev-parse --verify feature >/dev/null 2>&1; then
+        pushd "$long_upstream" >/dev/null
+        mkdir -p src pkg
+        echo "src" > src/s.txt
+        echo "pkg" > pkg/p.txt
+        git add -A
+        git commit -m "Add src and pkg" -q
+        git checkout -q -b feature
+        echo "more" >> pkg/p.txt
+        git commit -qam "Feature change" -q
+        popd >/dev/null
+    fi
+    just cross use mxc-library "file://$long_upstream" >/dev/null
+    just cross patch mxc-library:main:src vendor/mxcsrc >/dev/null 2>&1
+    just cross patch mxc-library:feature:pkg vendor/mxcpkg >/dev/null 2>&1
+
+    maxlen=$(jq -r '[.patches[].local_path | length] | max' .cross/metadata.json)
+    width=$((maxlen + 2))
+    [ "$width" -lt 16 ] && width=16
+    [ "$width" -gt 48 ] && width=48
+    stdin_file="$SANDBOX/just-fzf-stdin.txt"
+    args_file="$SANDBOX/just-fzf-args.txt"
+    FZF_STDIN_FILE="$stdin_file" FZF_ARGS_FILE="$args_file" \
+        PATH="$shim_dir:$PATH" just cross cd >/dev/null 2>&1 || true
+    [ -s "$stdin_file" ] || fail "Just fzf picker should receive candidate rows"
+    awk -F'\t' -v w="$width" '
+        NF != 2 { bad = 1 }
+        substr($1, w + 1, 1) == " " { bad = 1 }
+        substr($1, w, 1) != " " { bad = 1 }
+        $2 == "" { bad = 1 }
+        END { exit bad ? 1 : 0 }
+    ' "$stdin_file" || fail "Just picker rows must align at column $((width + 1)) and end with a TAB key"
+    awk -F'\t' '$1 ~ /mxc-library:pkg \(feature\)$/ { found = 1 } END { exit found ? 0 : 1 }' "$stdin_file" \
+        || fail "Just picker should show the branch for non-main patches"
+    header_val=$(awk '/^--header$/{ getline; print; exit }' "$args_file")
+    expected_header="LOCAL_PATH$(printf '%*s' "$((width - 10))" '')REMOTE:REMOTE_PATH"
+    [ "$header_val" = "$expected_header" ] \
+        || fail "Just padded header mismatch: got '$header_val', want '$expected_header'"
+    log_success "Just fzf picker alignment verified"
 
     log_header "017: Just completion prints cd wrappers"
     comp_bash=$(just cross completion bash 2>&1) || fail "Just completion bash should exit 0"

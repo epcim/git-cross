@@ -82,8 +82,8 @@ if [ -n "$GO_BIN" ]; then
 
     # --- fzf shim: selection drives diff/compare
     log_header "021: Go diff/compare operate on the fzf selection"
-    sel_alpha='upstream\t.\tvendor/alpha'
-    sel_beta='upstream\t.\tvendor/beta'
+    sel_alpha='vendor/alpha    upstream:.\tvendor/alpha'
+    sel_beta='vendor/beta    upstream:.\tvendor/beta'
 
     out=$(FZF_SELECT="$sel_alpha" PATH="$fzf_shim_dir:$PATH" "$GO_BIN" diff 2>&1) || true
     echo "$out"
@@ -222,7 +222,7 @@ if command -v fish >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -
     log_header "021: Just diff/compare operate on the fzf selection"
     git config cross.diffTool 'echo TOOL {left} {right}'
     wt_alpha=$(jq -r '.patches[] | select(.local_path == "vendor/alpha") | .worktree' .cross/metadata.json)
-    sel_alpha="vendor/alpha\t$wt_alpha"
+    sel_alpha="vendor/alpha    upstream:.\tvendor/alpha"
     out=$(FZF_SELECT="$sel_alpha" PATH="$fzf_shim_dir:$PATH" just cross diff 2>&1) || true
     echo "$out"
     assert_contains "$out" "local alpha change" "Just diff should operate on the selected alpha patch"

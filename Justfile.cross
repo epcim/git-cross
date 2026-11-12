@@ -263,6 +263,9 @@ _list_patches *hint="":
 
 # Interactive patch selection; prints the selected local_path.
 # Cancels silently (empty output). If fzf is missing: rows+hint to stderr, exit 1.
+# Rows are space-padded (LOCAL_PATH first, then REMOTE:REMOTE_PATH, plus the
+# branch when it is not "main"); TAB is only the hidden field separator, and the
+# local_path is repeated as the last field so the selection is parseable.
 [no-cd]
 _select_patch *prompt="patch":
     #!/usr/bin/env fish
@@ -270,10 +273,26 @@ _select_patch *prompt="patch":
         just cross _list_patches "fzf is not installed, cd into a patched directory first or pass a path. Patches, columns local_path TAB worktree" >&2
         exit 1
     end
-    set -l row (just cross _list_patches | fzf --height 40% --select-1 --exit-0 --prompt "Select {{prompt}}> ")
+    set -l meta "{{REPO_DIR}}/.cross/metadata.json"
+    set -l width (jq -r '[.patches[].local_path | length] | max // 0' "$meta")
+    set width (math "$width + 2")
+    test $width -lt 16; and set width 16
+    test $width -gt 48; and set width 48
+    set -l header LOCAL_PATH(string repeat -n (math $width - 10) ' ')REMOTE:REMOTE_PATH
+    set -l rows (jq -r --argjson w $width '
+        .patches[]
+        | .local_path as $lp
+        | ($w - ($lp | length)) as $pad
+        | ($lp + (" " * ([0, $pad] | max)))
+          + .remote + ":" + .remote_path
+          + (if (.branch // "") != "" and .branch != "main" then " (" + .branch + ")" else "" end)
+          + "\t" + $lp
+    ' "$meta")
+    set -l row (printf '%s\n' $rows | fzf --delimiter \t --with-nth=1 --header "$header" --height 40% --select-1 --exit-0 --prompt "Select {{prompt}}> ")
     test -z "$row"; and exit 0
+    # Selection is "<aligned display><TAB><local_path>": take the last field.
     set -l cols (string split \t -- $row)
-    echo "$cols[1]"
+    echo "$cols[-1]"
 
 # Initialize a new project with Crossfile
 [no-cd]

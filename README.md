@@ -504,8 +504,22 @@ Keeping stdout path-only is deliberate: it makes the output composable in
 scripts (`dir=$(git cross cd vendor/app)`) and safe to capture in a function.
 
 With an explicit path the patch is resolved directly. Without one, `fzf` is
-used to select a patch. If `fzf` is not installed, the command prints the
-available patch rows plus a hint to `cd` manually, and exits 1.
+used to select a patch. The picker puts `LOCAL_PATH` first, then
+`REMOTE:REMOTE_PATH`, and appends the branch in parentheses only when it is not
+`main`; columns are padded so long remote names cannot run into the next field:
+
+```text
+  vendor/mxcsrc    mxc-library:src
+  vendor/mxcpkg    mxc-library:pkg (feature)
+  vendor/docs-src  docs:src
+  3/3
+──────────────────────────────────────────────
+LOCAL_PATH       REMOTE:REMOTE_PATH
+Select patch>
+```
+
+If `fzf` is not installed, the command prints the available patch rows plus a
+hint to `cd` manually, and exits 1.
 
 ## Directory Diff Tool (`cross.diffTool`)
 

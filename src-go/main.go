@@ -885,6 +885,39 @@ func resolvePathToRepoRelative(inputPath string) (string, error) {
 	return strings.Trim(relPath, "/"), nil
 }
 
+// pickerWidth is the padded width of the LOCAL_PATH column: the widest
+// local_path plus a two-space gap, clamped so one long path cannot push the
+// second column off screen.
+func pickerWidth(meta *Metadata) int {
+	width := 0
+	for _, p := range meta.Patches {
+		if n := len([]rune(p.LocalPath)); n > width {
+			width = n
+		}
+	}
+	width += 2
+	if width < 16 {
+		width = 16
+	}
+	if width > 48 {
+		width = 48
+	}
+	return width
+}
+
+// pickerLabel is the second picker column: remote:remote_path, with the branch
+// in parentheses when it is not the usual default.
+func pickerLabel(p Patch) string {
+	label := p.Remote + ":" + p.RemotePath
+	if p.Branch != "" && p.Branch != "main" {
+		label += " (" + p.Branch + ")"
+	}
+	return label
+}
+
+// selectPatchInteractive lets the user pick a patch with fzf. Rows are
+// space-padded for alignment (TAB is used only as the hidden field separator),
+// with the local_path repeated as the last field so the selection is parseable.
 func selectPatchInteractive(meta *Metadata) (*Patch, error) {
 	if _, err := exec.LookPath("fzf"); err != nil {
 		return nil, err
@@ -893,19 +926,19 @@ func selectPatchInteractive(meta *Metadata) (*Patch, error) {
 		return nil, nil
 	}
 
+	width := pickerWidth(meta)
 	var b strings.Builder
 	for _, p := range meta.Patches {
-		b.WriteString(fmt.Sprintf("%s\t%s\t%s\n", p.Remote, p.RemotePath, p.LocalPath))
+		b.WriteString(fmt.Sprintf("%-*s%s\t%s\n", width, p.LocalPath, pickerLabel(p), p.LocalPath))
 	}
 
 	cmd := exec.Command("fzf",
-		"--with-nth=1,2,3",
-		"--delimiter",
-		"\t",
+		"--delimiter", "\t",
+		"--with-nth=1",
 		"--prompt",
 		"Select patch> ",
 		"--header",
-		"REMOTE\tREMOTE_PATH\tLOCAL_PATH",
+		fmt.Sprintf("%-*s%s", width, "LOCAL_PATH", "REMOTE:REMOTE_PATH"),
 		"--height",
 		"40%",
 		"--border",
@@ -919,9 +952,10 @@ func selectPatchInteractive(meta *Metadata) (*Patch, error) {
 		return nil, nil // user cancelled (ESC / empty)
 	}
 
+	// The local_path is always the last TAB-delimited field.
 	parts := strings.Split(selection, "\t")
 	var localPath string
-	if len(parts) >= 3 {
+	if len(parts) > 1 {
 		localPath = strings.TrimSpace(parts[len(parts)-1])
 	} else {
 		fields := strings.Fields(selection)
