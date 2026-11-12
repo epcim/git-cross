@@ -328,9 +328,13 @@ func defaultDiffTool() string {
 }
 
 func diffTool() string {
-	if out, err := exec.Command("git", "config", "--get", "cross.diffTool").Output(); err == nil {
-		if tool := strings.TrimSpace(string(out)); tool != "" {
-			return tool
+	// cross.dirdifftool is canonical; cross.diffTool is a deprecated fallback so
+	// configurations written before the rename keep working.
+	for _, key := range []string{"cross.dirdifftool", "cross.diffTool"} {
+		if out, err := exec.Command("git", "config", "--get", key).Output(); err == nil {
+			if tool := strings.TrimSpace(string(out)); tool != "" {
+				return tool
+			}
 		}
 	}
 	return defaultDiffTool()
@@ -1112,18 +1116,19 @@ func main() {
 		SilenceUsage: true, // no Usage dump on errors
 		Long: `Manage vendored cross-repo patches (worktree + rsync).
 
-Directory diff tool (compare / cmp): when cross.diffTool is unset, nvim is used
-if installed, otherwise vim, with .git ignored. To use the built-in default:
+Directory diff tool (compare / cmp): when cross.dirdifftool is unset, nvim is
+used if installed, otherwise vim, with .git ignored. To use the built-in default:
 
-  git config --global --unset cross.diffTool
+  git config --global --unset cross.dirdifftool
 
 To pin it explicitly (recommended):
 
-  git config --global cross.diffTool "nvim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
+  git config --global cross.dirdifftool "nvim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
 
-Replace nvim with vim to pin vim instead.
+Replace nvim with vim to pin vim instead. The legacy cross.diffTool key is still
+read as a fallback.
 
-Environment variables (used only when cross.diffTool is unset):
+Environment variables (used only when cross.dirdifftool is unset):
   DIRDIFF_EXCLUDES  extra comma-separated file/dir names to hide; .git is always ignored
   DIRDIFF_IGNORE    comma-separated keywords ignored in diff content (e.g. github.com,gitlab.com)
 
@@ -1694,8 +1699,7 @@ Shell completions + cd wrappers (crosscd / crosswt) - evaluate once in your prof
 				}
 				updated++
 				if localChanged {
-					logWarn(fmt.Sprintf("'%s' differs from upstream; local copy preserved. Compare with: git cross diff %s",
-						localPath, localPath))
+					logWarn(fmt.Sprintf("'%s' differs from upstream; local copy preserved", localPath))
 					continue
 				}
 				if err := os.MkdirAll(localAbs, 0o755); err != nil {
@@ -1711,7 +1715,11 @@ Shell completions + cd wrappers (crosscd / crosswt) - evaluate once in your prof
 			}
 			if updated == 0 {
 				logInfo("No patches updated.")
+				return nil
 			}
+			logInfo("Review the differences:")
+			fmt.Println("  git cross diff        # pick a patch with fzf and see the diff")
+			fmt.Println("  git cross compare     # pick a patch and update it (dirdiff tool)")
 			return nil
 		},
 	}

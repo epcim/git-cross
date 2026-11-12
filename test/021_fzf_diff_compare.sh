@@ -95,7 +95,7 @@ if [ -n "$GO_BIN" ]; then
     assert_contains "$out" "local beta change" "diff should operate on the selected beta patch"
     assert_not_contains "$out" "local alpha change" "diff should not include the unselected alpha patch"
 
-    git config cross.diffTool 'echo TOOL {left} {right}'
+    git config cross.dirdifftool 'echo TOOL {left} {right}'
     out=$(FZF_SELECT="$sel_alpha" PATH="$fzf_shim_dir:$PATH" "$GO_BIN" compare 2>&1) || true
     echo "$out"
     assert_contains "$out" "TOOL .cross/worktrees/upstream_" "compare should run the tool on the selected worktree"
@@ -106,12 +106,12 @@ if [ -n "$GO_BIN" ]; then
     echo "$out"
     assert_contains "$out" "vendor/beta" "the 'cmp' alias should use the fzf selection"
     assert_not_contains "$out" "vendor/alpha"
-    git config --unset cross.diffTool || true
+    git config --unset cross.dirdifftool || true
     log_success "fzf selection drives diff/compare"
 
     # --- default diff tool: nvim preferred, vim fallback
     log_header "021: default diffTool prefers nvim, falls back to vim"
-    git config --unset cross.diffTool || true
+    git config --unset cross.dirdifftool || true
     both_shims="$SANDBOX/editor-shims"
     vim_shims="$SANDBOX/vim-shims"
     mkdir -p "$both_shims" "$vim_shims"
@@ -141,7 +141,7 @@ SH
     echo "$out"
     assert_contains "$out" "EDITOR:vim" "default tool should fall back to vim when nvim is absent"
 
-    # environment-driven extras (only when cross.diffTool is unset)
+    # environment-driven extras (only when cross.dirdifftool is unset)
     out=$(env -u DIRDIFF_IGNORE -u DIRDIFF_EXCLUDES PATH="$both_shims:$PATH" "$GO_BIN" compare vendor/alpha 2>/dev/null)
     assert_contains "$out" "let g:DirDiffExcludes = '.git'" "minimal default keeps .git excluded"
     assert_not_contains "$out" "DirDiffIgnore" "no ignore argument should be emitted without DIRDIFF_IGNORE"
@@ -169,12 +169,12 @@ SH
     assert_not_contains "$out" "local beta change"
     assert_not_contains "$out" "fzf is not installed" "auto-detect must not consult fzf"
 
-    git config cross.diffTool 'echo TOOL {left} {right}'
+    git config cross.dirdifftool 'echo TOOL {left} {right}'
     out=$(PATH="$nofzf_path" "$GO_BIN" compare 2>&1) || true
     echo "$out"
     assert_contains "$out" "TOOL .cross/worktrees/upstream_" "compare inside vendor/alpha should auto-detect"
     assert_contains "$out" "vendor/alpha"
-    git config --unset cross.diffTool || true
+    git config --unset cross.dirdifftool || true
     popd >/dev/null
     log_success "auto-detect verified"
 fi
@@ -220,7 +220,7 @@ if command -v fish >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -
     assert_contains "$compare_out" "fzf is not installed" "Just compare should explain that fzf is missing"
 
     log_header "021: Just diff/compare operate on the fzf selection"
-    git config cross.diffTool 'echo TOOL {left} {right}'
+    git config cross.dirdifftool 'echo TOOL {left} {right}'
     wt_alpha=$(jq -r '.patches[] | select(.local_path == "vendor/alpha") | .worktree' .cross/metadata.json)
     sel_alpha="vendor/alpha    upstream:.\tvendor/alpha"
     out=$(FZF_SELECT="$sel_alpha" PATH="$fzf_shim_dir:$PATH" just cross diff 2>&1) || true
@@ -232,6 +232,14 @@ if command -v fish >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -
     echo "$out"
     assert_contains "$out" "vendor/alpha" "Just compare should resolve the selected local path"
     assert_contains "$out" "TOOL .cross/worktrees/upstream_" "Just compare should run the tool on the selected worktree"
+
+    # Legacy key fallback: cross.diffTool still works when the new one is unset.
+    git config --unset cross.dirdifftool || true
+    git config cross.diffTool 'echo LEGACY {left} {right}'
+    out=$(FZF_SELECT="$sel_alpha" PATH="$fzf_shim_dir:$PATH" just cross compare 2>&1) || true
+    echo "$out"
+    assert_contains "$out" "LEGACY .cross/worktrees/upstream_" \
+        "Just compare should fall back to the legacy cross.diffTool key"
     git config --unset cross.diffTool || true
 
     log_header "021: Just default diffTool prefers nvim"

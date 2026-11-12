@@ -13,6 +13,9 @@ assert_grep "vendor/lib/lib.txt" "upstream-v2"
 if echo "$clean_output" | grep -q "differs from upstream"; then
     fail "Update should not warn about local edits for a clean patch"
 fi
+if ! echo "$clean_output" | grep -q "Review the differences:"; then
+    fail "A completed update run should print the review block"
+fi
 log_success "Clean patch updated"
 
 log_header "Preserving local edits and refreshing sparse worktree..."
@@ -26,8 +29,20 @@ assert_grep "vendor/lib/lib.txt" "local-edit"
 if ! echo "$output" | grep -q "differs from upstream"; then
     fail "Update should report that the local copy differs from upstream"
 fi
-if ! echo "$output" | grep -q "cross diff vendor/lib"; then
-    fail "Update should point at 'git cross diff <local_path>' for review"
+if echo "$output" | grep -q "Compare with:"; then
+    fail "Update warning should not inline a per-path suggestion"
+fi
+if ! echo "$output" | grep -q "Review the differences:"; then
+    fail "Update should print the end-of-run review block"
+fi
+if ! echo "$output" | grep -q "git cross diff  "; then
+    fail "Review block should suggest 'git cross diff' without a path"
+fi
+if ! echo "$output" | grep -q "git cross compare"; then
+    fail "Review block should suggest 'git cross compare'"
+fi
+if echo "$output" | grep -q "git cross diff vendor/lib"; then
+    fail "Review block should not repeat per-patch paths"
 fi
 # The old verbose workflow (global config hint + tool invocation) is gone.
 if echo "$output" | grep -q "Local edits detected"; then

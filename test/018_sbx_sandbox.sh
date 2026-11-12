@@ -42,8 +42,11 @@ fi
 if ! echo "$output" | grep -q "differs from upstream"; then
     fail "Update did not report that the local copy differs from upstream"
 fi
-if ! echo "$output" | grep -q "cross diff vendor/ai-src"; then
-    fail "Update did not point at 'git cross diff <local_path>' for review"
+if ! echo "$output" | grep -q "Review the differences:"; then
+    fail "Update did not print the end-of-run review block"
+fi
+if echo "$output" | grep -q "cross diff vendor/ai-src"; then
+    fail "Review block should be path-less (fzf selection)"
 fi
 if echo "$output" | grep -q "Local edits detected"; then
     fail "Update still prints the old 'Local edits detected' wording"

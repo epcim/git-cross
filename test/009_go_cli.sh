@@ -263,8 +263,8 @@ fi
 if echo "$update_output" | grep -q "DirDiff"; then
     fail "Go update should not print the configured diff tool command"
 fi
-if echo "$update_output" | grep -q "git config --global cross.diffTool"; then
-    fail "Go update should not print the global cross.diffTool hint"
+if echo "$update_output" | grep -q "git config --global cross.dirdifftool"; then
+    fail "Go update should not print the global cross.dirdifftool hint"
 fi
 
 log_header "Testing Go 'diff' command..."
@@ -286,7 +286,7 @@ EOF
 chmod +x "$SANDBOX/bin/compare-tool"
 export COMPARE_TOOL_ARGS="$SANDBOX/compare-args.txt"
 # Template form: placeholders are substituted with repo-relative paths.
-git config cross.diffTool "$SANDBOX/bin/compare-tool {left} {right}"
+git config cross.dirdifftool "$SANDBOX/bin/compare-tool {left} {right}"
 "$GO_BIN" compare vendor/go-src
 if ! grep -q ".cross/worktrees/demo_" "$COMPARE_TOOL_ARGS"; then
     fail "Go compare did not pass the sparse worktree path"
@@ -300,7 +300,7 @@ fi
 
 # Legacy form (no placeholders) still appends the paths as arguments.
 rm -f "$COMPARE_TOOL_ARGS"
-git config cross.diffTool "$SANDBOX/bin/compare-tool"
+git config cross.dirdifftool "$SANDBOX/bin/compare-tool"
 "$GO_BIN" compare vendor/go-src
 if ! grep -q ".cross/worktrees/demo_" "$COMPARE_TOOL_ARGS"; then
     fail "Go compare legacy form did not pass the sparse worktree path"
@@ -308,16 +308,34 @@ fi
 if ! grep -q "vendor/go-src" "$COMPARE_TOOL_ARGS"; then
     fail "Go compare legacy form did not pass the local patch path"
 fi
-git config --unset cross.diffTool
+git config --unset cross.dirdifftool
 unset COMPARE_TOOL_ARGS
 
 # The 'cmp' alias behaves like 'compare'.
-git config cross.diffTool 'echo TOOL {left} {right}'
+git config cross.dirdifftool 'echo TOOL {left} {right}'
 cmp_output=$("$GO_BIN" cmp vendor/go-src 2>&1 || true)
 echo "$cmp_output"
 if ! echo "$cmp_output" | grep -Eq "TOOL \.cross/worktrees/demo_[0-9a-f]+/src vendor/go-src"; then
     fail "Go 'cmp' alias should resolve and run the diff tool like 'compare'"
 fi
+git config --unset cross.dirdifftool
+
+log_header "Testing Go legacy cross.diffTool fallback..."
+# The deprecated key still drives the tool...
+git config cross.diffTool 'echo LEGACY {left} {right}'
+legacy_output=$("$GO_BIN" compare vendor/go-src 2>&1 || true)
+echo "$legacy_output"
+if ! echo "$legacy_output" | grep -q "LEGACY .cross/worktrees/demo_"; then
+    fail "Legacy cross.diffTool should still be used as a fallback"
+fi
+# ...but the canonical key wins when both are set.
+git config cross.dirdifftool 'echo NEW {left} {right}'
+both_output=$("$GO_BIN" compare vendor/go-src 2>&1 || true)
+echo "$both_output"
+if ! echo "$both_output" | grep -q "NEW .cross/worktrees/demo_"; then
+    fail "cross.dirdifftool should take precedence over the legacy key"
+fi
+git config --unset cross.dirdifftool
 git config --unset cross.diffTool
 
 log_header "Testing Go '.crossignore' override status/diff hint..."

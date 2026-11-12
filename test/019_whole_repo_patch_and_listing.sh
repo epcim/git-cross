@@ -7,7 +7,7 @@
 #   - `diff` shows real changes and never the `.git` pointer
 #   - bare `git-cross` and an unresolved `compare` print machine-parseable
 #     rows (`local_path<TAB>worktree`) instead of a Usage dump
-#   - `cross.diffTool` template placeholders receive repo-relative paths
+#   - `cross.dirdifftool` template placeholders receive repo-relative paths
 source "$(dirname "$0")/common.sh"
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -110,8 +110,8 @@ if [ -n "$GO_BIN" ]; then
     log_success "unresolved 'compare' prints rows and exits 1"
 
     # --- diffTool template substitution uses repo-relative paths
-    log_header "019: cross.diffTool {left}/{right} template substitution"
-    git config cross.diffTool 'echo TOOL {left} {right}'
+    log_header "019: cross.dirdifftool {left}/{right} template substitution"
+    git config cross.dirdifftool 'echo TOOL {left} {right}'
 
     tool_out=$("$GO_BIN" compare sub 2>&1 || true)
     echo "$tool_out"
@@ -123,7 +123,7 @@ if [ -n "$GO_BIN" ]; then
     alias_out=$("$GO_BIN" cmp sub 2>&1 || true)
     echo "$alias_out"
     assert_contains "$alias_out" "TOOL .cross/worktrees/up_" "the 'cmp' alias should behave like 'compare'"
-    git config --unset cross.diffTool || true
+    git config --unset cross.dirdifftool || true
     log_success "diffTool template substitution verified"
 fi
 

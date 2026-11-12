@@ -666,7 +666,7 @@ _update_patch spec local_path:
         exit 1
     end
     if test "$local_changed" = "true"
-        just cross _log warn "'$l_path' differs from upstream; local copy preserved. Compare with: git cross diff $l_path"
+        just cross _log warn "'$l_path' differs from upstream; local copy preserved"
         exit 0
     end
     mkdir -p "$local_abs"
@@ -737,6 +737,11 @@ update path="": check-deps
     if test -n "{{path}}" -a $updates -eq 0
         just cross _log error "No Crossfile patch found for {{path}}"
         exit 1
+    end
+    if test $updates -gt 0
+        just cross _log info "Review the differences:"
+        echo "  git cross diff        # pick a patch with fzf and see the diff"
+        echo "  git cross compare     # pick a patch and update it (dirdiff tool)"
     end
     popd >/dev/null
 
@@ -821,11 +826,11 @@ diff path="": check-initialized
         end
     popd
 
-# Open the configured directory comparison tool (git config cross.diffTool).
+# Open the configured directory comparison tool (git config cross.dirdifftool).
 [no-cd]
 compare path="": check-initialized
     #!/usr/bin/env fish
-    # cross.diffTool may contain {left}/{right} placeholders (repo-relative paths);
+    # cross.dirdifftool may contain {left}/{right} placeholders (repo-relative paths);
     # without placeholders the paths are appended as arguments (legacy form).
     # Resolve metadata: explicit path, CWD auto-detect, then fzf selection
     set -l ctx (just cross _resolve_context2 "{{path}}" 2>/dev/null)
@@ -846,7 +851,11 @@ compare path="": check-initialized
     end
     printf '%s\n' $ctx | source
 
-    set tool (git config --get cross.diffTool 2>/dev/null)
+    # cross.dirdifftool is canonical; cross.diffTool is a deprecated fallback.
+    set tool (git config --get cross.dirdifftool 2>/dev/null)
+    if test -z "$tool"
+        set tool (git config --get cross.diffTool 2>/dev/null)
+    end
     if test -z "$tool"
         set -l editor vim
         if command -v nvim >/dev/null 2>&1

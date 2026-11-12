@@ -209,7 +209,7 @@ Recommended pattern:
 2. Compare it with the local patch using `git cross compare vendor/app`, or print a console diff with `git cross diff vendor/app`.
 3. Manually copy desired changes into the worktree, then commit and push with Git.
 
-`compare` uses the command configured in `cross.diffTool`; see [Directory Diff Tool](#directory-diff-tool-crossdifftool).
+`compare` uses the command configured in `cross.dirdifftool`; see [Directory Diff Tool](#directory-diff-tool-crossdirdifftool).
 
 This lets your main repo keep its local opinionated result while the upstream contribution stays focused.
 
@@ -290,10 +290,18 @@ git cross update [path]
 
 Read `Crossfile`, fetch upstream updates, and update each patch.
 
-If the local copy still matches the previously installed upstream content, `update` refreshes it in place. If the local copy has edits, `update` preserves it, advances the sparse worktree to the new upstream state, and prints a single warning:
+If the local copy still matches the previously installed upstream content, `update` refreshes it in place. If the local copy has edits, `update` preserves it, advances the sparse worktree to the new upstream state, and prints only the fact:
 
 ```text
-'vendor/docs' differs from upstream; local copy preserved. Compare with: git cross diff vendor/docs
+==> WARNING: 'vendor/docs' differs from upstream; local copy preserved
+```
+
+After the run, a generic review block follows (both commands use fzf or the current patch when no path is given):
+
+```text
+Review the differences:
+  git cross diff        # pick a patch with fzf and see the diff
+  git cross compare     # pick a patch and update it (dirdiff tool)
 ```
 
 Review the differences and merge manually. Whole-repository patches (`remote:.` and `remote:/`) take part in this check correctly: the worktree's `.git` pointer file is not counted as a local edit, so a clean whole-repo patch is updated instead of warned about.
@@ -335,7 +343,7 @@ Both commands view the same pair of directories — the local copy and the spars
 
 | | `diff` | `compare` |
 |---|---|---|
-| Output | unified diff on stdout | the tool from `cross.diffTool` |
+| Output | unified diff on stdout | the tool from `cross.dirdifftool` |
 | Scope | one patch (from a path, CWD, or `fzf`) | exactly one patch (from a path, CWD, or `fzf`) |
 | Unresolved patch | rows + exit 1 | rows + exit 1 |
 | Typical use | quick review, scripting, CI | side-by-side editing in an editor |
@@ -521,13 +529,22 @@ Select patch>
 If `fzf` is not installed, the command prints the available patch rows plus a
 hint to `cd` manually, and exits 1.
 
-## Directory Diff Tool (`cross.diffTool`)
+## Directory Diff Tool (`cross.dirdifftool`)
 
-`compare` uses the command configured in `cross.diffTool`. Configure it
+`compare` uses the command configured in `cross.dirdifftool`. Configure it
 globally or per repository:
 
 ```bash
-git config --global cross.diffTool '<command>'
+git config --global cross.dirdifftool '<command>'
+```
+
+The key is named after the *directory* diff tool it configures (DirDiff and
+similar tools compare whole trees of files). The pre-0.4 key `cross.diffTool`
+is still read as a deprecated fallback; migrate with:
+
+```bash
+git config --global cross.dirdifftool "$(git config --global --get cross.diffTool)" \
+  && git config --global --unset cross.diffTool
 ```
 
 ### Template form (current)
@@ -539,7 +556,7 @@ before the command is run:
 - `{right}` — the patch's local copy
 
 The substituted paths are **repo-relative**, and the command runs with the
-repository root as its working directory. When `cross.diffTool` is unset the
+repository root as its working directory. When `cross.dirdifftool` is unset the
 built-in default is used — `nvim` if it is installed, otherwise `vim`:
 
 ```text
@@ -552,18 +569,18 @@ command, so the exclusion is set with `let` first, then `DirDiff` runs with the
 directories as arguments. To pin a specific editor, set it explicitly:
 
 ```bash
-git config --global cross.diffTool "nvim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
+git config --global cross.dirdifftool "nvim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
 # strictly vim:
-git config --global cross.diffTool "vim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
+git config --global cross.dirdifftool "vim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
 ```
 
 A custom ignore list passes DirDiff a comma-separated list of names to skip:
 
 ```bash
-git config --global cross.diffTool "nvim \"+let g:DirDiffExcludes = '.git,ves.io,f5fed.com,volterra.us'\" \"+DirDiff {left} {right}\""
+git config --global cross.dirdifftool "nvim \"+let g:DirDiffExcludes = '.git,ves.io,f5fed.com,volterra.us'\" \"+DirDiff {left} {right}\""
 ```
 
-### Environment variables (when `cross.diffTool` is unset)
+### Environment variables (when `cross.dirdifftool` is unset)
 
 Two optional variables feed the built-in default; both are comma-separated:
 
@@ -594,7 +611,7 @@ paths are appended as trailing arguments.
 
 ```bash
 # Deprecated: paths become vim file arguments, not DirDiff arguments.
-git config --global cross.diffTool 'vim "+DirDiff"'
+git config --global cross.dirdifftool 'vim "+DirDiff"'
 ```
 
 This form is deprecated because it does not invoke DirDiff correctly. Migrate

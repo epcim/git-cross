@@ -89,10 +89,10 @@ log_success "-h works"
 
 log_header "020: help suggests the cross.diffTool setup"
 assert_contains "$help_output" "cross.diffTool" "help should mention cross.diffTool setup"
-assert_contains "$help_output" "--unset cross.diffTool" "help should show how to reset to the built-in default"
+assert_contains "$help_output" "--unset cross.dirdifftool" "help should show how to reset to the built-in default"
 assert_contains "$help_output" "let g:DirDiffExcludes = '.git'" "help should show the correct DirDiff exclusion syntax"
 assert_contains "$help_output" "DirDiff {left} {right}" "help should show the placeholder form"
-pin_lines=$(printf '%s\n' "$help_output" | grep -c 'cross.diffTool "')
+pin_lines=$(printf '%s\n' "$help_output" | grep -c 'cross.dirdifftool "')
 [ "$pin_lines" -eq 1 ] || fail "help should show the explicit diffTool config line exactly once (found $pin_lines)"
 if printf '%s\n' "$help_output" | grep -q "Strictly vim"; then
     fail "help must not repeat the same config line for vim"
