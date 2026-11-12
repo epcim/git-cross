@@ -102,4 +102,11 @@ if printf '%s\n' "$help_output" | grep -q "DirDiffIgnore="; then
 fi
 log_success "diffTool setup guidance present"
 
+log_header "020: help shows how to eval shell completions"
+assert_contains "$help_output" "git cross completion fish | source" \
+    "help should show the fish completion one-liner"
+assert_contains "$help_output" 'eval "$(git cross completion)"' \
+    "help should show the bash/zsh completion one-liner"
+log_success "completion guidance present"
+
 echo "Test 020 passed!"

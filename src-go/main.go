@@ -1091,7 +1091,11 @@ Replace nvim with vim to pin vim instead.
 
 Environment variables (used only when cross.diffTool is unset):
   DIRDIFF_EXCLUDES  extra comma-separated file/dir names to hide; .git is always ignored
-  DIRDIFF_IGNORE    comma-separated keywords ignored in diff content (e.g. github.com,gitlab.com)`,
+  DIRDIFF_IGNORE    comma-separated keywords ignored in diff content (e.g. github.com,gitlab.com)
+
+Shell completions + cd wrappers (crosscd / crosswt) - evaluate once in your profile:
+  git cross completion fish | source    # fish
+  eval "$(git cross completion)"        # bash / zsh`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return printPatchRows("")
 		},
