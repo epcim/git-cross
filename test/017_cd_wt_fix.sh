@@ -99,17 +99,59 @@ if [ -n "$GO_BIN" ]; then
     assert_one_abs_path "Go wt (CWD auto-detect)" "$out" "$wt_abs"
     popd >/dev/null
 
-    log_header "017: Go shell-init prints cd wrappers"
+    log_header "017: Go completion prints scripts plus cd wrappers"
+    comp_bash=$("$GO_BIN" completion bash 2>&1) || fail "completion bash should exit 0"
+    assert_contains "$comp_bash" "crosscd()" "bash completion should define crosscd"
+    assert_contains "$comp_bash" "crosswt()" "bash completion should define crosswt"
+    assert_contains "$comp_bash" "git-cross" "bash completion should include the completion script"
+    printf '%s\n' "$comp_bash" | bash -n || fail "bash completion output must be valid bash"
+
+    comp_fish=$("$GO_BIN" completion fish 2>&1) || fail "completion fish should exit 0"
+    assert_contains "$comp_fish" "function crosscd" "fish completion should define crosscd"
+    assert_contains "$comp_fish" "function crosswt" "fish completion should define crosswt"
+    assert_contains "$comp_fish" "complete -c git-cross" "fish completion should include the completion script"
+
+    # $SHELL is used when the shell argument is omitted.
+    comp_detected=$(SHELL=/usr/bin/fish "$GO_BIN" completion 2>&1)         || fail "completion should detect fish from \$SHELL"
+    assert_contains "$comp_detected" "function crosscd" "detected fish should emit fish wrappers"
+    comp_detected=$(SHELL=/bin/zsh "$GO_BIN" completion 2>&1)         || fail "completion should detect zsh from \$SHELL"
+    assert_contains "$comp_detected" "crosscd()" "detected zsh should emit posix wrappers"
+
+    # Undetectable/unsupported shells fail instead of guessing; fish is listed first.
+    comp_unset=$(env -u SHELL "$GO_BIN" completion 2>&1); comp_rc=$?
+    [ "$comp_rc" -eq 1 ] || fail "completion without SHELL should exit 1, got $comp_rc"
+    assert_contains "$comp_unset" "fish, bash, zsh, powershell" "error hint should list fish first"
+    comp_bad=$("$GO_BIN" completion tcsh 2>&1); comp_rc=$?
+    [ "$comp_rc" -eq 1 ] || fail "unsupported shell should exit 1, got $comp_rc"
+    assert_contains "$comp_bad" "fish, bash, zsh, powershell" "unsupported-shell hint should list fish first"
+
+    # powershell gets completions only (no cd wrappers).
+    comp_pwsh=$("$GO_BIN" completion powershell 2>&1) || fail "completion powershell should exit 0"
+    assert_not_contains "$comp_pwsh" "crosscd" "powershell output should not define wrappers"
+
+    # shell-init is hidden but still functional.
     init_bash=$("$GO_BIN" shell-init bash 2>&1) || fail "shell-init bash should exit 0"
-    assert_contains "$init_bash" "crosscd()" "bash init should define crosscd"
-    assert_contains "$init_bash" "crosswt()" "bash init should define crosswt"
-    printf '%s\n' "$init_bash" | bash -n || fail "bash init must be valid bash"
+    assert_contains "$init_bash" "crosscd()" "bash shell-init should define crosscd"
+    printf '%s\n' "$init_bash" | bash -n || fail "bash shell-init must be valid bash"
     init_fish=$("$GO_BIN" shell-init fish 2>&1) || fail "shell-init fish should exit 0"
-    assert_contains "$init_fish" "function crosscd" "fish init should define crosscd"
-    init_rc=0
-    "$GO_BIN" shell-init powershell >/dev/null 2>&1 || init_rc=$?
-    [ "$init_rc" -eq 1 ] || fail "unsupported shell should exit 1, got $init_rc"
-    log_success "Go shell-init verified"
+    assert_contains "$init_fish" "function crosscd" "fish shell-init should define crosscd"
+    help_out=$("$GO_BIN" --help 2>&1)
+    assert_not_contains "$help_out" "shell-init" "shell-init must be hidden from help"
+    assert_contains "$help_out" "completion" "completion must be visible in help"
+
+    # init advertises the integration, tailored to $SHELL.
+    probe="$SANDBOX/init-probe"
+    mkdir -p "$probe"
+    git -C "$probe" init -q
+    fish_hint=$(cd "$probe" && rm -f Crossfile && SHELL=/usr/bin/fish "$GO_BIN" init 2>&1) \
+        || fail "Go init (fish hint) should exit 0"
+    assert_contains "$fish_hint" "git cross completion fish | source" \
+        "fish init hint should use | source"
+    bash_hint=$(cd "$probe" && rm -f Crossfile && SHELL=/bin/bash "$GO_BIN" init 2>&1) \
+        || fail "Go init (posix hint) should exit 0"
+    assert_contains "$bash_hint" 'eval "$(git cross completion)"' \
+        "posix init hint should use eval"
+    log_success "Go completion + hidden shell-init verified"
     log_success "Go CWD auto-detect verified"
 
     log_header "017: Go fzf selection prints the selected path"
@@ -168,11 +210,31 @@ if command -v fish >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -
     assert_contains "$wt_out" "fzf is not installed" "Just wt fallback should say fzf is missing"
     log_success "Just fzf-missing fallback verified"
 
-    log_header "017: Just shell-init prints cd wrappers"
+    log_header "017: Just completion prints cd wrappers"
+    comp_bash=$(just cross completion bash 2>&1) || fail "Just completion bash should exit 0"
+    assert_contains "$comp_bash" "crosscd()" "Just bash completion should define crosscd"
+    printf '%s\n' "$comp_bash" | bash -n || fail "Just bash completion must be valid bash"
+    comp_fish=$(just cross completion fish 2>&1) || fail "Just completion fish should exit 0"
+    assert_contains "$comp_fish" "function crosscd" "Just fish completion should define crosscd"
+    comp_detected=$(SHELL=/usr/bin/fish just cross completion 2>&1)         || fail "Just completion should detect fish from \$SHELL"
+    assert_contains "$comp_detected" "function crosscd" "Just detection should emit fish wrappers"
+    comp_unset=$(SHELL= just cross completion 2>&1); comp_rc=$?
+    [ "$comp_rc" -eq 1 ] || fail "Just completion without SHELL should exit 1, got $comp_rc"
+    assert_contains "$comp_unset" "fish, bash, zsh" "Just error hint should list fish first"
     init_bash=$(just cross shell-init bash 2>&1) || fail "Just shell-init bash should exit 0"
-    assert_contains "$init_bash" "crosscd()" "Just bash init should define crosscd"
-    printf '%s\n' "$init_bash" | bash -n || fail "Just bash init must be valid bash"
-    log_success "Just shell-init verified"
+    assert_contains "$init_bash" "crosscd()" "Just shell-init should still work"
+    probe="$SANDBOX/just-init-probe"
+    mkdir -p "$probe"
+    git -C "$probe" init -q
+    fish_hint=$(cd "$probe" && rm -f Crossfile && SHELL=/usr/bin/fish just cross init 2>&1) \
+        || fail "Just init (fish hint) should exit 0"
+    assert_contains "$fish_hint" "git cross completion fish | source" \
+        "Just fish init hint should use | source"
+    bash_hint=$(cd "$probe" && rm -f Crossfile && SHELL=/bin/bash just cross init 2>&1) \
+        || fail "Just init (posix hint) should exit 0"
+    assert_contains "$bash_hint" 'eval "$(git cross completion)"' \
+        "Just posix init hint should use eval"
+    log_success "Just completion + shell-init verified"
 else
     echo "SKIP: fish and/or jq/just unavailable; skipping Just cd/wt assertions"
 fi

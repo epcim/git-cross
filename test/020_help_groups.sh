@@ -39,7 +39,7 @@ repo_section=$(section_body "Repository:")
 inspect_section=$(section_body "Inspect & Navigate:")
 patches_section=$(section_body "Patch Lifecycle:")
 
-for cmd in compare init list status update shell-init; do
+for cmd in compare init completion list status update; do
     printf '%s\n' "$repo_section" | grep -Eq "^  ${cmd}([[:space:]]|$)" \
         || fail "'$cmd' should be listed under 'Repository:'"
 done
@@ -60,21 +60,23 @@ adjacent=$(printf '%s\n' "$inspect_order" | awk 'prev=="cd" && $0=="wt" {found=1
 log_success "cd/wt adjacency verified"
 
 log_header "020: every visible command appears exactly once"
-for cmd in compare init list status update shell-init cd wt diff use patch remove prune; do
+for cmd in compare init completion list status update cd wt diff use patch remove prune; do
     count=$(printf '%s\n' "$help_output" | grep -cE "^  ${cmd}([[:space:]]|$)")
     [ "$count" -eq 1 ] || fail "command '$cmd' should appear exactly once in help (found $count)"
 done
-# Cobra still renders the auto-generated 'help' (and, if enabled, 'completion')
-# command under "Additional Commands:". Tolerate those built-ins, but no
-# documented command may end up ungrouped there.
+# Cobra still renders the auto-generated 'help' command under "Additional
+# Commands:". Tolerate it, but no documented command may end up ungrouped there.
 additional_section=$(section_body "Additional Commands:")
-for cmd in compare init list status update shell-init cd wt diff use patch remove prune; do
+for cmd in compare init completion list status update cd wt diff use patch remove prune; do
     if printf '%s\n' "$additional_section" | grep -Eq "^  ${cmd}([[:space:]]|$)"; then
         fail "'$cmd' must not fall into 'Additional Commands:' (missing GroupID)"
     fi
 done
 if printf '%s\n' "$help_output" | grep -Eq '^  cmp([[:space:]]|$)'; then
     fail "the 'cmp' alias must not get its own help row"
+fi
+if printf '%s\n' "$help_output" | grep -Eq '^  shell-init([[:space:]]|$)'; then
+    fail "hidden 'shell-init' must not appear in help"
 fi
 log_success "all visible commands listed once"
 

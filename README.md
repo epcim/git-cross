@@ -199,7 +199,7 @@ Your own repository stores the final combined result, including local overlay fi
 When you want to contribute upstream-managed changes back:
 
 ```bash
-cd "$(git cross wt vendor/app)"   # or use the crosswt wrapper
+cd "$(git cross wt vendor/app)"   # or: crosswt vendor/app (see shell integration)
 git cross compare vendor/app
 ```
 
@@ -236,6 +236,7 @@ Patch Lifecycle:
 
 Repository:
   init        Create an empty Crossfile
+  completion  Print shell completions and cd wrappers to evaluate
   list        Show all configured patches and remotes
   status      Show patch status
   update      Update patches from Crossfile declarations
@@ -428,30 +429,79 @@ Print the absolute destination path for one patch: `cd` targets the local copy
 (`local_path`), `wt` targets the hidden sparse worktree.
 
 The path is the only thing written to stdout; hints and errors go to stderr.
-These commands do not start a subshell. For a real directory change, add the
-shell integration once:
+Run directly, the command only prints a path: a child process cannot change
+your shell, so `cd "$(git cross cd)"` would change a throwaway sub-shell only.
+
+### Shell integration (real `cd`)
+
+A child process cannot change the working directory of the shell that started
+it — no CLI can. Tools that appear to do it (yazi, zoxide, autojump) all use
+the same pattern: the program prints the destination, and a small **shell
+function** captures it and runs `cd` in your shell. `git cross completion`
+prints that function pair together with the completion script:
+
+```fish
+# fish (~/.config/fish/config.fish, or a file in ~/.config/fish/functions/)
+git cross completion fish | source
+
+# shell auto-detected from $SHELL:
+git cross completion | source
+```
 
 ```bash
 # bash / zsh (~/.bashrc, ~/.zshrc)
-eval "$(git cross shell-init)"
+eval "$(git cross completion)"
 
-# fish (~/.config/fish/config.fish)
-eval (git cross shell-init fish)
+# or force a shell:
+eval "$(git cross completion bash)"
 ```
 
-That defines `crosscd` and `crosswt`, which `cd` into the path printed by the
-tool (or keep using the direct form):
+That defines two functions, which take the same optional path (and `fzf`
+selection) as the commands themselves:
 
 ```bash
-crosscd vendor/app     # cd into the local copy (fzf if omitted)
+crosscd vendor/app     # cd into the local copy
 crosswt vendor/app     # cd into the sparse worktree
-cd "$(git cross cd vendor/app)"
+crosswt                # no path: fzf selection
 ```
 
-A child process cannot change the working directory of the shell that started
-it, so the tool cannot `cd` for you. The wrapper does the `cd` in your shell
-using the path the tool prints. Keeping stdout path-only also makes the output
-composable in scripts (`dir=$(git cross cd vendor/app)`).
+`git cross init` prints the matching one-liner for your `$SHELL` when it
+creates a `Crossfile`.
+
+Prefer to install the wrappers by hand? Copy the function into your shell's
+function directory (fish) or profile (bash/zsh); they are plain wrappers, not
+special builtins:
+
+```fish
+# ~/.config/fish/functions/crosswt.fish
+function crosswt --description 'cd into a git-cross worktree'
+    set -l p (git cross wt $argv)
+    or return
+    test -n "$p"; and cd $p
+end
+```
+
+```bash
+# ~/.bashrc / ~/.zshrc
+crosswt() { local p; p="$(git cross wt "$@")" || return; [ -n "$p" ] && cd "$p"; }
+crosscd() { local p; p="$(git cross cd "$@")" || return; [ -n "$p" ] && cd "$p"; }
+```
+
+Short aliases work as ordinary aliases; for example `gccd`/`gcwt` behave like
+`cd` into the local copy/worktree:
+
+```fish
+alias gcwt crosswt
+alias gccd crosscd
+```
+
+```bash
+alias gcwt=crosswt
+alias gccd=crosscd
+```
+
+Keeping stdout path-only is deliberate: it makes the output composable in
+scripts (`dir=$(git cross cd vendor/app)`) and safe to capture in a function.
 
 With an explicit path the patch is resolved directly. Without one, `fzf` is
 used to select a patch. If `fzf` is not installed, the command prints the

@@ -46,9 +46,10 @@ test/001-023_*.sh     # Individual test files (see coverage matrix below)
 | `remove` | `<path>` | Delete patch, clean Crossfile and metadata |
 | `prune` | `[remote]` | Remove remote and all its patches, prune stale worktrees |
 | `init` | | Create empty Crossfile |
-| `cd` | `[path]` | Print absolute local_path to stdout; shell integration via `shell-init` (`crosscd`) |
+| `cd` | `[path]` | Print absolute local_path to stdout; real `cd` via `completion` wrappers (`crosscd`) |
 | `wt` | `[path]` | Print absolute worktree path to stdout; `crosswt` wrapper |
-| `shell-init` | `[bash\|zsh\|fish]` | Print shell functions that `cd` into patches/worktrees (child processes cannot) |
+| `completion` | `[fish\|bash\|zsh\|powershell]` | Print completions + `crosscd`/`crosswt` wrappers; shell defaults from `$SHELL` |
+| `shell-init` | `[fish\|bash\|zsh]` | Hidden (kept for compatibility): prints the wrappers without completions |
 
 Bare `git cross` prints one `local_path<TAB>worktree` row per patch to stdout (no hint line; TTY output is space-padded, piped output stays TAB-separated); `-h` prints the grouped help. Help grouping is Go-only CLI presentation — Just/Fish exposes the same behavior through recipes, not through a grouped help renderer.
 
@@ -112,6 +113,8 @@ Tests 001-007 form a chain for Just/Fish (001 is sourced by 002, etc.). Test 009
 | `remove` | 014 | 014, 023 |
 | `prune` | 015 | 009 |
 | `cd`/`wt` (print path) | 017 | 017, 023 |
+| `completion` (scripts + wrappers, `$SHELL`) | 017‡ | 017, 020 |
+| `shell-init` (hidden) | 017 | 017 |
 | `init` | 024 | 009, 024 |
 | `sparse checkout` | 012 | 012 |
 | `sbx/update workflow` | -- | 018 |
@@ -194,7 +197,8 @@ Tests 001-007 form a chain for Just/Fish (001 is sourced by 002, etc.). Test 009
 - **Sparse checkout**: `git sparse-checkout init --no-cone` + `git sparse-checkout set <path>/` + `git read-tree -mu HEAD`. The trailing `/` on the pattern is required for reliable directory matching in `--no-cone` mode on newer Git versions (2.43+). `read-tree -mu HEAD` explicitly materializes the worktree (bare `git checkout` can no-op after `--no-checkout`).
 - **Rsync**: `rsync -av --delete --exclude .git` for worktree-to-local sync. `--delete` removes files locally that were deleted upstream.
 - **Directory diff tool**: `cross.diffTool` supports `{left}`/`{right}` placeholders substituted with repo-relative paths, run with cwd = repo root. Default: `nvim` when installed, else `vim`, using `"+let g:DirDiffExcludes = '.git'" "+DirDiff {left} {right}"` (two separate `+cmd` arguments; `DirDiffIgnore=...` is not a vim command). When unset, env vars extend the default: `DIRDIFF_EXCLUDES` appends names to the exclusion list (`.git` stays permanent) and `DIRDIFF_IGNORE` adds `g:DirDiffIgnore` with a very-nomagic (`\V`) alternation of the comma-separated keywords. Empty/unset vars omit the corresponding argument. Configs without placeholders fall back to appending both absolute paths (legacy, deprecated — it never invoked DirDiff correctly).
-- **Clipboard helper (parked)**: `copyToClipboard` (Go) / `_clip` (Just) remain implemented but are intentionally unused — `cd`/`wt` print a path and `shell-init` provides the real `cd`, which made the clipboard workflow obsolete. Reuse rather than reimplement if a clipboard feature returns.
+- **Clipboard helper (parked)**: `copyToClipboard` (Go) / `_clip` (Just) remain implemented but are intentionally unused — `cd`/`wt` print a path and `completion` provides the real `cd`, which made the clipboard workflow obsolete. Reuse rather than reimplement if a clipboard feature returns.
+- **Shell integration**: `cd`/`wt` print only the path to stdout (hints/rows go to stderr), so a parent-shell wrapper can capture it. `git cross completion [fish|bash|zsh|powershell]` emits the Cobra completion script plus the `crosscd`/`crosswt` functions (fish first in usage/errors); the shell defaults to the basename of `$SHELL`, and an unknown/undetectable shell exits 1 instead of guessing. fish must use `git cross completion fish | source` because fish joins multi-line command substitution with spaces (`eval (...)` breaks); `init` prints the shell-appropriate one-liner. `shell-init` is hidden but kept for compatibility and emits only the wrappers. powershell gets completions only. Just emits the wrappers only (Cobra scripts are a Go CLI concern).
 - **Patch rows**: bare `git cross`, and path-miss cases in `compare`/`diff`/`remove`/`cd`/`wt`, print `local_path<TAB>worktree` rows to stdout; hints go to stderr and the command exits 1 where nothing was resolved.
 - **`list --raw` schema**: remotes first (`REMOTE_NAME<TAB>REMOTE_URL`), then patches (`REMOTE<TAB>REMOTE_PATH<TAB>LOCAL_PATH<TAB>WORKTREE<TAB>BRANCH`); no banners, no borders, deterministic remote order.
 - **`rerere` (conflict resolution memory)**: `ensureRerere` (Go) / an inline `git config rerere.enabled true` (Just) runs in `init` (announces, and says "already enabled" on repeat), `patch` (silent), and `update` (announces only when it newly enables it, which self-heals older repos). The key is written to the shared repository config, so the main repo and every cross worktree see it; each worktree records resolutions in its own `rr-cache`. `rerere.autoUpdate` is intentionally left unset (opt-in, users enable it themselves). Just's `init` resolves the repo root explicitly so it never writes global config.

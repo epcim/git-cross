@@ -974,14 +974,12 @@ func runNoIndexDiff(upstreamPath, localPath string) {
 	_ = c.Run()
 }
 
-const posixShellInit = `# git-cross shell integration (add to ~/.bashrc or ~/.zshrc):
-#   eval "$(git cross shell-init)"
+const posixShellInit = `# git-cross cd wrappers (part of: eval "$(git cross completion bash|zsh)")
 crosscd() { local p; p="$(git cross cd "$@")" || return; [ -n "$p" ] && cd "$p"; }
 crosswt() { local p; p="$(git cross wt "$@")" || return; [ -n "$p" ] && cd "$p"; }
 `
 
-const fishShellInit = `# git-cross shell integration (add to ~/.config/fish/config.fish):
-#   eval (git cross shell-init fish)
+const fishShellInit = `# git-cross cd wrappers (part of: git cross completion fish | source)
 function crosscd --description 'cd into a git-cross patch'
     set -l p (git cross cd $argv)
     or return
@@ -993,6 +991,39 @@ function crosswt --description 'cd into a git-cross worktree'
     test -n "$p"; and cd $p
 end
 `
+
+// shellIntegrationHint returns the one-liner that fits the caller's $SHELL.
+// fish joins multi-line command substitution with spaces, so it needs `| source`.
+func shellIntegrationHint() string {
+	if strings.ToLower(filepath.Base(strings.TrimSpace(os.Getenv("SHELL")))) == "fish" {
+		return "Shell integration (cd wrappers + completions): git cross completion fish | source"
+	}
+	return `Shell integration (cd wrappers + completions): eval "$(git cross completion)"`
+}
+
+// supportedShells is the canonical order for help and error hints.
+const supportedShells = "fish, bash, zsh, powershell"
+
+// resolveShell picks the shell from an explicit argument, falling back to the
+// basename of $SHELL. An unknown or undetectable shell is an error: guessing a
+// default would emit a script the caller cannot evaluate.
+func resolveShell(args []string) (string, error) {
+	var shell string
+	if len(args) > 0 {
+		shell = strings.ToLower(strings.TrimSpace(args[0]))
+	} else if env := strings.TrimSpace(os.Getenv("SHELL")); env != "" {
+		shell = strings.ToLower(filepath.Base(env))
+	}
+	if shell == "" {
+		return "", fmt.Errorf("cannot detect shell from $SHELL; specify one: %s", supportedShells)
+	}
+	switch shell {
+	case "fish", "bash", "zsh", "powershell", "pwsh":
+		return shell, nil
+	default:
+		return "", fmt.Errorf("unsupported shell %q (supported: %s)", shell, supportedShells)
+	}
+}
 
 // ensureRerere enables reuse-recorded-resolution in the shared repo config, so
 // conflict resolutions recorded in any cross worktree (merge/rebase) are
@@ -1014,7 +1045,7 @@ func ensureRerere(root string) bool {
 // copyToClipboard copies text using the first available platform tool
 // (pbcopy/xclip/xsel).
 //
-// Currently unused: cd/wt print a path and shell-init provides the real cd, so
+// Currently unused: cd/wt print a path and completion provides the real cd, so
 // the clipboard workflow is obsolete. Kept isolated for possible reuse.
 func copyToClipboard(text string) error {
 	candidates := [][]string{
@@ -1779,43 +1810,89 @@ Environment variables (used only when cross.diffTool is unset):
 	}
 
 	cdCmd := makeDirCmd("cd [path]",
-		"Print a patch local_path to cd into (use: cd \"$(git cross cd)\")",
-		"Print the absolute path of a patch local_path to stdout (use: cd \"$(git cross cd)\").\n\nWith path: prints the specified local_path.\nWithout path: auto-detects the current patch from the working directory, otherwise uses fzf to select one.\n\nFor real directory changes add shell integration:\n  eval \"$(git cross shell-init)\"    # then: crosscd [path]",
+		"Print a patch local_path (use the crosscd wrapper for a real cd)",
+		"Print the absolute path of a patch local_path to stdout.\n\nRunning this directly only prints a path: a child process cannot change the caller's shell, so without a wrapper the cd happens in a throwaway sub-shell. For a real directory change use the 'crosscd' wrapper:\n  eval \"$(git cross completion)\"    # bash/zsh; then: crosscd [path]\n  git cross completion fish | source  # fish\nAdd a custom alias if you like (e.g. alias gccd=crosscd).\n\nWith path: prints the specified local_path.\nWithout path: auto-detects the current patch from the working directory, otherwise uses fzf to select one.",
 		"local_path")
 
 	wtCmd := makeDirCmd("wt [path]",
-		"Print a patch worktree to cd into (use: cd \"$(git cross wt)\")",
-		"Print the absolute path of a patch worktree to stdout (use: cd \"$(git cross wt)\").\n\nWith path: prints the specified worktree.\nWithout path: auto-detects the current patch from the working directory, otherwise uses fzf to select one.\n\nFor real directory changes add shell integration:\n  eval \"$(git cross shell-init)\"    # then: crosswt [path]",
+		"Print a patch worktree path (use the crosswt wrapper for a real cd)",
+		"Print the absolute path of a patch worktree to stdout.\n\nRunning this directly only prints a path: a child process cannot change the caller's shell, so without a wrapper the cd happens in a throwaway sub-shell. For a real directory change use the 'crosswt' wrapper:\n  eval \"$(git cross completion)\"    # bash/zsh; then: crosswt [path]\n  git cross completion fish | source  # fish\nAdd a custom alias if you like (e.g. alias gcwt=crosswt).\n\nWith path: prints the specified worktree.\nWithout path: auto-detects the current patch from the working directory, otherwise uses fzf to select one.",
 		"worktree")
 
+	// Hidden: kept for backwards compatibility. `completion` is the visible
+	// entry point (it also emits the completion scripts).
 	shellInitCmd := &cobra.Command{
-		Use:     "shell-init [bash|zsh|fish]",
+		Use:     "shell-init [fish|bash|zsh]",
 		Short:   "Print shell functions that cd into patches and worktrees",
 		GroupID: "repo",
+		Hidden:  true,
 		Args:    cobra.MaximumNArgs(1),
-		Long: `Print shell functions to evaluate in your shell profile. They wrap
-'git cross cd' / 'git cross wt' with cd, because a child process cannot change
-the caller's working directory by itself.
+		Long: `Print just the shell functions (no completion scripts). Kept for
+backwards compatibility; prefer 'git cross completion'.
 
-  bash/zsh:  eval "$(git cross shell-init)"
-  fish:      eval (git cross shell-init fish)
-
-After that, 'crosscd' and 'crosswt' change directory directly, with the same
-optional path argument and fzf selection as the git-cross commands.`,
+  fish:      git cross completion fish | source
+  bash/zsh:  eval "$(git cross completion)"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			shell := ""
-			if len(args) > 0 {
-				shell = strings.ToLower(strings.TrimSpace(args[0]))
-			} else {
-				shell = filepath.Base(os.Getenv("SHELL"))
+			shell, err := resolveShell(args)
+			if err != nil {
+				return err
 			}
 			switch shell {
 			case "fish":
 				fmt.Print(fishShellInit)
-			case "bash", "zsh", "":
+			case "bash", "zsh":
 				fmt.Print(posixShellInit)
 			default:
-				return fmt.Errorf("unsupported shell %q (use bash, zsh or fish)", shell)
+				return fmt.Errorf("unsupported shell %q for shell functions (supported: fish, bash, zsh)", shell)
+			}
+			return nil
+		},
+	}
+
+	completionCmd := &cobra.Command{
+		Use:     "completion [fish|bash|zsh|powershell]",
+		Short:   "Print shell completions and cd wrappers to evaluate",
+		GroupID: "repo",
+		Args:    cobra.MaximumNArgs(1),
+		Long: `Print a completion script for the requested shell, followed by the
+'crosscd' / 'crosswt' functions that perform a real cd. A child process cannot
+change the caller's working directory by itself, so these wrappers run the
+command and cd into the path it prints.
+
+  fish:      git cross completion fish | source   # or just: git cross completion | source
+  bash/zsh:  eval "$(git cross completion)"       # or: git cross completion bash
+
+The shell defaults to the basename of $SHELL when not given. powershell gets
+completions only (no cd wrappers). After that, 'crosscd [path]' cd's into the
+local copy and 'crosswt [path]' into the sparse worktree, with the same
+optional path argument and fzf selection as the git-cross commands.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			shell, err := resolveShell(args)
+			if err != nil {
+				return err
+			}
+			switch shell {
+			case "fish":
+				if err := rootCmd.GenFishCompletion(os.Stdout, true); err != nil {
+					return err
+				}
+				fmt.Print("\n", fishShellInit)
+			case "bash":
+				if err := rootCmd.GenBashCompletionV2(os.Stdout, true); err != nil {
+					return err
+				}
+				fmt.Print("\n", posixShellInit)
+			case "zsh":
+				if err := rootCmd.GenZshCompletion(os.Stdout); err != nil {
+					return err
+				}
+				fmt.Print("\n", posixShellInit)
+			case "powershell", "pwsh":
+				if err := rootCmd.GenPowerShellCompletionWithDesc(os.Stdout); err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("unsupported shell %q (supported: %s)", shell, supportedShells)
 			}
 			return nil
 		},
@@ -2288,6 +2365,7 @@ if fzf is unavailable it prints the available patches.`,
 				return err
 			}
 			logSuccess("Crossfile initialized.")
+			logInfo(shellIntegrationHint())
 			return nil
 		},
 	}
@@ -2453,7 +2531,7 @@ if fzf is unavailable it prints the available patches.`,
 	// Retain superseded implementations in source as internal reference, but do
 	// not expose them as supported commands.
 	_, _, _, _ = syncCmd, replayCmd, pushCmd, execCmd
-	rootCmd.AddCommand(useCmd, patchCmd, removeCmd, pruneCmd, initCmd, listCmd, statusCmd, updateCmd, compareCmd, shellInitCmd, cdCmd, wtCmd, diffCmd)
+	rootCmd.AddCommand(useCmd, patchCmd, removeCmd, pruneCmd, initCmd, completionCmd, listCmd, statusCmd, updateCmd, compareCmd, shellInitCmd, cdCmd, wtCmd, diffCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

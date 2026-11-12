@@ -295,6 +295,11 @@ init:
     else
         echo "# git-cross configuration" > "{{CROSSFILE}}"
         just cross _log success "Crossfile initialized."
+        if test (basename $SHELL 2>/dev/null) = fish
+            just cross _log info "Shell integration (cd wrappers + completions): git cross completion fish | source"
+        else
+            just cross _log info 'Shell integration (cd wrappers + completions): eval \"\$(git cross completion)\"'
+        end
     end
 
 # AICONTEXT: "use" register remote git repository and update Crossfile with "use" command. Do not change implementation!
@@ -971,7 +976,7 @@ list raw="" no_header="": check-deps
 worktree path="":
     just cross wt "{{path}}"
 
-# Print a patch worktree to cd into (use: cd (just cross wt [path]))
+# Print a patch worktree path (use the crosswt shell wrapper for a real cd)
 [no-cd]
 wt path="":
     #!/usr/bin/env fish
@@ -1025,37 +1030,81 @@ _clip:
         exit 1
     fi
 
-# Print shell functions that cd into patches/worktrees (a child process cannot).
-# Usage: eval "$(git cross shell-init)" (bash/zsh) or eval (git cross shell-init fish)
+# Print the cd wrappers (a child process cannot change the parent's directory).
+# These are also appended by `git cross completion`. Hidden equivalent of
+# `git cross shell-init`; `completion` is the documented entry point.
+# Usage (fish): git cross completion fish | source
+#       (posix): eval "$(git cross completion)"
 [no-cd]
 shell-init shell="":
     #!/usr/bin/env fish
     set -l sh "{{shell}}"
     if test -z "$sh"
-        set sh (basename $SHELL 2>/dev/null; or echo bash)
+        set sh (basename $SHELL 2>/dev/null)
+    end
+    if test -z "$sh"
+        echo "cannot detect shell from \$SHELL; specify one: fish, bash, zsh" >&2
+        exit 1
     end
     if test "$sh" = fish
-        printf '%s\n' '# git-cross shell integration' \
-            'function crosscd' \
+        printf '%s\n' '# git-cross cd wrappers (part of: git cross completion fish | source)' \
+            'function crosscd --description \'cd into a git-cross patch\'' \
             '    set -l p (git cross cd $argv)' \
             '    or return' \
             '    test -n "$p"; and cd $p' \
             'end' \
-            'function crosswt' \
+            'function crosswt --description \'cd into a git-cross worktree\'' \
             '    set -l p (git cross wt $argv)' \
             '    or return' \
             '    test -n "$p"; and cd $p' \
             'end'
-    else if contains -- bash zsh "$sh"; or test -z "$sh"
-        printf '%s\n' '# git-cross shell integration' \
+    else if contains -- bash zsh "$sh"
+        printf '%s\n' '# git-cross cd wrappers (part of: eval "$(git cross completion)")' \
             'crosscd() { local p; p="$(git cross cd "$@")" || return; [ -n "$p" ] && cd "$p"; }' \
             'crosswt() { local p; p="$(git cross wt "$@")" || return; [ -n "$p" ] && cd "$p"; }'
     else
-        echo "unsupported shell: $sh (use bash, zsh or fish)" >&2
+        echo "unsupported shell: $sh (supported: fish, bash, zsh)" >&2
         exit 1
     end
 
-# Print a patch local_path to cd into (use: cd (just cross cd [path]))
+# Print shell completions plus the cd wrappers to evaluate in your shell profile.
+# Cobra-style completion scripts are a Go CLI concern; the Just reference emits
+# the cd wrappers (the part shared by both implementations).
+# Usage (fish): git cross completion fish | source
+#       (posix): eval "$(git cross completion)"
+[no-cd]
+completion shell="":
+    #!/usr/bin/env fish
+    set -l sh "{{shell}}"
+    if test -z "$sh"
+        set sh (basename $SHELL 2>/dev/null)
+    end
+    if test -z "$sh"
+        echo "cannot detect shell from \$SHELL; specify one: fish, bash, zsh" >&2
+        exit 1
+    end
+    if test "$sh" = fish
+        printf '%s\n' '# git-cross cd wrappers (part of: git cross completion fish | source)' \
+            'function crosscd --description \'cd into a git-cross patch\'' \
+            '    set -l p (git cross cd $argv)' \
+            '    or return' \
+            '    test -n "$p"; and cd $p' \
+            'end' \
+            'function crosswt --description \'cd into a git-cross worktree\'' \
+            '    set -l p (git cross wt $argv)' \
+            '    or return' \
+            '    test -n "$p"; and cd $p' \
+            'end'
+    else if contains -- bash zsh "$sh"
+        printf '%s\n' '# git-cross cd wrappers (part of: eval "$(git cross completion)")' \
+            'crosscd() { local p; p="$(git cross cd "$@")" || return; [ -n "$p" ] && cd "$p"; }' \
+            'crosswt() { local p; p="$(git cross wt "$@")" || return; [ -n "$p" ] && cd "$p"; }'
+    else
+        echo "unsupported shell: $sh (supported: fish, bash, zsh)" >&2
+        exit 1
+    end
+
+# Print a patch local_path (use the crosscd shell wrapper for a real cd)
 [no-cd]
 cd path="":
     #!/usr/bin/env fish
