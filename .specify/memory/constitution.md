@@ -25,7 +25,7 @@ This constitutional document establishes the core principles governing the desig
 
 **git-cross SHALL protect worktree cleanliness and prevent data loss.**
 
-- Hidden worktrees (`.git/cross/worktrees/`) store upstream state
+- Hidden worktrees (`.cross/worktrees/<remote>_<hash>`) store upstream state
 - Automatic stashing before pulls preserves local modifications in worktrees
 - Commands abort on dirty state when modifications could be lost
 - Explicit confirmation required for destructive operations

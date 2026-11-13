@@ -18,9 +18,6 @@ run_implementation_tests() {
         shell)
             ./test/run-all.sh
             ;;
-        rust)
-            ./test/008_rust_cli.sh
-            ;;
         go)
             ./test/009_go_cli.sh
             ;;
@@ -32,7 +29,7 @@ run_implementation_tests() {
 }
 
 failed_count=0
-impls=("shell" "rust" "go")
+impls=("shell" "go")
 
 for impl in "${impls[@]}"; do
     if ! run_implementation_tests "$impl"; then

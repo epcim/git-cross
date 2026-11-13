@@ -61,25 +61,4 @@ fi
 # Clean up
 rm -rf vendor/app1 .cross/worktrees/* .git/worktrees/* Crossfile
 
-# Test using Rust implementation
-log_header "Testing sparse checkout in Rust"
-RUST_BIN="$REPO_ROOT/src-rust/target/debug/git-cross-rust"
-if [ ! -f "$RUST_BIN" ]; then
-    if command -v cargo >/dev/null 2>&1; then
-        cargo build --manifest-path "$REPO_ROOT/src-rust/Cargo.toml" || true
-    fi
-fi
-if [ -f "$RUST_BIN" ]; then
-    "$RUST_BIN" init
-    "$RUST_BIN" use demo "$upstream_url"
-    "$RUST_BIN" patch demo:apps/app1 vendor/app1
-
-    wt_path=$(find .cross/worktrees -maxdepth 1 -name "demo_*" | head -n 1)
-    if [ -f "$wt_path/root.txt" ]; then
-        fail "root.txt found in worktree! Sparse checkout failed for Rust."
-    fi
-else
-    log_warn "Rust binary not available, skipping Rust sparse checkout test"
-fi
-
 echo "Sparse checkout validation passed!"

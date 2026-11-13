@@ -19,6 +19,9 @@ if git worktree list | grep -q "vendor/lib"; then fail "Worktree still exists"; 
 
 # Build Go binary (reuse existing or build fresh)
 GO_BIN="$REPO_ROOT/src-go/git-cross-go"
+if [ -f "$GO_BIN" ] && [ "$REPO_ROOT/src-go/main.go" -nt "$GO_BIN" ]; then
+    rm -f "$GO_BIN"
+fi
 if [ ! -f "$GO_BIN" ]; then
     if command -v go >/dev/null 2>&1; then
         # Remove stale vendor dir that causes "inconsistent vendoring" errors
@@ -46,31 +49,61 @@ else
     echo "SKIP: Go binary not available, skipping Go removal test"
 fi
 
-# 3. Test removal in Rust implementation
-echo "## Testing removal in Rust..."
-RUST_BIN="$REPO_ROOT/src-rust/target/debug/git-cross-rust"
-if [ ! -f "$RUST_BIN" ] && command -v cargo >/dev/null 2>&1; then
-    ( cd "$REPO_ROOT/src-rust" && cargo build -q ) || RUST_BIN=""
-fi
-if [ -n "$RUST_BIN" ] && [ -f "$RUST_BIN" ]; then
-    just cross patch repo1:src/lib vendor/app-rust
-    "$RUST_BIN" remove vendor/app-rust
-
-    if [ -d "vendor/app-rust" ]; then fail "vendor/app-rust still exists after remove"; fi
-    if grep -q "vendor/app-rust" Crossfile; then fail "Crossfile still contains patch entry"; fi
-    if grep -q "vendor/app-rust" .cross/metadata.json; then fail "Metadata still contains patch entry"; fi
-else
-    echo "SKIP: Rust binary not available, skipping Rust removal test"
-fi
-
 # 4. Test list command (Go) - need active patch for remotes to show
 if [ -n "$GO_BIN" ] && [ -f "$GO_BIN" ]; then
     echo "## Testing 'list' command (Go)..."
     just cross patch repo1:src/lib vendor/list-test
     list_output=$("$GO_BIN" list)
+    echo "$list_output"
     if ! echo "$list_output" | grep -q "Configured Remotes"; then fail "Go list missing Remotes section"; fi
     if ! echo "$list_output" | grep -q "repo1"; then fail "Go list missing repo1 remote"; fi
+    if ! echo "$list_output" | grep -q "REMOTE URL"; then fail "Go list missing descriptive 'REMOTE URL' header"; fi
+    if ! echo "$list_output" | grep -q "LOCAL PATH"; then fail "Go list missing 'LOCAL PATH' header"; fi
+
+    echo "## Testing 'list --raw' (Go)..."
+    raw_output=$("$GO_BIN" list --raw)
+    echo "$raw_output"
+    if echo "$raw_output" | grep -q "==>"; then fail "Go list --raw must not print banners"; fi
+    if echo "$raw_output" | grep -q '^+' || echo "$raw_output" | grep -q '|'; then
+        fail "Go list --raw must not print table borders"
+    fi
+    if ! echo "$raw_output" | grep -q "REMOTE_NAME"; then fail "Go list --raw missing REMOTE_NAME header"; fi
+    if ! printf '%s\n' "$raw_output" | cut -f3 | grep -qx "vendor/list-test"; then
+        fail "Go list --raw: cut -f3 should yield local paths"
+    fi
+    raw_again=$("$GO_BIN" list --raw)
+    if [ "$raw_output" != "$raw_again" ]; then fail "Go list --raw is not deterministic"; fi
+    noheader_output=$("$GO_BIN" list --raw --no-header)
+    if echo "$noheader_output" | grep -q "REMOTE_NAME"; then
+        fail "Go list --raw --no-header must omit headers"
+    fi
+    if ! printf '%s\n' "$noheader_output" | cut -f3 | grep -qx "vendor/list-test"; then
+        fail "Go list --raw --no-header should still print patch rows"
+    fi
     just cross remove vendor/list-test
+
+    # 4b. Test list --raw for the Just/Fish implementation when fish is available
+    if command -v fish >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
+        echo "## Testing 'list raw=1' (Just/Fish)..."
+        just cross patch repo1:src/lib vendor/list-test
+        raw_output=$(just cross list raw=1)
+        echo "$raw_output"
+        if echo "$raw_output" | grep -q "==>"; then fail "Just list raw=1 must not print banners"; fi
+        if echo "$raw_output" | grep -q '^+' || echo "$raw_output" | grep -q '|'; then
+            fail "Just list raw=1 must not print table borders"
+        fi
+        if ! echo "$raw_output" | grep -q "REMOTE_NAME"; then fail "Just list raw=1 missing REMOTE_NAME header"; fi
+        if ! printf '%s\n' "$raw_output" | cut -f3 | grep -qx "vendor/list-test"; then
+            fail "Just list raw=1: cut -f3 should yield local paths"
+        fi
+        raw_again=$(just cross list raw=1)
+        if [ "$raw_output" != "$raw_again" ]; then fail "Just list raw=1 is not deterministic"; fi
+        noheader_output=$(just cross list raw=1 no_header=1)
+        if echo "$noheader_output" | grep -q "REMOTE_NAME"; then
+            fail "Just list raw=1 no_header=1 must omit headers"
+        fi
+        just cross remove vendor/list-test
+    fi
 
     # 5. Test Crossfile deduplication (Go)
     echo "## Testing Crossfile deduplication (Go)..."
@@ -82,24 +115,6 @@ if [ -n "$GO_BIN" ] && [ -f "$GO_BIN" ]; then
     if [ "$count_after" -ne "$count_before" ]; then fail "Crossfile duplication occurred (Go)"; fi
 else
     echo "SKIP: Go binary not available, skipping Go list and dedup tests"
-    # Still need vendor/dedup-test for Rust dedup test below
-    just cross patch repo1:src/lib vendor/dedup-test
-    count_before=$(grep -c "vendor/dedup-test" Crossfile)
-fi
-
-# 6. Test Crossfile deduplication (Rust)
-echo "## Testing Crossfile deduplication (Rust)..."
-if [ -f "$REPO_ROOT/src-rust/target/debug/git-cross-rust" ]; then
-    "$REPO_ROOT/src-rust/target/debug/git-cross-rust" patch repo1:main:src/lib vendor/dedup-test
-    count_after_rust=$(grep -c "vendor/dedup-test" Crossfile)
-    if [ "$count_after_rust" -ne "$count_before" ]; then fail "Crossfile duplication occurred (Rust)"; fi
-
-    # 7. Test list command (Rust)
-    echo "## Testing 'list' command (Rust)..."
-    list_output_rust=$("$REPO_ROOT/src-rust/target/debug/git-cross-rust" list)
-    if ! echo "$list_output_rust" | grep -q "Configured Remotes"; then fail "Rust list missing Remotes section"; fi
-else
-    echo "SKIP: Rust binary not available, skipping Rust dedup and list tests"
 fi
 
 # 8. Test root-target remove safety guard (Shell/Just)

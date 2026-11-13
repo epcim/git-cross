@@ -175,10 +175,10 @@ git add Crossfile .crossignore . && git commit -m "Track upstream via git-cross"
 git push origin main
 ```
 
-- pull upstream: `git cross sync .`
+- repository-root updates are currently blocked until root-overlay safety is implemented; use a local subdirectory patch for update workflows
 - review: `git cross diff .` / `git cross status`
-- contribute upstream: `git cross push . --message "..."` after confirming no
-  private files are included
+- contribute manually: compare with `git cross compare .`, copy intended files
+  into the sparse worktree, then commit/push with Git from that worktree
 
 ## Related
 

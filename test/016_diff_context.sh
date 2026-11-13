@@ -77,29 +77,65 @@ fi
 popd >/dev/null
 log_success "Test 4 passed: diff . works from inside patch"
 
+# --- Test 4b: diff from repo root without a path, fzf absent → rows + hint ---
+log_header "Test 4b: diff from repo root (no path, no fzf) prints rows and exits 1..."
+nofzf_path=$(make_path_without_fzf "$SANDBOX/no-fzf-bin")
+diff_rc=0
+output=$(PATH="$nofzf_path" just cross diff 2>&1) || diff_rc=$?
+echo "$output"
+if [ "$diff_rc" -eq 0 ]; then
+    fail "Test 4b: diff without a path outside a patch should exit non-zero"
+fi
+if ! printf '%s\n' "$output" | awk -F'\t' '$1=="vendor/alpha"{found=1} END{exit found?0:1}'; then
+    fail "Test 4b: diff should list patch rows (local_path<TAB>worktree)"
+fi
+if echo "$output" | grep -q "Usage:"; then
+    fail "Test 4b: diff should not dump a Usage message"
+fi
+if ! echo "$output" | grep -q "fzf is not installed"; then
+    fail "Test 4b: diff should explain that fzf is missing"
+fi
+log_success "Test 4b passed: Just diff falls back to rows+hint"
+
 # --- Go implementation tests (when binary is available) ---
 GO_BIN="$REPO_ROOT/src-go/git-cross-go"
+if [ -f "$GO_BIN" ] && [ "$REPO_ROOT/src-go/main.go" -nt "$GO_BIN" ]; then
+    rm -f "$GO_BIN"
+fi
 if [ ! -f "$GO_BIN" ]; then
     (cd "$REPO_ROOT/src-go" && CGO_ENABLED=0 go build -o git-cross-go main.go 2>/dev/null)
 fi
 _go_ok=false
 _smoke_dir=$(mktemp -d)
 git init -q "$_smoke_dir"
-"$GO_BIN" use _smoke file:///dev/null >/dev/null 2>&1 && _go_ok=true
+printf 'smoke\n' > "$_smoke_dir/file.txt"
+git -C "$_smoke_dir" add file.txt
+git -C "$_smoke_dir" -c user.email=test@example.com -c user.name=test commit -qm init
+"$GO_BIN" use _smoke "file://$_smoke_dir" >/dev/null 2>&1 && _go_ok=true
+rm -rf "$_smoke_dir"
 if [ "$_go_ok" = false ]; then
     log_warn "Go binary not working on this platform, skipping Go-specific diff context tests"
 else
-    log_header "Test 5 (Go): diff from repo root shows all patches..."
-    output=$("$GO_BIN" diff 2>&1 || true)
+    # Without a path and outside a patch dir the new contract is: fzf selection,
+    # or rows + hint + exit 1 when fzf is missing. (It used to dump all patches.)
+    log_header "Test 5 (Go): diff from repo root without fzf prints rows and exits 1..."
+    nofzf_path=$(make_path_without_fzf "$SANDBOX/no-fzf-bin")
+    diff_rc=0
+    output=$(PATH="$nofzf_path" "$GO_BIN" diff 2>&1) || diff_rc=$?
     echo "$output"
-    if ! echo "$output" | grep -q "alpha" || ! echo "$output" | grep -q "beta"; then
-        fail "Test 5 (Go): diff from repo root should include both patches"
+    [ "$diff_rc" -eq 1 ] || fail "Test 5 (Go): diff without fzf should exit 1, got $diff_rc"
+    if ! printf '%s\n' "$output" | cut -f1 | grep -qx "vendor/alpha" \
+        || ! printf '%s\n' "$output" | cut -f1 | grep -qx "vendor/beta"; then
+        fail "Test 5 (Go): diff should list all patches as rows"
     fi
-    log_success "Test 5 passed: Go diff from repo root shows all patches"
+    if ! echo "$output" | grep -q "fzf is not installed"; then
+        fail "Test 5 (Go): diff should explain that fzf is missing"
+    fi
+    log_success "Test 5 passed: Go diff falls back to rows+hint"
 
     log_header "Test 6 (Go): diff from inside patch auto-detects..."
     pushd vendor/alpha >/dev/null
-    output=$("$GO_BIN" diff 2>&1 || true)
+    output=$(PATH="$nofzf_path" "$GO_BIN" diff 2>&1 || true)
     echo "$output"
     if ! echo "$output" | grep -q "alpha"; then
         fail "Test 6 (Go): auto-detect should show alpha diff"
@@ -110,12 +146,28 @@ else
     popd >/dev/null
     log_success "Test 6 passed: Go auto-detects patch from CWD"
 
-    log_header "Test 7 (Go): diff from repo root (no patches match CWD) shows all..."
-    output=$("$GO_BIN" diff 2>&1 || true)
-    if ! echo "$output" | grep -q "alpha" || ! echo "$output" | grep -q "beta"; then
-        fail "Test 7 (Go): diff from repo root should show all patches"
+    log_header "Test 7 (Go): diff honours the fzf selection..."
+    shim_dir="$SANDBOX/fzf-shim-bin"
+    mkdir -p "$shim_dir"
+    cat > "$shim_dir/fzf" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+if [ -n "${FZF_SELECT:-}" ]; then
+    printf '%b\n' "$FZF_SELECT"
+    exit 0
+fi
+exit 130
+EOF
+    chmod +x "$shim_dir/fzf"
+    output=$(FZF_SELECT='upstream\t.\tvendor/beta' PATH="$shim_dir:$PATH" "$GO_BIN" diff 2>&1 || true)
+    echo "$output"
+    if ! echo "$output" | grep -q "beta"; then
+        fail "Test 7 (Go): fzf selection should show the beta diff"
     fi
-    log_success "Test 7 passed: Go shows all patches from repo root"
+    if echo "$output" | grep -q "alpha"; then
+        fail "Test 7 (Go): fzf selection should NOT show the alpha diff"
+    fi
+    log_success "Test 7 passed: Go diff uses the fzf selection"
 fi
 
 # --- Test 8: override markers print manual diff commands ---

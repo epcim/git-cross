@@ -28,6 +28,10 @@ export PATH="$SANDBOX/bin:$PATH"
 
 # Compile go binary
 GO_BIN="$REPO_ROOT/src-go/git-cross-go"
+# Rebuild if the source changed since the binary was built.
+if [ -f "$GO_BIN" ] && [ "$REPO_ROOT/src-go/main.go" -nt "$GO_BIN" ]; then
+    rm -f "$GO_BIN"
+fi
 if [ ! -f "$GO_BIN" ]; then
     echo "Go binary not found at $GO_BIN. Building..."
     export PATH=$HOME/homebrew/bin:$PATH
@@ -43,6 +47,12 @@ if ! "$GO_BIN" --version >/dev/null 2>&1; then
     echo "Shell tests (001-007) and CI on native hardware validate the Go implementation."
     exit 0
 fi
+command_help=$("$GO_BIN" --help 2>&1)
+for retired_command in sync push replay exec; do
+    if echo "$command_help" | grep -Eq "^[[:space:]]+$retired_command[[:space:]]"; then
+        fail "Retired command '$retired_command' is still exposed in Go CLI help"
+    fi
+done
 # Smoke test: create a temp git repo and run 'use' to exercise gogs/git-module
 # This catches SIGILL from incompatible Go toolchain binaries
 _smoke_dir=$(mktemp -d)
@@ -152,6 +162,66 @@ if ! echo "$list_output" | grep -q "vendor/go-src"; then
     fail "Go 'list' should show patch path 'vendor/go-src'"
 fi
 
+log_header "Testing Go 'list --raw' machine-readable output..."
+raw_output=$("$GO_BIN" list --raw 2>/dev/null)
+echo "$raw_output"
+if echo "$raw_output" | grep -q "==>"; then
+    fail "Go 'list --raw' must not print section banners"
+fi
+if echo "$raw_output" | grep -q '^+'; then
+    fail "Go 'list --raw' must not print table borders ('+')"
+fi
+if echo "$raw_output" | grep -q '|'; then
+    fail "Go 'list --raw' must not print table borders ('|')"
+fi
+if ! echo "$raw_output" | grep -q "REMOTE_NAME" || ! echo "$raw_output" | grep -q "REMOTE_URL"; then
+    fail "Go 'list --raw' should print the REMOTE_NAME/REMOTE_URL header"
+fi
+if ! echo "$raw_output" | grep -q "LOCAL_PATH" || ! echo "$raw_output" | grep -q "WORKTREE" || ! echo "$raw_output" | grep -q "BRANCH"; then
+    fail "Go 'list --raw' should print the patch header with LOCAL_PATH, WORKTREE and BRANCH"
+fi
+if ! printf '%s\n' "$raw_output" | cut -f3 | grep -qx "vendor/go-src"; then
+    fail "Go 'list --raw' patches block: 'cut -f3' should yield local paths"
+fi
+if ! printf '%s\n' "$raw_output" | cut -f1 | grep -qx "demo"; then
+    fail "Go 'list --raw' remotes block should start with the remote name"
+fi
+
+raw_again=$("$GO_BIN" list --raw 2>/dev/null)
+if [ "$raw_output" != "$raw_again" ]; then
+    fail "Go 'list --raw' output is not deterministic between runs"
+fi
+
+noheader_output=$("$GO_BIN" list --raw --no-header 2>/dev/null)
+echo "$noheader_output"
+if echo "$noheader_output" | grep -q "REMOTE_NAME" || echo "$noheader_output" | grep -q "LOCAL_PATH"; then
+    fail "Go 'list --raw --no-header' should omit the header lines"
+fi
+if ! printf '%s\n' "$noheader_output" | cut -f3 | grep -qx "vendor/go-src"; then
+    fail "Go 'list --raw --no-header' should still print patch rows"
+fi
+
+table_noheader=$("$GO_BIN" list --no-header 2>&1)
+if echo "$table_noheader" | grep -q "REMOTE PATH" || echo "$table_noheader" | grep -q "LOCAL PATH"; then
+    fail "Go 'list --no-header' should omit the table headers"
+fi
+if ! echo "$table_noheader" | grep -q "vendor/go-src"; then
+    fail "Go 'list --no-header' should still print the patch rows"
+fi
+
+# A remote whose fetch and push URLs differ gets two rows under the same schema.
+git remote set-url --push demo "file://$upstream_path-push"
+pushpull_output=$("$GO_BIN" list --raw 2>/dev/null)
+echo "$pushpull_output"
+demo_rows=$(printf '%s\n' "$pushpull_output" | awk -F'\t' '$1=="demo" && NF==2' | wc -l | tr -d ' ')
+if [ "$demo_rows" -ne 2 ]; then
+    fail "Go 'list --raw' should emit two rows for a fetch!=push remote (got $demo_rows)"
+fi
+if printf '%s\n' "$pushpull_output" | grep -q "(fetch)\|(push)"; then
+    fail "Go 'list --raw' must not add (fetch)/(push) suffixes to URLs"
+fi
+git remote set-url --push demo "$upstream_url"
+
 log_header "Testing Go 'status' command..."
 status_output=$("$GO_BIN" status 2>&1)
 echo "$status_output"
@@ -159,7 +229,7 @@ if ! echo "$status_output" | grep -q "vendor/go-src"; then
     fail "Go 'status' should show patch 'vendor/go-src'"
 fi
 
-log_header "Testing Go 'sync' command..."
+log_header "Testing Go 'update' command..."
 # Mock upstream change
 pushd "$upstream_path" >/dev/null
 echo "Updated go logic" > src/logic.go
@@ -167,9 +237,34 @@ git add src/logic.go
 git commit -m "Update go logic"
 popd >/dev/null
 
-"$GO_BIN" sync
+"$GO_BIN" update vendor/go-src
 if ! grep -q "Updated go logic" "vendor/go-src/logic.go"; then
-    fail "Go 'sync' failed to pull updates"
+    fail "Go 'update' failed to pull updates"
+fi
+
+log_header "Testing Go update preserves local edits while refreshing worktree..."
+echo "local-only edit" >> vendor/go-src/logic.go
+pushd "$upstream_path" >/dev/null
+echo "upstream update after local edit" >> src/logic.go
+git add src/logic.go
+git commit -m "Update logic again" -q
+popd >/dev/null
+update_output=$("$GO_BIN" update vendor/go-src 2>&1)
+echo "$update_output"
+if ! grep -q "local-only edit" vendor/go-src/logic.go; then
+    fail "Go update overwrote the local edit"
+fi
+if ! echo "$update_output" | grep -q "differs from upstream"; then
+    fail "Go update should report that the local copy differs from upstream"
+fi
+if echo "$update_output" | grep -q "Local edits detected"; then
+    fail "Go update still prints the old 'Local edits detected' wording"
+fi
+if echo "$update_output" | grep -q "DirDiff"; then
+    fail "Go update should not print the configured diff tool command"
+fi
+if echo "$update_output" | grep -q "git config --global cross.dirdifftool"; then
+    fail "Go update should not print the global cross.dirdifftool hint"
 fi
 
 log_header "Testing Go 'diff' command..."
@@ -182,6 +277,66 @@ if ! echo "$diff_output" | grep -q "local diff change"; then
 fi
 # Revert the change for clean state
 echo "Updated go logic" > vendor/go-src/logic.go
+
+log_header "Testing Go 'compare' command with configured tool..."
+cat > "$SANDBOX/bin/compare-tool" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n%s\n' "$1" "$2" > "$COMPARE_TOOL_ARGS"
+EOF
+chmod +x "$SANDBOX/bin/compare-tool"
+export COMPARE_TOOL_ARGS="$SANDBOX/compare-args.txt"
+# Template form: placeholders are substituted with repo-relative paths.
+git config cross.dirdifftool "$SANDBOX/bin/compare-tool {left} {right}"
+"$GO_BIN" compare vendor/go-src
+if ! grep -q ".cross/worktrees/demo_" "$COMPARE_TOOL_ARGS"; then
+    fail "Go compare did not pass the sparse worktree path"
+fi
+if ! grep -q "vendor/go-src" "$COMPARE_TOOL_ARGS"; then
+    fail "Go compare did not pass the local patch path"
+fi
+if grep -q "^/" "$COMPARE_TOOL_ARGS"; then
+    fail "Go compare template should substitute repo-relative paths, got absolute paths"
+fi
+
+# Legacy form (no placeholders) still appends the paths as arguments.
+rm -f "$COMPARE_TOOL_ARGS"
+git config cross.dirdifftool "$SANDBOX/bin/compare-tool"
+"$GO_BIN" compare vendor/go-src
+if ! grep -q ".cross/worktrees/demo_" "$COMPARE_TOOL_ARGS"; then
+    fail "Go compare legacy form did not pass the sparse worktree path"
+fi
+if ! grep -q "vendor/go-src" "$COMPARE_TOOL_ARGS"; then
+    fail "Go compare legacy form did not pass the local patch path"
+fi
+git config --unset cross.dirdifftool
+unset COMPARE_TOOL_ARGS
+
+# The 'cmp' alias behaves like 'compare'.
+git config cross.dirdifftool 'echo TOOL {left} {right}'
+cmp_output=$("$GO_BIN" cmp vendor/go-src 2>&1 || true)
+echo "$cmp_output"
+if ! echo "$cmp_output" | grep -Eq "TOOL \.cross/worktrees/demo_[0-9a-f]+/src vendor/go-src"; then
+    fail "Go 'cmp' alias should resolve and run the diff tool like 'compare'"
+fi
+git config --unset cross.dirdifftool
+
+log_header "Testing Go legacy cross.diffTool fallback..."
+# The deprecated key still drives the tool...
+git config cross.diffTool 'echo LEGACY {left} {right}'
+legacy_output=$("$GO_BIN" compare vendor/go-src 2>&1 || true)
+echo "$legacy_output"
+if ! echo "$legacy_output" | grep -q "LEGACY .cross/worktrees/demo_"; then
+    fail "Legacy cross.diffTool should still be used as a fallback"
+fi
+# ...but the canonical key wins when both are set.
+git config cross.dirdifftool 'echo NEW {left} {right}'
+both_output=$("$GO_BIN" compare vendor/go-src 2>&1 || true)
+echo "$both_output"
+if ! echo "$both_output" | grep -q "NEW .cross/worktrees/demo_"; then
+    fail "cross.dirdifftool should take precedence over the legacy key"
+fi
+git config --unset cross.dirdifftool
+git config --unset cross.diffTool
 
 log_header "Testing Go '.crossignore' override status/diff hint..."
 mkdir -p vendor/go-src/subdir
@@ -208,22 +363,6 @@ rm -f vendor/go-src/.crossignore
 rm -f vendor/go-src/subdir/.env
 rmdir vendor/go-src/subdir 2>/dev/null || true
 
-log_header "Testing Go 'push' command..."
-# Allow pushing to current branch in mock upstream
-pushd "$upstream_path" >/dev/null
-git config receive.denyCurrentBranch ignore
-popd >/dev/null
-
-echo "Local modification" >> vendor/go-src/logic.go
-git add vendor/go-src/logic.go
-git commit -m "Local go change"
-
-"$GO_BIN" push vendor/go-src --yes
-last_msg=$(git -C "$upstream_path" log -1 --pretty=%s)
-if [[ "$last_msg" != "Local go change" ]]; then
-    fail "Go 'push' failed. Expected 'Local go change', got '$last_msg'"
-fi
-
 log_header "Testing Go 'init' command..."
 mkdir -p init-test
 pushd init-test >/dev/null
@@ -233,28 +372,27 @@ if [ ! -f "Crossfile" ]; then
 fi
 popd >/dev/null
 
-log_header "Testing Go 'replay' command..."
-# Create a fresh sandbox for replay test
-replay_dir="$SANDBOX/replay-test"
-mkdir -p "$replay_dir"
-pushd "$replay_dir" >/dev/null
+log_header "Testing Go 'update' from Crossfile in a fresh repository..."
+update_dir="$SANDBOX/update-test"
+mkdir -p "$update_dir"
+pushd "$update_dir" >/dev/null
 git init -q
 git config user.email "test@example.com"
 git config user.name "Test User"
 echo "replay test" > README.md
 git add . && git commit -m "init" -q
 
-# Write a Crossfile manually
+# Write declarative Crossfile configuration
 cat > Crossfile <<CROSSEOF
 cross use demo $upstream_url
-cross patch demo:src vendor/replay-src
+cross patch demo:main:src vendor/update-src
 CROSSEOF
 
-"$GO_BIN" replay
-if [ ! -f "vendor/replay-src/logic.go" ]; then
-    fail "Go 'replay' failed to recreate vendored files"
+"$GO_BIN" update
+if [ ! -f "vendor/update-src/logic.go" ]; then
+    fail "Go 'update' failed to create a missing patch from Crossfile"
 fi
-log_success "Go replay test passed"
+log_success "Go Crossfile update test passed"
 popd >/dev/null
 
 log_header "Testing Go 'remove' command..."

@@ -55,6 +55,17 @@ else
     tests=(test/[0-9]*.sh)
 fi
 
+active_tests=()
+for t in "${tests[@]}"; do
+    case "$(basename "$t")" in
+        005_replay.sh|006_push.sh|008_rust_cli.sh|011_rust_push.sh)
+            echo "Skipping retired workflow test: $t"
+            ;;
+        *) active_tests+=("$t") ;;
+    esac
+done
+tests=("${active_tests[@]}")
+
 for t in "${tests[@]}"; do
     # If the file doesn't exist (e.g. glob failed), skip
     

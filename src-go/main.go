@@ -1,15 +1,18 @@
 package main
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/fatih/color"
 	"github.com/gogs/git-module"
@@ -172,7 +175,6 @@ func getCrossOverrides(localPath string) ([]string, error) {
 	return overrides, nil
 }
 
-
 func hasCrossOverrides(localPath string) (bool, error) {
 	overrides, err := getCrossOverrides(localPath)
 	if err != nil {
@@ -225,6 +227,11 @@ func parsePatchSpec(spec string) (patchSpec, error) {
 
 	remotePath = strings.TrimPrefix(remotePath, "/")
 	remotePath = strings.TrimSuffix(remotePath, "/")
+	for _, component := range strings.Split(remotePath, "/") {
+		if component == ".." {
+			return patchSpec{}, fmt.Errorf("remote path must not traverse outside the repository")
+		}
+	}
 	// Treat empty path (from "/") as "." meaning whole repo root
 	if remotePath == "" {
 		remotePath = "."
@@ -263,10 +270,201 @@ func logSuccess(msg string) {
 	fmt.Println(msg)
 }
 
+func logWarn(msg string) {
+	color.New(color.Bold, color.FgYellow).Print("==> WARNING: ")
+	fmt.Println(msg)
+}
+
+// envList splits a comma-separated environment variable into trimmed items.
+func envList(name string) []string {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return nil
+	}
+	var items []string
+	for _, part := range strings.Split(raw, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			items = append(items, p)
+		}
+	}
+	return items
+}
+
+// vimValue makes a value safe to embed in a vim single-quoted string and in
+// the double-quoted bash argument that carries the +cmd.
+func vimValue(s string) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, `"`, "")
+	return strings.ReplaceAll(s, "'", "''")
+}
+
+// vimIgnoreRegexp turns comma-separated keywords into a vim regexp.
+// \V (very nomagic) makes every character literal, so dots etc. need no
+// escaping; \| remains alternation.
+func vimIgnoreRegexp(keywords []string) string {
+	escaped := make([]string, 0, len(keywords))
+	for _, k := range keywords {
+		escaped = append(escaped, strings.ReplaceAll(k, `\`, `\\`))
+	}
+	return `\V` + strings.Join(escaped, `\|`)
+}
+
+// defaultDiffTool returns the built-in diff tool command: nvim when available,
+// otherwise vim. Separate +cmd arguments set the exclusions and, when
+// DIRDIFF_IGNORE is set, the diff-content keywords to ignore; then DirDiff runs
+// on the given directories. .git is always excluded.
+func defaultDiffTool() string {
+	editor := "vim"
+	if _, err := exec.LookPath("nvim"); err == nil {
+		editor = "nvim"
+	}
+	excludes := append([]string{".git"}, envList("DIRDIFF_EXCLUDES")...)
+	args := []string{fmt.Sprintf(`"+let g:DirDiffExcludes = '%s'"`, vimValue(strings.Join(excludes, ",")))}
+	if keywords := envList("DIRDIFF_IGNORE"); len(keywords) > 0 {
+		args = append(args, fmt.Sprintf(`"+let g:DirDiffIgnore = '%s'"`, vimValue(vimIgnoreRegexp(keywords))))
+	}
+	args = append(args, `"+DirDiff {left} {right}"`)
+	return editor + " " + strings.Join(args, " ")
+}
+
+func diffTool() string {
+	// cross.dirdifftool is canonical; cross.diffTool is a deprecated fallback so
+	// configurations written before the rename keep working.
+	for _, key := range []string{"cross.dirdifftool", "cross.diffTool"} {
+		if out, err := exec.Command("git", "config", "--get", key).Output(); err == nil {
+			if tool := strings.TrimSpace(string(out)); tool != "" {
+				return tool
+			}
+		}
+	}
+	return defaultDiffTool()
+}
+
+// runDiffTool executes the configured diff tool. If the tool string contains
+// {left}/{right} placeholders, they are substituted with repo-relative paths
+// and the command runs with cwd = repo root. Legacy configs without
+// placeholders keep the old behavior (paths appended as arguments).
+func runDiffTool(root, left, right string) error {
+	tool := diffTool()
+	relLeft, errL := filepath.Rel(root, left)
+	relRight, errR := filepath.Rel(root, right)
+	if errL != nil || errR != nil {
+		relLeft, relRight = left, right
+	}
+	var c *exec.Cmd
+	if strings.Contains(tool, "{left}") || strings.Contains(tool, "{right}") {
+		cmdline := strings.NewReplacer("{left}", relLeft, "{right}", relRight).Replace(tool)
+		c = exec.Command("bash", "-c", cmdline, "cross-diff")
+	} else {
+		c = exec.Command("bash", "-c", tool+` "$@"`, "cross-diff", left, right)
+	}
+	c.Dir = root
+	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return c.Run()
+}
+
+func localDiffersFromWorktree(localPath, worktreePath string) (bool, error) {
+	if _, err := os.Stat(localPath); os.IsNotExist(err) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return directoriesDiffer(worktreePath, localPath)
+}
+
 func logError(msg string) {
 	color.New(color.Bold, color.FgRed).Print("==> ERROR: ")
 	fmt.Println(msg)
 }
+
+// printPatchRows prints one row per patch: local_path <TAB> worktree.
+// Rows go to stdout (parseable via cut -f1); hint goes to stderr, so
+// `git cross compare 2>/dev/null | cut -f1` yields local paths.
+// When stdout is a terminal the first column is space-padded so the
+// worktree column lines up; piped output stays pure TAB-separated.
+func printPatchRows(hint string) error {
+	meta, err := loadMetadata()
+	if err != nil {
+		return err
+	}
+	if len(meta.Patches) == 0 {
+		logInfo("No patches configured.")
+		return nil
+	}
+	if hint != "" {
+		fmt.Fprintln(os.Stderr, hint)
+	}
+	if stdoutIsTerminal() {
+		width := 0
+		for _, p := range meta.Patches {
+			if n := utf8.RuneCountInString(p.LocalPath); n > width {
+				width = n
+			}
+		}
+		for _, p := range meta.Patches {
+			fmt.Printf("%-*s  %s\n", width, p.LocalPath, p.Worktree)
+		}
+		return nil
+	}
+	for _, p := range meta.Patches {
+		fmt.Printf("%s\t%s\n", p.LocalPath, p.Worktree)
+	}
+	return nil
+}
+
+// printRawRows writes rows as TAB-separated values when piped, or as
+// space-aligned columns when stdout is a terminal (readable interactively
+// without breaking the TAB contract for scripts).
+func printRawRows(rows [][]string) {
+	if len(rows) == 0 {
+		return
+	}
+	if !stdoutIsTerminal() {
+		for _, row := range rows {
+			fmt.Println(strings.Join(row, "\t"))
+		}
+		return
+	}
+	var widths []int
+	for _, row := range rows {
+		for i, col := range row {
+			if i >= len(widths) {
+				widths = append(widths, 0)
+			}
+			if n := utf8.RuneCountInString(col); n > widths[i] {
+				widths[i] = n
+			}
+		}
+	}
+	for _, row := range rows {
+		var b strings.Builder
+		for i, col := range row {
+			if i > 0 {
+				b.WriteString("  ")
+			}
+			if i < len(row)-1 {
+				fmt.Fprintf(&b, "%-*s", widths[i], col)
+			} else {
+				b.WriteString(col)
+			}
+		}
+		fmt.Println(b.String())
+	}
+}
+
+// stdoutIsTerminal reports whether stdout is attached to a TTY (interactive
+// output may be padded for readability; pipes keep the TAB contract).
+func stdoutIsTerminal() bool {
+	info, err := os.Stdout.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+// errPatchNotFound is returned after rows were already printed; commands
+// that use it set SilenceErrors+SilenceUsage so nothing extra is printed.
+var errPatchNotFound = errors.New("patch not found")
 
 func loadMetadata() (Metadata, error) {
 	var meta Metadata
@@ -282,7 +480,15 @@ func loadMetadata() (Metadata, error) {
 		return meta, err
 	}
 	err = json.Unmarshal(data, &meta)
-	return meta, err
+	if err != nil {
+		return meta, err
+	}
+	// Self-heal legacy local paths (e.g. "./mxc2" -> "mxc2") so the next
+	// save rewrites normalized paths.
+	for i := range meta.Patches {
+		meta.Patches[i].LocalPath = filepath.ToSlash(filepath.Clean(meta.Patches[i].LocalPath))
+	}
+	return meta, nil
 }
 
 func saveMetadata(meta Metadata) error {
@@ -379,6 +585,52 @@ func runSync(src, dst string) error {
 	return nil
 }
 
+// directoriesDiffer reports whether two directory trees differ, ignoring
+// .git (the worktree's pointer file never exists in the local copy).
+// -c: checksum compare; no -t so time-only changes don't produce lines.
+// --delete: files existing only on the right side are reported.
+func directoriesDiffer(left, right string) (bool, error) {
+	c := exec.Command("rsync", "-rlcn", "--delete", "--exclude=.git",
+		"--itemize-changes",
+		left+string(os.PathSeparator), right+string(os.PathSeparator))
+	out, err := c.Output()
+	if err != nil {
+		return false, fmt.Errorf("rsync compare %s vs %s: %w\n%s", left, right, err, out)
+	}
+	return strings.TrimSpace(string(out)) != "", nil
+}
+
+func crossfileCommands(path string) ([][]string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	var commands [][]string
+	scanner := bufio.NewScanner(file)
+	for lineNumber := 1; scanner.Scan(); lineNumber++ {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && (fields[0] == "git" || fields[0] == "just") && fields[1] == "cross" {
+			fields = fields[2:]
+		} else if len(fields) > 0 && fields[0] == "cross" {
+			fields = fields[1:]
+		}
+		if len(fields) == 0 || (fields[0] != "use" && fields[0] != "patch") {
+			return nil, fmt.Errorf("unsupported Crossfile command on line %d (update accepts only use and patch declarations)", lineNumber)
+		}
+		commands = append(commands, fields)
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return commands, nil
+}
+
 func detectDefaultBranch(url string) (string, error) {
 	cmd := exec.Command("git", "ls-remote", "--symref", url, "HEAD")
 	if out, err := cmd.CombinedOutput(); err == nil {
@@ -445,7 +697,7 @@ func removeFromCrossfile(localPath string) {
 				break
 			}
 		}
-		if isPatchLine && len(fields) > 0 && fields[len(fields)-1] == localPath {
+		if isPatchLine && len(fields) > 0 && filepath.ToSlash(filepath.Clean(fields[len(fields)-1])) == localPath {
 			continue // skip this line
 		}
 		newLines = append(newLines, line)
@@ -528,11 +780,21 @@ func findPatchForPath(meta Metadata, rel string) *Patch {
 	if rel == "" {
 		return nil
 	}
+	rel = strings.Trim(filepath.ToSlash(filepath.Clean(rel)), "/")
+	if rel == "" {
+		return nil
+	}
 
 	var selected *Patch
 	longest := -1
 	for i := range meta.Patches {
-		lp := strings.Trim(meta.Patches[i].LocalPath, "/")
+		raw := strings.TrimSpace(meta.Patches[i].LocalPath)
+		if raw == "" {
+			continue
+		}
+		// Clean stored paths defensively so legacy metadata (e.g. "./mxc2")
+		// still matches; this heals without a migration step.
+		lp := strings.Trim(filepath.ToSlash(filepath.Clean(raw)), "/")
 		if lp == "" {
 			continue
 		}
@@ -545,6 +807,22 @@ func findPatchForPath(meta Metadata, rel string) *Patch {
 	}
 
 	return selected
+}
+
+func findPatchForPathFromCWD(meta Metadata) (*Patch, error) {
+	root, err := getRepoRoot()
+	if err != nil {
+		return nil, err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(root, cwd)
+	if err != nil {
+		return nil, err
+	}
+	return findPatchForPath(meta, filepath.ToSlash(rel)), nil
 }
 
 // resolvePathToRepoRelative converts any path (relative, absolute, or repo-relative)
@@ -578,11 +856,9 @@ func resolvePathToRepoRelative(inputPath string) (string, error) {
 	absPath = filepath.Clean(absPath)
 
 	// Evaluate symlinks to handle /tmp -> /private/tmp on macOS
-	absPath, err = filepath.EvalSymlinks(absPath)
-	if err != nil {
-		// If EvalSymlinks fails (path doesn't exist), continue with cleaned path
-		// This allows diff to work even if path doesn't exist yet
-		absPath = filepath.Clean(absPath)
+	// If the path doesn't exist yet, keep the cleaned absolute path.
+	if resolved, err := filepath.EvalSymlinks(absPath); err == nil {
+		absPath = resolved
 	}
 
 	// Also evaluate symlinks for root to ensure consistent comparison
@@ -613,6 +889,39 @@ func resolvePathToRepoRelative(inputPath string) (string, error) {
 	return strings.Trim(relPath, "/"), nil
 }
 
+// pickerWidth is the padded width of the LOCAL_PATH column: the widest
+// local_path plus a two-space gap, clamped so one long path cannot push the
+// second column off screen.
+func pickerWidth(meta *Metadata) int {
+	width := 0
+	for _, p := range meta.Patches {
+		if n := len([]rune(p.LocalPath)); n > width {
+			width = n
+		}
+	}
+	width += 2
+	if width < 16 {
+		width = 16
+	}
+	if width > 48 {
+		width = 48
+	}
+	return width
+}
+
+// pickerLabel is the second picker column: remote:remote_path, with the branch
+// in parentheses when it is not the usual default.
+func pickerLabel(p Patch) string {
+	label := p.Remote + ":" + p.RemotePath
+	if p.Branch != "" && p.Branch != "main" {
+		label += " (" + p.Branch + ")"
+	}
+	return label
+}
+
+// selectPatchInteractive lets the user pick a patch with fzf. Rows are
+// space-padded for alignment (TAB is used only as the hidden field separator),
+// with the local_path repeated as the last field so the selection is parseable.
 func selectPatchInteractive(meta *Metadata) (*Patch, error) {
 	if _, err := exec.LookPath("fzf"); err != nil {
 		return nil, err
@@ -621,19 +930,19 @@ func selectPatchInteractive(meta *Metadata) (*Patch, error) {
 		return nil, nil
 	}
 
+	width := pickerWidth(meta)
 	var b strings.Builder
 	for _, p := range meta.Patches {
-		b.WriteString(fmt.Sprintf("%s\t%s\t%s\n", p.Remote, p.RemotePath, p.LocalPath))
+		b.WriteString(fmt.Sprintf("%-*s%s\t%s\n", width, p.LocalPath, pickerLabel(p), p.LocalPath))
 	}
 
 	cmd := exec.Command("fzf",
-		"--with-nth=1,2,3",
-		"--delimiter",
-		"\t",
+		"--delimiter", "\t",
+		"--with-nth=1",
 		"--prompt",
 		"Select patch> ",
 		"--header",
-		"REMOTE\tREMOTE_PATH\tLOCAL_PATH",
+		fmt.Sprintf("%-*s%s", width, "LOCAL_PATH", "REMOTE:REMOTE_PATH"),
 		"--height",
 		"40%",
 		"--border",
@@ -642,18 +951,15 @@ func selectPatchInteractive(meta *Metadata) (*Patch, error) {
 	)
 	cmd.Stdin = strings.NewReader(b.String())
 	out, err := cmd.Output()
-	if err != nil {
-		return nil, err
-	}
-
 	selection := strings.TrimSpace(string(out))
-	if selection == "" {
-		return nil, nil
+	if err != nil || selection == "" {
+		return nil, nil // user cancelled (ESC / empty)
 	}
 
+	// The local_path is always the last TAB-delimited field.
 	parts := strings.Split(selection, "\t")
 	var localPath string
-	if len(parts) >= 3 {
+	if len(parts) > 1 {
 		localPath = strings.TrimSpace(parts[len(parts)-1])
 	} else {
 		fields := strings.Fields(selection)
@@ -675,18 +981,194 @@ func selectPatchInteractive(meta *Metadata) (*Patch, error) {
 	return nil, fmt.Errorf("selected patch not found: %s", localPath)
 }
 
+// runNoIndexDiff prints a unified diff between the upstream worktree directory
+// and the local copy. A worktree root contains a `.git` pointer file that the
+// local copy never has; pathspec excludes are not portable across git versions
+// (older gits reject them with a usage error), so when `.git` is present we
+// diff against a temporary mirror that omits it.
+func runNoIndexDiff(upstreamPath, localPath string) {
+	left := upstreamPath
+	cleanup := func() {}
+	if _, err := os.Stat(filepath.Join(upstreamPath, ".git")); err == nil {
+		if tmp, terr := os.MkdirTemp("", "cross-diff-"); terr == nil {
+			// --link-dest hardlinks unchanged files, so the mirror is cheap.
+			cmd := exec.Command("rsync", "-a", "--exclude=.git",
+				"--link-dest="+upstreamPath+string(os.PathSeparator),
+				upstreamPath+string(os.PathSeparator), tmp+string(os.PathSeparator))
+			if _, rerr := cmd.CombinedOutput(); rerr == nil {
+				left = tmp
+				cleanup = func() { os.RemoveAll(tmp) }
+			} else {
+				os.RemoveAll(tmp)
+			}
+		}
+	}
+	defer cleanup()
+
+	c := exec.Command("git", "diff", "--no-index", left, localPath)
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	// git diff --no-index returns 1 when differences exist; that is not an error.
+	_ = c.Run()
+}
+
+const posixShellInit = `# git-cross cd wrappers (part of: eval "$(git cross completion bash|zsh)")
+crosscd() { local p; p="$(git cross cd "$@")" || return; [ -n "$p" ] && cd "$p"; }
+crosswt() { local p; p="$(git cross wt "$@")" || return; [ -n "$p" ] && cd "$p"; }
+`
+
+const fishShellInit = `# git-cross cd wrappers (part of: git cross completion fish | source)
+function crosscd --description 'cd into a git-cross patch'
+    set -l p (git cross cd $argv)
+    or return
+    test -n "$p"; and cd $p
+end
+function crosswt --description 'cd into a git-cross worktree'
+    set -l p (git cross wt $argv)
+    or return
+    test -n "$p"; and cd $p
+end
+`
+
+// shellIntegrationHint returns the one-liner that fits the caller's $SHELL.
+// fish joins multi-line command substitution with spaces, so it needs `| source`.
+func shellIntegrationHint() string {
+	if strings.ToLower(filepath.Base(strings.TrimSpace(os.Getenv("SHELL")))) == "fish" {
+		return "Shell integration (cd wrappers + completions): git cross completion fish | source"
+	}
+	return `Shell integration (cd wrappers + completions): eval "$(git cross completion)"`
+}
+
+// supportedShells is the canonical order for help and error hints.
+const supportedShells = "fish, bash, zsh, powershell"
+
+// resolveShell picks the shell from an explicit argument, falling back to the
+// basename of $SHELL. An unknown or undetectable shell is an error: guessing a
+// default would emit a script the caller cannot evaluate.
+func resolveShell(args []string) (string, error) {
+	var shell string
+	if len(args) > 0 {
+		shell = strings.ToLower(strings.TrimSpace(args[0]))
+	} else if env := strings.TrimSpace(os.Getenv("SHELL")); env != "" {
+		shell = strings.ToLower(filepath.Base(env))
+	}
+	if shell == "" {
+		return "", fmt.Errorf("cannot detect shell from $SHELL; specify one: %s", supportedShells)
+	}
+	switch shell {
+	case "fish", "bash", "zsh", "powershell", "pwsh":
+		return shell, nil
+	default:
+		return "", fmt.Errorf("unsupported shell %q (supported: %s)", shell, supportedShells)
+	}
+}
+
+// ensureRerere enables reuse-recorded-resolution in the shared repo config, so
+// conflict resolutions recorded in any cross worktree (merge/rebase) are
+// replayed automatically when the same conflict reappears on later updates.
+// Returns true when the setting was newly enabled.
+func ensureRerere(root string) bool {
+	if out, err := exec.Command("git", "-C", root, "config", "--get", "rerere.enabled").Output(); err == nil {
+		if strings.TrimSpace(string(out)) == "true" {
+			return false
+		}
+	}
+	if err := exec.Command("git", "-C", root, "config", "rerere.enabled", "true").Run(); err != nil {
+		logWarn(fmt.Sprintf("could not enable rerere: %v", err))
+		return false
+	}
+	return true
+}
+
+// copyToClipboard copies text using the first available platform tool
+// (pbcopy/xclip/xsel).
+//
+// Currently unused: cd/wt print a path and completion provides the real cd, so
+// the clipboard workflow is obsolete. Kept isolated for possible reuse.
+func copyToClipboard(text string) error {
+	candidates := [][]string{
+		{"pbcopy"},
+		{"xclip", "-selection", "clipboard"},
+		{"xsel", "--clipboard", "--input"},
+	}
+	for _, cand := range candidates {
+		if _, err := exec.LookPath(cand[0]); err != nil {
+			continue
+		}
+		c := exec.Command(cand[0], cand[1:]...)
+		c.Stdin = strings.NewReader(text)
+		if err := c.Run(); err != nil {
+			return fmt.Errorf("%s failed: %w", cand[0], err)
+		}
+		return nil
+	}
+	return errors.New("no clipboard tool found (pbcopy/xclip/xsel)")
+}
+
 func main() {
+	// Keep authored order in --help: use/patch must come first.
+	cobra.EnableCommandSorting = false
 	var dry string
 	rootCmd := &cobra.Command{
-		Use:     "git-cross",
-		Version: "0.3.0",
+		Use:          "git-cross",
+		Version:      "0.4.0",
+		Short:        "Manage vendored cross-repo patches (worktree + rsync)",
+		SilenceUsage: true, // no Usage dump on errors
+		Long: `Manage vendored cross-repo patches (worktree + rsync).
+
+Directory diff tool (compare / cmp): when cross.dirdifftool is unset, nvim is
+used if installed, otherwise vim, with .git ignored. To use the built-in default:
+
+  git config --global --unset cross.dirdifftool
+
+To pin it explicitly (recommended):
+
+  git config --global cross.dirdifftool "nvim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
+
+Replace nvim with vim to pin vim instead. The legacy cross.diffTool key is still
+read as a fallback.
+
+Environment variables (used only when cross.dirdifftool is unset):
+  DIRDIFF_EXCLUDES  extra comma-separated file/dir names to hide; .git is always ignored
+  DIRDIFF_IGNORE    comma-separated keywords ignored in diff content (e.g. github.com,gitlab.com)
+
+Shell completions + cd wrappers (crosscd / crosswt) - evaluate once in your profile:
+  git cross completion fish | source    # fish
+  eval "$(git cross completion)"        # bash / zsh`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return printPatchRows("")
+		},
+		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 	}
+	rootCmd.AddGroup(
+		&cobra.Group{ID: "patches", Title: "Patch Lifecycle:"},
+		&cobra.Group{ID: "repo", Title: "Repository:"},
+		&cobra.Group{ID: "inspect", Title: "Inspect & Navigate:"},
+	)
+	// Group the builtin help command so no ungrouped visible command remains
+	// (Cobra otherwise renders it under "Additional Commands:").
+	rootCmd.SetHelpCommand(&cobra.Command{
+		Use:     "help [command]",
+		Short:   "Help about any command",
+		GroupID: "repo",
+		Run: func(c *cobra.Command, args []string) {
+			target, _, err := c.Root().Find(args)
+			if target == nil || err != nil {
+				c.Printf("Unknown help topic %q\n", args)
+				_ = c.Root().Usage()
+				return
+			}
+			target.InitDefaultHelpFlag()
+			_ = target.Help()
+		},
+	})
 	rootCmd.PersistentFlags().StringVar(&dry, "dry", "", "Dry run command (e.g. echo)")
 
 	useCmd := &cobra.Command{
-		Use:   "use [name] [url]",
-		Short: "Add a remote repository",
-		Args:  cobra.ExactArgs(2),
+		Use:     "use [name] [url]",
+		Short:   "Add a remote repository",
+		GroupID: "patches",
+		Args:    cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			name, url := args[0], args[1]
 			logInfo(fmt.Sprintf("Adding remote %s (%s)...", name, url))
@@ -729,9 +1211,10 @@ func main() {
 	}
 
 	patchCmd := &cobra.Command{
-		Use:   "patch [spec] [local_path]",
-		Short: "Vendor a directory from a remote",
-		Args:  cobra.MinimumNArgs(1),
+		Use:     "patch [spec] [local_path]",
+		Short:   "Vendor a directory from a remote",
+		GroupID: "patches",
+		Args:    cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			specInput := args[0]
 			spec, err := parsePatchSpec(specInput)
@@ -746,6 +1229,7 @@ func main() {
 			if localPath == "" {
 				localPath = filepath.Base(spec.RemotePath)
 			}
+			localPath = filepath.ToSlash(filepath.Clean(localPath)) // "./mxc2" -> "mxc2"
 
 			repo, err := git.Open(".")
 			if err != nil {
@@ -770,6 +1254,9 @@ func main() {
 			if _, err := git.NewCommand("remote", "get-url", spec.Remote).RunInDir(repo.Path()); err != nil {
 				return fmt.Errorf("remote %s not found", spec.Remote)
 			}
+
+			// Remember conflict resolutions so later updates can reuse them.
+			ensureRerere(repo.Path())
 
 			canonical := canonicalSpec(spec)
 			logInfo(fmt.Sprintf("Patching %s to %s", canonical, localPath))
@@ -863,8 +1350,9 @@ func main() {
 	}
 
 	syncCmd := &cobra.Command{
-		Use:   "sync [path]",
-		Short: "Update patches from upstream",
+		Use:    "sync [path]",
+		Short:  "Update patches from upstream",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := ""
 			if len(args) > 0 {
@@ -1024,153 +1512,447 @@ func main() {
 		},
 	}
 
-	// Helper: Copy text to clipboard (cross-platform)
-	copyToClipboard := func(text string) error {
-		var cmd *exec.Cmd
-
-		// Detect platform and use appropriate command
-		if _, err := exec.LookPath("pbcopy"); err == nil {
-			// macOS
-			cmd = exec.Command("pbcopy")
-		} else if _, err := exec.LookPath("xclip"); err == nil {
-			// Linux with xclip
-			cmd = exec.Command("xclip", "-selection", "clipboard")
-		} else if _, err := exec.LookPath("xsel"); err == nil {
-			// Linux with xsel
-			cmd = exec.Command("xsel", "--clipboard", "--input")
-		} else {
-			return fmt.Errorf("no clipboard tool found (pbcopy/xclip/xsel)")
-		}
-
-		cmd.Stdin = strings.NewReader(text)
-		return cmd.Run()
-	}
-
-	// Helper: Get relative path from PWD to target
-	getRelativePath := func(targetPath string) string {
-		pwd, err := os.Getwd()
-		if err != nil {
-			return targetPath // fallback to absolute
-		}
-		relPath, err := filepath.Rel(pwd, targetPath)
-		if err != nil {
-			return targetPath // fallback to absolute
-		}
-		return relPath
-	}
-
-	// Helper: Open shell in target directory (path must be provided)
-	openShellInDir := func(path string, targetType string) error {
-		meta, _ := loadMetadata()
-		if len(meta.Patches) == 0 {
-			fmt.Println("No patches configured.")
-			return nil
-		}
-
-		// Find patch for provided path
-		patch := findPatchForPath(meta, path)
-		if patch == nil {
-			for i := range meta.Patches {
-				if meta.Patches[i].LocalPath == path {
-					patch = &meta.Patches[i]
-					break
+	updateCmd := &cobra.Command{
+		Use:     "update [path]",
+		Short:   "Update Crossfile patches from upstream",
+		GroupID: "repo",
+		Args:    cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			root, err := getRepoRoot()
+			if err != nil {
+				return err
+			}
+			if ensureRerere(root) {
+				logInfo("Enabled rerere: conflict resolutions are remembered for later updates.")
+			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			if err := os.Chdir(root); err != nil {
+				return err
+			}
+			defer os.Chdir(cwd)
+			crossfile, err := getCrossfilePath()
+			if err != nil {
+				return err
+			}
+			commands, err := crossfileCommands(crossfile)
+			if err != nil {
+				return err
+			}
+			selectedPath := ""
+			if len(args) > 0 {
+				selectedPath, err = resolvePathToRepoRelative(args[0])
+				if err != nil {
+					return err
+				}
+				if selectedPath == "" && (args[0] == "." || args[0] == root) {
+					selectedPath = "."
 				}
 			}
-		}
-		if patch == nil {
-			return fmt.Errorf("patch not found for path: %s", path)
-		}
-
-		// Determine target directory
-		var targetDir string
-		if targetType == "worktree" {
-			targetDir = patch.Worktree
-		} else {
-			targetDir = patch.LocalPath
-		}
-
-		if _, err := os.Stat(targetDir); os.IsNotExist(err) {
-			return fmt.Errorf("%s not found: %s", targetType, targetDir)
-		}
-
-		// Open subshell
-		shell := os.Getenv("SHELL")
-		if shell == "" {
-			shell = "/bin/sh"
-		}
-
-		if dry != "" {
-			fmt.Printf("%s cd %s\n", dry, targetDir)
-			fmt.Printf("%s exec %s\n", dry, shell)
+			meta, err := loadMetadata()
+			if err != nil {
+				return err
+			}
+			localChanges := make(map[string]bool)
+			for _, fields := range commands {
+				if len(fields) == 0 || fields[0] != "patch" || len(fields) < 2 || len(fields) > 3 {
+					continue
+				}
+				spec, err := parsePatchSpec(fields[1])
+				if err != nil {
+					return err
+				}
+				localPath := filepath.Base(spec.RemotePath)
+				if len(fields) == 3 {
+					localPath = fields[2]
+				}
+				localPath = filepath.Clean(localPath)
+				if selectedPath != "" && selectedPath != localPath {
+					continue
+				}
+				for i := range meta.Patches {
+					p := &meta.Patches[i]
+					if filepath.Clean(p.LocalPath) == localPath && p.Remote == spec.Remote && filepath.Clean(p.RemotePath) == filepath.Clean(spec.RemotePath) {
+						localPathAbs := filepath.Join(root, localPath)
+						worktreePath := filepath.Join(root, p.Worktree, p.RemotePath)
+						different, err := localDiffersFromWorktree(localPathAbs, worktreePath)
+						if err != nil {
+							return err
+						}
+						localChanges[localPath] = different
+						break
+					}
+				}
+			}
+			updated := 0
+			matched := 0
+			for _, fields := range commands {
+				if fields[0] == "use" {
+					if len(fields) != 3 {
+						return fmt.Errorf("invalid use declaration in Crossfile: %s", strings.Join(fields, " "))
+					}
+					name, url := fields[1], fields[2]
+					if _, err := exec.Command("git", "-C", root, "remote", "get-url", name).Output(); err != nil {
+						if output, addErr := exec.Command("git", "-C", root, "remote", "add", name, url).CombinedOutput(); addErr != nil {
+							return fmt.Errorf("add remote %s: %s: %w", name, strings.TrimSpace(string(output)), addErr)
+						}
+					} else if output, setErr := exec.Command("git", "-C", root, "remote", "set-url", name, url).CombinedOutput(); setErr != nil {
+						return fmt.Errorf("update remote %s: %s: %w", name, strings.TrimSpace(string(output)), setErr)
+					}
+					branch, err := detectDefaultBranch(url)
+					if err != nil {
+						return fmt.Errorf("detect default branch for %s: %w", name, err)
+					}
+					if output, fetchErr := exec.Command("git", "-C", root, "fetch", name, branch).CombinedOutput(); fetchErr != nil {
+						return fmt.Errorf("fetch %s: %s: %w", name, strings.TrimSpace(string(output)), fetchErr)
+					}
+					continue
+				}
+				if len(fields) < 2 || len(fields) > 3 {
+					return fmt.Errorf("invalid patch declaration in Crossfile: %s", strings.Join(fields, " "))
+				}
+				spec, err := parsePatchSpec(fields[1])
+				if err != nil {
+					return err
+				}
+				localPath := ""
+				if len(fields) == 3 {
+					localPath = fields[2]
+				} else {
+					localPath = filepath.Base(spec.RemotePath)
+				}
+				localPath = filepath.Clean(localPath)
+				if filepath.IsAbs(localPath) || localPath == ".." || strings.HasPrefix(localPath, ".."+string(os.PathSeparator)) {
+					return fmt.Errorf("local path must stay inside the repository: %s", localPath)
+				}
+				if localPath == "." {
+					return fmt.Errorf("updating a repository-root patch is disabled until root overlay safety is implemented")
+				}
+				if selectedPath != "" && selectedPath != localPath {
+					continue
+				}
+				matched++
+				var patch *Patch
+				for i := range meta.Patches {
+					if filepath.Clean(meta.Patches[i].LocalPath) == localPath {
+						patch = &meta.Patches[i]
+						break
+					}
+				}
+				if patch == nil {
+					if _, err := os.Stat(filepath.Join(root, localPath)); err == nil {
+						return fmt.Errorf("local path %s exists but is not registered in metadata; refusing to overwrite it", localPath)
+					}
+					if err := patchCmd.RunE(cmd, []string{fields[1], localPath}); err != nil {
+						return err
+					}
+					meta, err = loadMetadata()
+					if err != nil {
+						return err
+					}
+					updated++
+					continue
+				}
+				if patch.Remote != spec.Remote || filepath.Clean(patch.RemotePath) != filepath.Clean(spec.RemotePath) || (spec.Branch != "" && patch.Branch != spec.Branch) {
+					return fmt.Errorf("Crossfile source for %s changed; remove and re-patch it explicitly before updating", localPath)
+				}
+				if _, err := os.Stat(filepath.Join(root, patch.Worktree)); os.IsNotExist(err) {
+					if _, localErr := os.Stat(filepath.Join(root, localPath)); localErr == nil {
+						return fmt.Errorf("worktree %s is missing while local path %s exists; refusing to overwrite it. Review/remove the patch explicitly, then run update again", patch.Worktree, localPath)
+					}
+					if err := patchCmd.RunE(cmd, []string{fields[1], localPath}); err != nil {
+						return err
+					}
+					meta, err = loadMetadata()
+					if err != nil {
+						return err
+					}
+					updated++
+					continue
+				}
+				if spec.Branch == "" {
+					spec.Branch = patch.Branch
+				}
+				localAbs := filepath.Join(root, localPath)
+				upstreamAbs := filepath.Join(root, patch.Worktree, patch.RemotePath)
+				localChanged := localChanges[localPath]
+				if err := exec.Command("git", "-C", root, "fetch", spec.Remote, spec.Branch).Run(); err != nil {
+					return fmt.Errorf("fetch %s %s: %w", spec.Remote, spec.Branch, err)
+				}
+				fetchHead, err := exec.Command("git", "-C", root, "rev-parse", "FETCH_HEAD").Output()
+				if err != nil {
+					return fmt.Errorf("resolve fetched revision: %w", err)
+				}
+				status, err := exec.Command("git", "-C", patch.Worktree, "status", "--porcelain").Output()
+				if err != nil {
+					return fmt.Errorf("inspect worktree %s: %w", patch.Worktree, err)
+				}
+				if len(status) != 0 {
+					logError(fmt.Sprintf("Worktree has manual changes; leaving it untouched: %s", patch.Worktree))
+					continue
+				}
+				merge := exec.Command("git", "-C", patch.Worktree, "merge", "--ff-only", strings.TrimSpace(string(fetchHead)))
+				if output, err := merge.CombinedOutput(); err != nil {
+					return fmt.Errorf("upstream update for %s requires manual worktree review (%s): %s", localPath, patch.Worktree, strings.TrimSpace(string(output)))
+				}
+				updated++
+				if localChanged {
+					logWarn(fmt.Sprintf("'%s' differs from upstream; local copy preserved", localPath))
+					continue
+				}
+				if err := os.MkdirAll(localAbs, 0o755); err != nil {
+					return err
+				}
+				if err := runSync(upstreamAbs+string(os.PathSeparator), localAbs+string(os.PathSeparator)); err != nil {
+					return err
+				}
+				logSuccess(fmt.Sprintf("Updated %s", localPath))
+			}
+			if selectedPath != "" && matched == 0 {
+				return fmt.Errorf("no Crossfile patch found for path: %s", selectedPath)
+			}
+			if updated == 0 {
+				logInfo("No patches updated.")
+				return nil
+			}
+			logInfo("Review the differences:")
+			fmt.Println("  git cross diff        # pick a patch with fzf and see the diff")
+			fmt.Println("  git cross compare     # pick a patch and update it (dirdiff tool)")
 			return nil
-		}
-
-		logInfo(fmt.Sprintf("Opening shell in %s", targetDir))
-		c := exec.Command(shell)
-		c.Dir = targetDir
-		c.Stdin = os.Stdin
-		c.Stdout = os.Stdout
-		c.Stderr = os.Stderr
-		return c.Run()
+		},
 	}
 
-	// Shared logic for cd/wt commands — only the target field differs
+	compareCmd := &cobra.Command{
+		Use:           "compare [path]",
+		Aliases:       []string{"cmp"},
+		Short:         "Open the configured directory comparison tool for a patch",
+		GroupID:       "repo",
+		Args:          cobra.MaximumNArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			meta, err := loadMetadata()
+			if err != nil {
+				return err
+			}
+			var patch *Patch
+			if len(args) > 0 {
+				relPath, err := resolvePathToRepoRelative(args[0])
+				if err != nil {
+					return err
+				}
+				patch = findPatchForPath(meta, relPath)
+			} else {
+				patch, err = findPatchForPathFromCWD(meta)
+				if err != nil {
+					return err
+				}
+			}
+			if patch == nil {
+				selected, serr := selectPatchInteractive(&meta)
+				if serr != nil { // fzf missing
+					if rerr := printPatchRows("fzf is not installed; cd into a patched directory first or pass a path. Patches (local_path <TAB> worktree):"); rerr != nil {
+						return rerr
+					}
+					return errPatchNotFound
+				}
+				if selected == nil {
+					return nil // cancelled
+				}
+				patch = selected
+			}
+			root, err := getRepoRoot()
+			if err != nil {
+				return err
+			}
+			return runDiffTool(root,
+				filepath.Join(root, patch.Worktree, patch.RemotePath),
+				filepath.Join(root, patch.LocalPath))
+		},
+	}
+
+	// Shared logic for cd/wt commands — only the target field differs.
+	// Prints the selected/resolved absolute path to stdout; the caller cds via
+	// `cd "$(git cross cd)"` (a child process cannot change the parent shell).
 	makeDirCmd := func(use, short, long, target string) *cobra.Command {
 		return &cobra.Command{
 			Use: use, Short: short, Long: long,
+			SilenceErrors: true, SilenceUsage: true,
+			GroupID: "inspect",
 			RunE: func(cmd *cobra.Command, args []string) error {
-				meta, _ := loadMetadata()
-				if len(meta.Patches) == 0 {
-					fmt.Println("No patches configured.")
-					return nil
-				}
-				if len(args) > 0 {
-					return openShellInDir(strings.TrimSpace(args[0]), target)
-				}
-				selected, err := selectPatchInteractive(&meta)
+				meta, err := loadMetadata()
 				if err != nil {
-					logInfo("fzf not available. Showing patch list; rerun with a path.")
-					table := tablewriter.NewWriter(os.Stdout)
-					table.Header("REMOTE", "REMOTE PATH", "LOCAL PATH")
-					for _, p := range meta.Patches {
-						table.Append(p.Remote, p.RemotePath, p.LocalPath)
+					return err
+				}
+				if len(meta.Patches) == 0 {
+					logInfo("No patches configured.")
+					return nil
+				}
+				var patch *Patch
+				if len(args) > 0 {
+					arg := strings.TrimSpace(args[0])
+					relPath, rerr := resolvePathToRepoRelative(arg)
+					if rerr != nil {
+						return rerr
 					}
-					table.Render()
-					return nil
+					patch = findPatchForPath(meta, relPath)
+					if patch == nil {
+						cleanArg := filepath.ToSlash(filepath.Clean(arg))
+						for i := range meta.Patches {
+							if meta.Patches[i].LocalPath == cleanArg {
+								patch = &meta.Patches[i]
+								break
+							}
+						}
+					}
+					if patch == nil {
+						if err := printPatchRows("No patch detected; available patches (local_path <TAB> worktree):"); err != nil {
+							return err
+						}
+						return errPatchNotFound
+					}
+				} else {
+					// No path: CWD auto-detect, then fzf, then rows+hint.
+					if detected, derr := findPatchForPathFromCWD(meta); derr == nil && detected != nil {
+						patch = detected
+					} else {
+						selected, err := selectPatchInteractive(&meta)
+						if err != nil { // fzf not available
+							if rerr := printPatchRows("fzf is not installed; cd manually, e.g. `cd <local_path>` or `cd <worktree>`. Destinations (local_path <TAB> worktree):"); rerr != nil {
+								return rerr
+							}
+							return errPatchNotFound
+						}
+						if selected == nil {
+							return nil // no selection made (ESC)
+						}
+						patch = selected
+					}
 				}
-				if selected == nil {
-					logInfo("No selection made.")
-					return nil
-				}
-				targetPath := selected.LocalPath
+				targetPath := patch.LocalPath
 				if target == "worktree" {
-					targetPath = selected.Worktree
+					targetPath = patch.Worktree
 				}
-				relPath := getRelativePath(targetPath)
-				if err := copyToClipboard(relPath); err != nil {
-					return fmt.Errorf("failed to copy to clipboard: %v", err)
+				root, err := getRepoRoot()
+				if err != nil {
+					return err
 				}
-				logSuccess(fmt.Sprintf("Path copied to clipboard: %s", relPath))
+				abs := filepath.Join(root, targetPath)
+				if _, err := os.Stat(abs); os.IsNotExist(err) {
+					return fmt.Errorf("%s not found: %s", target, targetPath)
+				}
+				if dry != "" {
+					fmt.Printf("%s cd %s\n", dry, abs)
+					return nil
+				}
+				fmt.Println(abs) // stdout contract: path only
 				return nil
 			},
 		}
 	}
 
 	cdCmd := makeDirCmd("cd [path]",
-		"Open a shell in the patch local_path (for editing files)",
-		"Open a shell in the patch local_path (for editing files).\n\nWith path: opens subshell in the specified local_path directory.\nWithout path: uses fzf to select a patch, then copies the path to clipboard.",
+		"Print a patch local_path (use the crosscd wrapper for a real cd)",
+		"Print the absolute path of a patch local_path to stdout.\n\nRunning this directly only prints a path: a child process cannot change the caller's shell, so without a wrapper the cd happens in a throwaway sub-shell. For a real directory change use the 'crosscd' wrapper:\n  eval \"$(git cross completion)\"    # bash/zsh; then: crosscd [path]\n  git cross completion fish | source  # fish\nAdd a custom alias if you like (e.g. alias gccd=crosscd).\n\nWith path: prints the specified local_path.\nWithout path: auto-detects the current patch from the working directory, otherwise uses fzf to select one.",
 		"local_path")
 
 	wtCmd := makeDirCmd("wt [path]",
-		"Open a shell in the patch worktree (for working with git history)",
-		"Open a shell in the patch worktree (for working with git history).\n\nWith path: opens subshell in the specified worktree directory.\nWithout path: uses fzf to select a patch, then copies the path to clipboard.",
+		"Print a patch worktree path (use the crosswt wrapper for a real cd)",
+		"Print the absolute path of a patch worktree to stdout.\n\nRunning this directly only prints a path: a child process cannot change the caller's shell, so without a wrapper the cd happens in a throwaway sub-shell. For a real directory change use the 'crosswt' wrapper:\n  eval \"$(git cross completion)\"    # bash/zsh; then: crosswt [path]\n  git cross completion fish | source  # fish\nAdd a custom alias if you like (e.g. alias gcwt=crosswt).\n\nWith path: prints the specified worktree.\nWithout path: auto-detects the current patch from the working directory, otherwise uses fzf to select one.",
 		"worktree")
 
-	listCmd := &cobra.Command{
-		Use:   "list",
-		Short: "Show all configured patches and remotes",
+	// Hidden: kept for backwards compatibility. `completion` is the visible
+	// entry point (it also emits the completion scripts).
+	shellInitCmd := &cobra.Command{
+		Use:     "shell-init [fish|bash|zsh]",
+		Short:   "Print shell functions that cd into patches and worktrees",
+		GroupID: "repo",
+		Hidden:  true,
+		Args:    cobra.MaximumNArgs(1),
+		Long: `Print just the shell functions (no completion scripts). Kept for
+backwards compatibility; prefer 'git cross completion'.
+
+  fish:      git cross completion fish | source
+  bash/zsh:  eval "$(git cross completion)"`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			meta, _ := loadMetadata()
+			shell, err := resolveShell(args)
+			if err != nil {
+				return err
+			}
+			switch shell {
+			case "fish":
+				fmt.Print(fishShellInit)
+			case "bash", "zsh":
+				fmt.Print(posixShellInit)
+			default:
+				return fmt.Errorf("unsupported shell %q for shell functions (supported: fish, bash, zsh)", shell)
+			}
+			return nil
+		},
+	}
+
+	completionCmd := &cobra.Command{
+		Use:     "completion [fish|bash|zsh|powershell]",
+		Short:   "Print shell completions and cd wrappers to evaluate",
+		GroupID: "repo",
+		Args:    cobra.MaximumNArgs(1),
+		Long: `Print a completion script for the requested shell, followed by the
+'crosscd' / 'crosswt' functions that perform a real cd. A child process cannot
+change the caller's working directory by itself, so these wrappers run the
+command and cd into the path it prints.
+
+  fish:      git cross completion fish | source   # or just: git cross completion | source
+  bash/zsh:  eval "$(git cross completion)"       # or: git cross completion bash
+
+The shell defaults to the basename of $SHELL when not given. powershell gets
+completions only (no cd wrappers). After that, 'crosscd [path]' cd's into the
+local copy and 'crosswt [path]' into the sparse worktree, with the same
+optional path argument and fzf selection as the git-cross commands.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			shell, err := resolveShell(args)
+			if err != nil {
+				return err
+			}
+			switch shell {
+			case "fish":
+				if err := rootCmd.GenFishCompletion(os.Stdout, true); err != nil {
+					return err
+				}
+				fmt.Print("\n", fishShellInit)
+			case "bash":
+				if err := rootCmd.GenBashCompletionV2(os.Stdout, true); err != nil {
+					return err
+				}
+				fmt.Print("\n", posixShellInit)
+			case "zsh":
+				if err := rootCmd.GenZshCompletion(os.Stdout); err != nil {
+					return err
+				}
+				fmt.Print("\n", posixShellInit)
+			case "powershell", "pwsh":
+				if err := rootCmd.GenPowerShellCompletionWithDesc(os.Stdout); err != nil {
+					return err
+				}
+			default:
+				return fmt.Errorf("unsupported shell %q (supported: %s)", shell, supportedShells)
+			}
+			return nil
+		},
+	}
+
+	listCmd := &cobra.Command{
+		Use:     "list",
+		Short:   "Show all configured patches and remotes",
+		GroupID: "repo",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			raw, _ := cmd.Flags().GetBool("raw")
+			noHeader, _ := cmd.Flags().GetBool("no-header")
+			meta, err := loadMetadata()
+			if err != nil {
+				return err
+			}
 
 			// Collect unique remote names from patches
 			usedRemotes := make(map[string]bool)
@@ -1178,56 +1960,101 @@ func main() {
 				usedRemotes[p.Remote] = true
 			}
 
+			// Map to track fetch/push URLs per remote for deduplication
+			type remoteInfo struct {
+				fetch string
+				push  string
+			}
+			remoteMap := make(map[string]*remoteInfo)
+
 			repo, err := git.Open(".")
 			if err == nil && len(usedRemotes) > 0 {
 				remotes, _ := git.NewCommand("remote", "-v").RunInDir(repo.Path())
-				if len(remotes) > 0 {
-					logInfo("Configured Remotes:")
-					remotesStr := strings.TrimSpace(string(remotes))
-					lines := strings.Split(remotesStr, "\n")
-
-					// Map to track fetch/push URLs per remote for deduplication
-					type remoteInfo struct {
-						fetch string
-						push  string
+				for _, line := range strings.Split(strings.TrimSpace(string(remotes)), "\n") {
+					fields := strings.Fields(line)
+					if len(fields) < 3 {
+						continue
 					}
-					remoteMap := make(map[string]*remoteInfo)
+					name := fields[0]
+					url := fields[1]
+					rtype := fields[2] // (fetch) or (push)
 
-					for _, line := range lines {
-						fields := strings.Fields(line)
-						if len(fields) >= 3 {
-							name := fields[0]
-							url := fields[1]
-							rtype := fields[2] // (fetch) or (push)
-
-							if !usedRemotes[name] {
-								continue
-							}
-
-							if remoteMap[name] == nil {
-								remoteMap[name] = &remoteInfo{}
-							}
-							if strings.Contains(rtype, "fetch") {
-								remoteMap[name].fetch = url
-							} else if strings.Contains(rtype, "push") {
-								remoteMap[name].push = url
-							}
-						}
+					if !usedRemotes[name] {
+						continue
 					}
 
-					table := tablewriter.NewWriter(os.Stdout)
-					table.Header("NAME", "URL")
-					for name, info := range remoteMap {
-						if info.fetch == info.push || info.push == "" {
-							table.Append(name, info.fetch)
-						} else {
-							table.Append(name, info.fetch+" (fetch)")
-							table.Append(name, info.push+" (push)")
-						}
+					if remoteMap[name] == nil {
+						remoteMap[name] = &remoteInfo{}
 					}
-					table.Render()
-					fmt.Println()
+					if strings.Contains(rtype, "fetch") {
+						remoteMap[name].fetch = url
+					} else if strings.Contains(rtype, "push") {
+						remoteMap[name].push = url
+					}
 				}
+			}
+
+			// Deterministic remote order in both output modes.
+			remoteNames := make([]string, 0, len(remoteMap))
+			for name := range remoteMap {
+				remoteNames = append(remoteNames, name)
+			}
+			sort.Strings(remoteNames)
+
+			if raw {
+				// Machine-readable rows; aligned on a TTY, TAB-separated when piped.
+				var rows [][]string
+				if len(remoteNames) > 0 {
+					if !noHeader {
+						rows = append(rows, []string{"REMOTE_NAME", "REMOTE_URL"})
+					}
+					for _, name := range remoteNames {
+						info := remoteMap[name]
+						if info.fetch == "" {
+							continue
+						}
+						rows = append(rows, []string{name, info.fetch})
+						if info.push != "" && info.push != info.fetch {
+							rows = append(rows, []string{name, info.push})
+						}
+					}
+					printRawRows(rows)
+				}
+				if len(meta.Patches) == 0 {
+					fmt.Fprintln(os.Stderr, "No patches configured.")
+					return nil
+				}
+				rows = nil
+				if !noHeader {
+					rows = append(rows, []string{"REMOTE", "REMOTE_PATH", "LOCAL_PATH", "WORKTREE", "BRANCH"})
+				}
+				for _, p := range meta.Patches {
+					rows = append(rows, []string{p.Remote, p.RemotePath, p.LocalPath, p.Worktree, p.Branch})
+				}
+				printRawRows(rows)
+				return nil
+			}
+
+			if len(remoteNames) > 0 {
+				logInfo("Configured Remotes:")
+				table := tablewriter.NewWriter(os.Stdout)
+				if !noHeader {
+					table.Header("REMOTE NAME", "REMOTE URL")
+				}
+				for _, name := range remoteNames {
+					info := remoteMap[name]
+					if info.fetch == "" {
+						continue
+					}
+					if info.fetch == info.push || info.push == "" {
+						table.Append(name, info.fetch)
+					} else {
+						table.Append(name, info.fetch+" (fetch)")
+						table.Append(name, info.push+" (push)")
+					}
+				}
+				table.Render()
+				fmt.Println()
 			}
 
 			if len(meta.Patches) == 0 {
@@ -1236,18 +2063,23 @@ func main() {
 			}
 			logInfo("Configured Patches:")
 			table := tablewriter.NewWriter(os.Stdout)
-			table.Header("REMOTE", "REMOTE PATH", "LOCAL PATH", "WORKTREE")
+			if !noHeader {
+				table.Header("REMOTE", "REMOTE PATH", "LOCAL PATH", "WORKTREE", "BRANCH")
+			}
 			for _, p := range meta.Patches {
-				table.Append(p.Remote, p.RemotePath, p.LocalPath, p.Worktree)
+				table.Append(p.Remote, p.RemotePath, p.LocalPath, p.Worktree, p.Branch)
 			}
 			table.Render()
 			return nil
 		},
 	}
+	listCmd.Flags().Bool("raw", false, "machine-readable output: tab-separated rows, no borders, no banners")
+	listCmd.Flags().Bool("no-header", false, "omit header line (applies to table mode and --raw)")
 
 	statusCmd := &cobra.Command{
-		Use:   "status",
-		Short: "Show patch status",
+		Use:     "status",
+		Short:   "Show patch status",
+		GroupID: "repo",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			meta, _ := loadMetadata()
 			if len(meta.Patches) == 0 {
@@ -1273,18 +2105,17 @@ func main() {
 				if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
 					diff = "Missing WT"
 				} else {
-					hasOverrides, err := hasCrossOverrides(filepath.Join(root, p.LocalPath))
+					localAbsPath := filepath.Join(root, p.LocalPath)
+					hasOverrides, err := hasCrossOverrides(localAbsPath)
 					if err != nil {
 						return fmt.Errorf("failed to read .crossignore for %s: %w", p.LocalPath, err)
 					}
 					if hasOverrides {
 						diff = "Override"
 					} else {
-						// Quick diff check - use absolute paths
+						// Quick diff check — .git excluded, checksum-based.
 						upstreamPath := filepath.Join(worktreePath, p.RemotePath)
-						localPath := filepath.Join(root, p.LocalPath)
-						c := exec.Command("git", "diff", "--no-index", "--quiet", upstreamPath, localPath)
-						if err := c.Run(); err != nil {
+						if differ, derr := directoriesDiffer(upstreamPath, localAbsPath); derr == nil && differ {
 							diff = "Modified"
 						}
 					}
@@ -1306,7 +2137,6 @@ func main() {
 					}
 
 					// Also check conflicts in local path (from failed stash restore)
-					localAbsPath := filepath.Join(root, p.LocalPath)
 					if out, _ := git.NewCommand("ls-files", "-u", localAbsPath).RunInDir(root); len(out) > 0 {
 						conflicts = "YES"
 					}
@@ -1318,13 +2148,16 @@ func main() {
 	}
 
 	diffCmd := &cobra.Command{
-		Use:   "diff [path]",
-		Short: "Show changes between local and upstream",
+		Use:           "diff [path]",
+		Short:         "Show changes between local and upstream",
+		GroupID:       "inspect",
+		SilenceErrors: true,
+		SilenceUsage:  true,
 		Long: `Show diff between local vendored files and their upstream worktree source.
 
 When run without a path argument, auto-detects the current patch from the
-working directory: if CWD is inside a patched local_path, shows only that
-patch's diff. Otherwise shows diffs for all patches.`,
+working directory. Outside a patched directory it uses fzf to select a patch;
+if fzf is unavailable it prints the available patches.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := ""
 			if len(args) > 0 {
@@ -1335,20 +2168,30 @@ patch's diff. Otherwise shows diffs for all patches.`,
 				}
 				path = resolved
 			} else {
-				// No explicit path: detect from CWD
-				cwd, err := os.Getwd()
-				if err == nil {
-					root, _ := getRepoRoot()
-					meta, _ := loadMetadata()
-					for _, p := range meta.Patches {
-						absLocal := filepath.Join(root, p.LocalPath)
-						if strings.HasPrefix(cwd+string(os.PathSeparator), absLocal+string(os.PathSeparator)) ||
-							cwd == absLocal {
-							path = p.LocalPath
-							logInfo(fmt.Sprintf("Auto-detected patch from CWD: %s", path))
-							break
+				// No explicit path: CWD auto-detect, then fzf, then rows+hint
+				meta, err := loadMetadata()
+				if err != nil {
+					return err
+				}
+				patch, perr := findPatchForPathFromCWD(meta)
+				if perr == nil && patch != nil {
+					path = patch.LocalPath
+					logInfo(fmt.Sprintf("Auto-detected patch from CWD: %s", path))
+				} else if len(meta.Patches) == 0 {
+					logInfo("No patches configured.")
+					return nil
+				} else {
+					selected, serr := selectPatchInteractive(&meta)
+					if serr != nil { // fzf missing
+						if rerr := printPatchRows("fzf is not installed; cd into a patched directory first or pass a path. Patches (local_path <TAB> worktree):"); rerr != nil {
+							return rerr
 						}
+						return errPatchNotFound
 					}
+					if selected == nil {
+						return nil // cancelled
+					}
+					path = selected.LocalPath
 				}
 			}
 
@@ -1358,7 +2201,10 @@ patch's diff. Otherwise shows diffs for all patches.`,
 				return fmt.Errorf("failed to get repo root: %w", err)
 			}
 
-			meta, _ := loadMetadata()
+			meta, err := loadMetadata()
+			if err != nil {
+				return err
+			}
 			found := false
 			for _, p := range meta.Patches {
 				if path != "" && p.LocalPath != path {
@@ -1386,23 +2232,23 @@ patch's diff. Otherwise shows diffs for all patches.`,
 						fmt.Printf("git diff --no-index %q %q\n", filepath.Join(upstreamPath, override), filepath.Join(localPath, override))
 					}
 				} else {
-					c := exec.Command("git", "diff", "--no-index", upstreamPath, localPath)
-					c.Stdout = os.Stdout
-					c.Stderr = os.Stderr
-					// git diff --no-index returns 1 if there are differences, which cobra might treat as error
-					_ = c.Run()
+					runNoIndexDiff(upstreamPath, localPath)
 				}
 			}
-			if !found && path != "" {
-				return fmt.Errorf("patch not found for path: %s", path)
+			if !found {
+				if err := printPatchRows("No patch detected; available patches (local_path <TAB> worktree):"); err != nil {
+					return err
+				}
+				return errPatchNotFound
 			}
 			return nil
 		},
 	}
 
 	replayCmd := &cobra.Command{
-		Use:   "replay",
-		Short: "Re-execute all Crossfile commands",
+		Use:    "replay",
+		Short:  "Re-execute all Crossfile commands",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			logInfo("Replaying Crossfile...")
 			path, err := getCrossfilePath()
@@ -1433,8 +2279,9 @@ patch's diff. Otherwise shows diffs for all patches.`,
 	var pushMessage string
 
 	pushCmd := &cobra.Command{
-		Use:   "push [path]",
-		Short: "Push changes back upstream",
+		Use:    "push [path]",
+		Short:  "Push changes back upstream",
+		Hidden: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := ""
 			if len(args) > 0 {
@@ -1526,9 +2373,10 @@ patch's diff. Otherwise shows diffs for all patches.`,
 	pushCmd.Flags().StringVarP(&pushMessage, "message", "m", "", "Commit message")
 
 	execCmd := &cobra.Command{
-		Use:   "exec [cmd]",
-		Short: "Run arbitrary command",
-		Args:  cobra.MinimumNArgs(1),
+		Use:    "exec [cmd]",
+		Short:  "Run arbitrary command",
+		Hidden: true,
+		Args:   cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fullCmd := strings.Join(args, " ")
 			logInfo("Executing custom command: " + fullCmd)
@@ -1540,9 +2388,17 @@ patch's diff. Otherwise shows diffs for all patches.`,
 	}
 
 	initCmd := &cobra.Command{
-		Use:   "init",
-		Short: "Initialize a new project with Crossfile",
+		Use:     "init",
+		Short:   "Initialize a new project with Crossfile",
+		GroupID: "repo",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if root, rerr := getRepoRoot(); rerr == nil {
+				if ensureRerere(root) {
+					logInfo("Enabled rerere: conflict resolutions are remembered for later updates.")
+				} else {
+					logInfo("rerere already enabled: conflict resolutions are reused.")
+				}
+			}
 			path := "Crossfile"
 			if _, err := os.Stat(path); err == nil {
 				logInfo("Crossfile already exists.")
@@ -1553,17 +2409,38 @@ patch's diff. Otherwise shows diffs for all patches.`,
 				return err
 			}
 			logSuccess("Crossfile initialized.")
+			logInfo(shellIntegrationHint())
 			return nil
 		},
 	}
 
 	removeCmd := &cobra.Command{
-		Use:   "remove [path]",
-		Short: "Remove a patch and its worktree",
-		Args:  cobra.ExactArgs(1),
+		Use:           "remove [path]",
+		Short:         "Remove a patch and its worktree",
+		GroupID:       "patches",
+		Args:          cobra.ExactArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			meta, _ := loadMetadata()
-			if err := removeSinglePatch(&meta, args[0]); err != nil {
+			meta, err := loadMetadata()
+			if err != nil {
+				return err
+			}
+			localPath := filepath.ToSlash(filepath.Clean(strings.TrimSpace(args[0])))
+			found := false
+			for _, p := range meta.Patches {
+				if p.LocalPath == localPath {
+					found = true
+					break
+				}
+			}
+			if !found {
+				if err := printPatchRows("No patch detected; available patches (local_path <TAB> worktree):"); err != nil {
+					return err
+				}
+				return errPatchNotFound
+			}
+			if err := removeSinglePatch(&meta, localPath); err != nil {
 				return err
 			}
 			if err := saveMetadata(meta); err != nil {
@@ -1575,9 +2452,10 @@ patch's diff. Otherwise shows diffs for all patches.`,
 	}
 
 	pruneCmd := &cobra.Command{
-		Use:   "prune [remote]",
-		Short: "Prune unused remotes and worktrees, or remove all patches for a specific remote",
-		Args:  cobra.MaximumNArgs(1),
+		Use:     "prune [remote]",
+		Short:   "Prune unused remotes and worktrees, or remove all patches for a specific remote",
+		GroupID: "patches",
+		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			meta, _ := loadMetadata()
 
@@ -1694,7 +2572,10 @@ patch's diff. Otherwise shows diffs for all patches.`,
 		},
 	}
 
-	rootCmd.AddCommand(useCmd, patchCmd, syncCmd, removeCmd, pruneCmd, cdCmd, wtCmd, listCmd, statusCmd, diffCmd, replayCmd, pushCmd, execCmd, initCmd)
+	// Retain superseded implementations in source as internal reference, but do
+	// not expose them as supported commands.
+	_, _, _, _ = syncCmd, replayCmd, pushCmd, execCmd
+	rootCmd.AddCommand(useCmd, patchCmd, removeCmd, pruneCmd, initCmd, completionCmd, listCmd, statusCmd, updateCmd, compareCmd, shellInitCmd, cdCmd, wtCmd, diffCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

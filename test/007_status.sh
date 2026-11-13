@@ -78,7 +78,7 @@ git commit -m "Upstream update"
 popd >/dev/null
 
 # We need to fetch in the worktree to see "behind"
-# 'just cross sync' would pull and update, making it synced again.
+# 'just cross update' pulls and installs, making it synced again.
 # We manually fetch in the worktree to simulate the state where we know about updates but haven't synced.
 # First, identify worktree
 wt_dir=$(find .cross/worktrees -maxdepth 1 -name "upstream_*" | head -n 1)
@@ -93,24 +93,7 @@ check_status "vendor/docs" "Clean.*1 behind"
 # Reset upstream to match local first (simplification)
 # or just make a new commit in WT that is ahead of upstream/master
 # We are currently 1 behind. Let's sync to get even.
-just cross sync vendor/docs
-
-# After sync, if there are conflicts from stash restore, clean them up
-# The sync may leave merge conflict markers which need resolution
-if [ -n "$(git ls-files -u vendor/docs 2>/dev/null)" ]; then
-    # Resolve by accepting all changes
-    git add vendor/docs/* 2>/dev/null || true
-    git stash drop 2>/dev/null || true
-fi
-# Also clean up any staged but uncommitted changes
-git reset HEAD vendor/docs 2>/dev/null || true
-git checkout vendor/docs 2>/dev/null || true
-
-# Force resync to ensure files match
-wt_dir_fixed=$(find .cross/worktrees -maxdepth 1 -name "upstream_*" | head -n 1)
-if [ -n "$wt_dir_fixed" ]; then
-    rsync -a --delete "$wt_dir_fixed/docs/" "vendor/docs/"
-fi
+just cross update vendor/docs
 
 check_status "vendor/docs" "Clean.*Synced"
 
@@ -128,5 +111,27 @@ check_status "vendor/docs" ".*1 ahead"
 # ------------------------------------------------------------------
 rm -rf "$wt_dir"
 check_status "vendor/docs" "Missing WT"
+
+# ------------------------------------------------------------------
+# Test 6: Whole-repo patch (.git pointer must not look like a local change)
+# ------------------------------------------------------------------
+log_header "Testing whole-repo patch status stays Clean..."
+setup_sandbox
+cd "$SANDBOX"
+
+whole_upstream=$(create_upstream "whole-status")
+pushd "$whole_upstream" >/dev/null
+mkdir -p nested
+echo "nested content" > nested/file.txt
+git add nested/file.txt
+git commit -m "Add nested content" -q
+popd >/dev/null
+
+just cross use whole "file://$whole_upstream"
+just cross patch "whole:." ./whole
+
+# The sparse worktree root contains a .git pointer that the local copy never
+# has; status must still report Clean.
+check_status "whole" "Clean.*Synced"
 
 echo "Test 007 passed!"

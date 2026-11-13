@@ -1,5 +1,10 @@
 # Feature Specification: cross command test strategy
 
+> Historical specification retained for design reference. Its Rust parity,
+> executable Crossfile hooks, `replay`, and legacy `sync` requirements are not
+> part of the supported workflow. Current supported implementations are Go and
+> Just/Fish; `update` interprets declarative `use` and `patch` entries only.
+
 **Feature Branch**: `001-cross-test-strategy`  
 **Created**: 2025-11-28  
 **Implementation**: Rust, Go, Justfile + Fish (Parity complete)
