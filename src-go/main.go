@@ -724,24 +724,38 @@ func removeSinglePatch(meta *Metadata, localPath string) error {
 	if patch == nil {
 		return fmt.Errorf("patch not found for path: %s", localPath)
 	}
+	// Capture before the metadata slice is mutated below.
+	worktreePath := patch.Worktree
 
 	logInfo(fmt.Sprintf("Removing patch at %s...", localPath))
 
-	// 1. Remove worktree
-	if _, err := os.Stat(patch.Worktree); err == nil {
-		logInfo(fmt.Sprintf("Removing git worktree at %s...", patch.Worktree))
-		if _, err := git.NewCommand("worktree", "remove", "--force", patch.Worktree).RunInDir("."); err != nil {
-			logError(fmt.Sprintf("Failed to remove worktree: %v", err))
-		}
-	}
-
-	// 2. Remove from Crossfile
+	// 1. Remove from Crossfile
 	logInfo("Removing from Crossfile...")
 	removeFromCrossfile(localPath)
 
-	// 3. Remove from metadata
+	// 2. Remove from metadata
 	logInfo("Updating metadata...")
 	meta.Patches = append(meta.Patches[:patchIdx], meta.Patches[patchIdx+1:]...)
+
+	// 3. Remove the worktree only when no other patch still references it:
+	//    several local dirs may be patched from the same upstream source and
+	//    therefore share one worktree.
+	stillUsed := 0
+	for _, p := range meta.Patches {
+		if p.Worktree == worktreePath {
+			stillUsed++
+		}
+	}
+	if stillUsed == 0 {
+		if _, err := os.Stat(worktreePath); err == nil {
+			logInfo(fmt.Sprintf("Removing git worktree at %s...", worktreePath))
+			if _, err := git.NewCommand("worktree", "remove", "--force", worktreePath).RunInDir("."); err != nil {
+				logError(fmt.Sprintf("Failed to remove worktree: %v", err))
+			}
+		}
+	} else {
+		logInfo(fmt.Sprintf("Keeping worktree at %s (still used by %d patch(es)).", worktreePath, stillUsed))
+	}
 
 	// 4. Remove local directory (with root guard)
 	if localPath != "." && localPath != "" {

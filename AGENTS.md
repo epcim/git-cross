@@ -192,7 +192,7 @@ Tests 001-007 form a chain for Just/Fish (001 is sourced by 002, etc.). Test 009
 
 ## Implementation Details
 
-- **Hidden worktrees**: `.cross/worktrees/<remote>_<hash>` (verified in `src-go/main.go`; Justfile.cross uses the same path).
+- **Hidden worktrees**: `.cross/worktrees/<remote>_<hash>`, where the hash covers `remote`, `remote_path`, and `branch` only — the local destination is not part of it, so one upstream source patched into several local dirs shares a single worktree. Metadata keeps one entry per `local_path` (dedup by `local_path`, never by worktree id); `remove` deletes the worktree only when no remaining patch references it (covered by test 023 for Go and Just).
 - **`.git` exclusion**: a worktree root contains a `.git` pointer file that never exists in the local copy (rsync uses `--exclude .git`). Boolean tree comparisons use `rsync -rlcn --delete --exclude=.git --itemize-changes`; the visual diff (`git diff --no-index`) is run against a temporary `.git`-free mirror of the worktree, because pathspec excludes like `:(exclude).git` are rejected by older git versions with a usage error. Without both exclusions, whole-repo patches always look modified.
 - **Sparse checkout**: `git sparse-checkout init --no-cone` + `git sparse-checkout set <path>/` + `git read-tree -mu HEAD`. The trailing `/` on the pattern is required for reliable directory matching in `--no-cone` mode on newer Git versions (2.43+). `read-tree -mu HEAD` explicitly materializes the worktree (bare `git checkout` can no-op after `--no-checkout`).
 - **Rsync**: `rsync -av --delete --exclude .git` for worktree-to-local sync. `--delete` removes files locally that were deleted upstream.

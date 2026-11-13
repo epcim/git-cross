@@ -282,6 +282,13 @@ git cross patch <remote>:<path> [local_dest]
 
 Create or reuse a hidden worktree, sparse-check out the upstream path, and sync it into your local directory.
 
+The worktree is keyed by `remote:branch:path`, not by the local destination, so the same upstream source can be materialized into several local directories — they share one `.cross/worktrees/` checkout while keeping one metadata entry each:
+
+```bash
+git cross patch app:src vendor/app
+git cross patch app:src vendor/app-copy   # same worktree, second local copy
+```
+
 ### `update`
 
 ```bash

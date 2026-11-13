@@ -59,7 +59,33 @@ if [ -n "$GO_BIN" ]; then
     assert_metadata_normalized
     log_success "metadata stores local_path without './'"
 
-    git config cross.diffTool 'echo TOOL {left} {right}'
+    log_header "023: one upstream source patched into two local dirs (Go)"
+    "$GO_BIN" patch "up:main:pkg" vendor/a >/dev/null
+    "$GO_BIN" patch "up:main:pkg" vendor/b >/dev/null
+    assert_dir_exists "vendor/a"
+    assert_dir_exists "vendor/b"
+    [ -f vendor/a/pkg.txt ] || fail "vendor/a was not synced"
+    [ -f vendor/b/pkg.txt ] || fail "vendor/b was not synced"
+    wt_a=$(jq -r '.patches[] | select(.local_path == "vendor/a") | .worktree' .cross/metadata.json)
+    wt_b=$(jq -r '.patches[] | select(.local_path == "vendor/b") | .worktree' .cross/metadata.json)
+    [ -n "$wt_a" ] || fail "metadata lost the vendor/a entry for a shared upstream source"
+    [ -n "$wt_b" ] || fail "metadata lost the vendor/b entry"
+    [ "$wt_a" = "$wt_b" ] || fail "both local dirs should share one worktree (got '$wt_a' vs '$wt_b')"
+    grep -q "vendor/a" Crossfile || fail "Crossfile missing the vendor/a declaration"
+    grep -q "vendor/b" Crossfile || fail "Crossfile missing the vendor/b declaration"
+    log_success "two local dirs share one worktree and two metadata entries"
+
+    log_header "023: removing one local dir keeps the shared worktree (Go)"
+    "$GO_BIN" remove vendor/a >/dev/null 2>&1 || fail "remove vendor/a failed"
+    [ ! -d vendor/a ] || fail "remove vendor/a left the local directory behind"
+    [ -d "$wt_a" ] || fail "removing vendor/a deleted a worktree still used by vendor/b"
+    git -C "$wt_a" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+        || fail "the shared worktree is no longer a valid worktree after remove"
+    [ "$(jq -r '.patches[] | select(.local_path == "vendor/b") | .worktree' .cross/metadata.json)" = "$wt_a" ] \
+        || fail "vendor/b lost its worktree entry"
+    log_success "shared worktree survives removing one of its local dirs"
+
+    git config cross.dirdifftool 'echo TOOL {left} {right}'
     nofzf_path=$(make_path_without_fzf "$SANDBOX/no-fzf-bin")
     wt_sub=$(jq -r '.patches[] | select(.local_path == "sub") | .worktree' .cross/metadata.json)
     wt_sub_abs=$(cd "$wt_sub" && pwd -P)
@@ -117,7 +143,7 @@ if [ -n "$GO_BIN" ]; then
     out=$("$GO_BIN" diff ./sub 2>&1) || true
     assert_contains "$out" "local sub change"
 
-    git config --unset cross.diffTool || true
+    git config --unset cross.dirdifftool || true
 
     log_header "023: remove ./sub2 resolves the normalized entry"
     "$GO_BIN" remove ./sub2 >/dev/null 2>&1 || fail "remove ./sub2 should resolve the stored 'sub2' path"
@@ -156,8 +182,36 @@ if command -v fish >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -
     assert_metadata_normalized
     log_success "Just metadata stores local_path without './'"
 
+    log_header "023: one upstream source patched into two local dirs (Just/Fish)"
+    just cross patch "up:main:pkg" vendor/a >/dev/null
+    just cross patch "up:main:pkg" vendor/b >/dev/null
+    assert_dir_exists "vendor/a"
+    assert_dir_exists "vendor/b"
+    [ -f vendor/a/pkg.txt ] || fail "Just vendor/a was not synced"
+    [ -f vendor/b/pkg.txt ] || fail "Just vendor/b was not synced"
+    wt_a=$(jq -r '.patches[] | select(.local_path == "vendor/a") | .worktree' .cross/metadata.json)
+    wt_b=$(jq -r '.patches[] | select(.local_path == "vendor/b") | .worktree' .cross/metadata.json)
+    [ -n "$wt_a" ] || fail "Just metadata lost the vendor/a entry for a shared upstream source"
+    [ -n "$wt_b" ] || fail "Just metadata lost the vendor/b entry"
+    [ "$wt_a" = "$wt_b" ] || fail "Just: both local dirs should share one worktree (got '$wt_a' vs '$wt_b')"
+    grep -q "vendor/a" Crossfile || fail "Just Crossfile missing the vendor/a declaration"
+    grep -q "vendor/b" Crossfile || fail "Just Crossfile missing the vendor/b declaration"
+    log_success "Just: two local dirs share one worktree and two metadata entries"
+
+    log_header "023: Just removing one local dir keeps the shared worktree"
+    remove_out=$(just cross remove vendor/a 2>&1) || fail "just cross remove vendor/a failed"
+    echo "$remove_out"
+    assert_contains "$remove_out" "Keeping worktree" "remove should report that the worktree is still used"
+    [ ! -d vendor/a ] || fail "Just remove vendor/a left the local directory behind"
+    [ -d "$wt_a" ] || fail "Just remove vendor/a deleted a worktree still used by vendor/b"
+    git -C "$wt_a" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+        || fail "the shared worktree is no longer a valid worktree after Just remove"
+    [ "$(jq -r '.patches[] | select(.local_path == "vendor/b") | .worktree' .cross/metadata.json)" = "$wt_a" ] \
+        || fail "Just vendor/b lost its worktree entry"
+    log_success "Just: shared worktree survives removing one of its local dirs"
+
     log_header "023: Just compare/diff/cd resolve from inside ./sub"
-    git config cross.diffTool 'echo TOOL {left} {right}'
+    git config cross.dirdifftool 'echo TOOL {left} {right}'
     pushd sub >/dev/null
     echo "local sub change" >> root.txt
     out=$(just cross compare 2>&1) || fail "Just compare inside './sub' should resolve"
@@ -183,7 +237,7 @@ if command -v fish >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -
     out=$(just cross diff 2>&1) || true
     assert_contains "$out" "local sub2 change"
     popd >/dev/null
-    git config --unset cross.diffTool || true
+    git config --unset cross.dirdifftool || true
 
     log_header "023: Just remove ./sub2 resolves the normalized entry"
     just cross remove ./sub2 >/dev/null 2>&1 || fail "Just remove ./sub2 should resolve the stored 'sub2' path"
