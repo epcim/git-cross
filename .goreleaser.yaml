@@ -4,11 +4,11 @@ project_name: git-cross
 
 before:
   hooks:
-    - go mod tidy -C src-go
+    - go mod tidy .
 
 builds:
   - id: git-cross-go
-    main: ./src-go/main.go
+    main: ./main.go
     binary: git-cross
     env:
       - CGO_ENABLED=0
