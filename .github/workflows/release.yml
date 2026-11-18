@@ -21,7 +21,9 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24.4'
-          cache-path: src-go/go.sum
+          # v0.5.3: `cache-path` is not a setup-go input (cache never restored
+          # and a warning was emitted); the valid input is cache-dependency-path.
+          cache-dependency-path: src-go/go.sum
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:

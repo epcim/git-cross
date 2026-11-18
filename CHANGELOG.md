@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+(nothing yet)
+
+## [0.5.3] - 2026-11-18
+
+### Fixed
+
+- **GitHub Actions release workflow**: the goreleaser `before` hook ran
+  `go mod tidy .`, which git rejects (`go: 'go mod tidy' accepts no
+  arguments`) — every `v*` tag build aborted with `hook failed`. The hook was
+  removed (go.sum is committed; goreleaser builds fine without tidying) and
+  the invalid `setup-go` `cache-path` input was replaced with the correct
+  `cache-dependency-path` (the cache was never restored before).
+  `.goreleaser.yaml` deprecations were cleaned up too
+  (`snapshot.name_template`, `archives.format`).
+
 ### Changed
 
 - **`cd`/`wt` are hidden from `git cross --help`** (still functional): a subprocess
@@ -15,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`git cross comp`) — and **`gx cd [path]` now actually changes directory**
   (`gx` is a shell function, so it can; `git x cd` / `git cross cd` still print the
   path + hint by design). The passthrough's missed-context hint points at `xcd`.
+- Retired planning docs removed: `specs/001-cross-test-strategy/`,
+  `specs/002-root-overlay-patching/`, `scripts/` (unimplemented fixture stub)
+  and `implementation-plan-release.md` (pre-v0.5 Rust-era plan).
+  `specs/003-gitdir-patches/` stays as the living ADR set (see `specs/README.md`).
 
 ### Fixed
 

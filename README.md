@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/epcim/git-cross/workflows/CI/badge.svg)](https://github.com/epcim/git-cross/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-0.5.1-blue.svg)](https://github.com/epcim/git-cross/blob/main/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.5.3-blue.svg)](https://github.com/epcim/git-cross/blob/main/CHANGELOG.md)
 
 `git-cross` is a small tool for pulling part of one Git repository into another and keeping it as **real files** in your tree — no submodule, no gitlink, no copying step.
 
@@ -30,10 +30,10 @@ Compared with submodules or subrepo-style flows, the tradeoff is simple: `git-cr
 
 ## Status
 
-Version **0.5.1** — a breaking release: the implementations are no longer 1:1
-(Go is the only full implementation, the Just/Fish reference carries core
-commands only, Rust was deleted), plus the `ls` DIFF and crossed-dir
-recognition fixes. The 0.5.0 architecture underneath is unchanged: crosses are
+Version **0.5.3** — the current release (0.5.1/0.5.2 were the breaking scope
+split: Go is the only full implementation, the Just/Fish reference carries core
+commands only, Rust was deleted; plus the `ls` DIFF and crossed-dir recognition
+fixes). The 0.5.0 architecture underneath is unchanged: crosses are
 a **standalone gitdir per cross with the work tree inside your repo** — no
 migration path; `.cross/` is disposable (`rm -rf .cross && git cross update`).
 See [CHANGELOG.md](CHANGELOG.md).

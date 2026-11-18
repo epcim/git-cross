@@ -1315,7 +1315,7 @@ Shell integration (defines xcd, plus the gx/cr short aliases for git cross):
 			case "-h", "--help":
 				return cmd.Help()
 			case "--version":
-				fmt.Println("git-cross version 0.5.1")
+				fmt.Println("git-cross version 0.5.3")
 				return nil
 			}
 			return gitPassthrough(args)
