@@ -5,6 +5,7 @@ testdir
 .test*
 *.log
 **/*.log
+.specify
 
 # allow
 !.github
@@ -31,7 +32,7 @@ src-rust/target
 .pi/settings.local.json
 .opencode/
 sbxenv.yaml
-opencode.yaml
+opencode.json
 
 # uncommitted backup of the pre-split full Just reference (see AGENTS.md)
 Justfile.cross.full-*
