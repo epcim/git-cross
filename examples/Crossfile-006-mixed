@@ -14,9 +14,9 @@ git cross use git-aliased https://github.com/epcim/git-cross.git
 just cross use just-impl https://github.com/epcim/git-cross.git
 
 # 4. Mixed patches
-cross patch portable:README.md vendor/docs/readme-portable.md
-git cross patch git-aliased:LICENSE vendor/docs/license-git.md
-just cross patch just-impl:AGENTS.md vendor/docs/agents-just.md
+cross set portable:README.md vendor/docs/readme-portable.md
+git cross set git-aliased:LICENSE vendor/docs/license-git.md
+just cross set just-impl:AGENTS.md vendor/docs/agents-just.md
 
 # 5. Post-patching hooks
 cross exec "echo 'Mixed replay completed successfully!'"

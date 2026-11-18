@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# Test 016: Context-aware cross diff
-# Verifies that `diff` without a path argument auto-detects the current patch
-# from CWD (when inside a patched directory), and shows all patches otherwise.
+# Test 016: context-aware diff in the v0.5.0 architecture.
+#
+# v0.5.0 has NO dedicated diff command: `git cross diff` is the git passthrough.
+#   - inside a crossed directory (or any subdirectory of one) it is
+#     `git diff` in the patch's UPSTREAM context (GIT_DIR/GIT_WORK_TREE)
+#   - at the repo root it FAILS early: there is no patch context to configure
+#     (ADR-002). It never silently diffs the primary repo.
+#   - `git cross diff <path>` is plain `git diff <path>` on the PRIMARY repo,
+#     because an explicit git pathspec is just a git argument.
 source "$(dirname "$0")/common.sh"
 
 setup_sandbox
@@ -17,180 +23,117 @@ git commit -m "Add alpha and beta" -q
 popd >/dev/null
 upstream_url="file://$upstream_path"
 
-just cross use upstream "$upstream_url"
-just cross patch upstream:src/alpha vendor/alpha
-just cross patch upstream:src/beta  vendor/beta
+just cross use upstream "$upstream_url" >/dev/null
+just cross set upstream:src/alpha vendor/alpha >/dev/null
+just cross set upstream:src/beta  vendor/beta  >/dev/null
 
-# Locally modify both patches
-echo "local alpha change" >> vendor/alpha/alpha.txt
-echo "local beta change"  >> vendor/beta/beta.txt
+# Locally modify both patches (D3 nesting: tracked files live under src/<name>/)
+echo "local alpha change" >> vendor/alpha/src/alpha/alpha.txt
+echo "local beta change"  >> vendor/beta/src/beta/beta.txt
 
-# --- Test 1: diff with explicit path → shows only that patch ---
-log_header "Test 1: diff with explicit path shows only that patch..."
-output=$(just cross diff vendor/alpha 2>&1 || true)
-echo "$output"
-if ! echo "$output" | grep -q "alpha"; then
-    fail "Test 1: diff vendor/alpha should show alpha diff"
-fi
-if echo "$output" | grep -q "beta"; then
-    fail "Test 1: diff vendor/alpha should NOT show beta diff"
-fi
-log_success "Test 1 passed: explicit path filters correctly"
-
-# --- Test 2: diff from inside patch dir (no arg) → auto-detects patch ---
-log_header "Test 2: diff from inside patch dir auto-detects patch..."
+# --- Test 1: diff from inside patch dir shows only that patch's upstream diff ---
+log_header "Test 1: diff inside a patch dir shows only that patch..."
 pushd vendor/alpha >/dev/null
 output=$(just cross diff 2>&1 || true)
 echo "$output"
-if ! echo "$output" | grep -q "alpha"; then
-    fail "Test 2: diff from vendor/alpha should show alpha diff"
+if ! echo "$output" | grep -q "local alpha change"; then
+    fail "Test 1: diff inside vendor/alpha should show the alpha change"
 fi
-if echo "$output" | grep -q "beta"; then
-    fail "Test 2: diff from inside vendor/alpha should NOT show beta diff"
+if echo "$output" | grep -q "local beta change"; then
+    fail "Test 1: diff inside vendor/alpha should NOT show the beta change"
 fi
 popd >/dev/null
-log_success "Test 2 passed: auto-detected patch from CWD"
+log_success "Test 1 passed: patch-context diff is scoped to the patch"
 
-# --- Test 3: diff from subdirectory inside patch → still auto-detects ---
-log_header "Test 3: diff from subdirectory inside patch auto-detects..."
-mkdir -p vendor/beta/subdir
-pushd vendor/beta/subdir >/dev/null
+# --- Test 2: diff from a subdirectory of a patch still resolves that patch ---
+log_header "Test 2: diff from a subdirectory resolves the parent patch..."
+mkdir -p vendor/beta/src/beta/subdir
+pushd vendor/beta/src/beta/subdir >/dev/null
 output=$(just cross diff 2>&1 || true)
 echo "$output"
-if ! echo "$output" | grep -q "beta"; then
-    fail "Test 3: diff from vendor/beta/subdir should show beta diff"
+if ! echo "$output" | grep -q "local beta change"; then
+    fail "Test 2: diff from a beta subdirectory should show the beta change"
 fi
-if echo "$output" | grep -q "alpha"; then
-    fail "Test 3: diff from inside vendor/beta should NOT show alpha diff"
+if echo "$output" | grep -q "local alpha change"; then
+    fail "Test 2: diff from a beta subdirectory should NOT show the alpha change"
 fi
 popd >/dev/null
-log_success "Test 3 passed: subdirectory resolves to parent patch"
+log_success "Test 2 passed: subdirectory resolves to the parent patch"
 
-# --- Test 4: diff with explicit '.' from inside patch ---
-log_header "Test 4: diff with '.' from inside patch..."
+# --- Test 3: diff . from inside a patch ---
+log_header "Test 3: diff . from inside a patch..."
 pushd vendor/alpha >/dev/null
 output=$(just cross diff . 2>&1 || true)
 echo "$output"
-if ! echo "$output" | grep -q "alpha"; then
-    fail "Test 4: diff . from vendor/alpha should show alpha diff"
+if ! echo "$output" | grep -q "local alpha change"; then
+    fail "Test 3: diff . inside vendor/alpha should show the alpha change"
 fi
 popd >/dev/null
-log_success "Test 4 passed: diff . works from inside patch"
+log_success "Test 3 passed: diff . works inside a patch"
 
-# --- Test 4b: diff from repo root without a path, fzf absent → rows + hint ---
-log_header "Test 4b: diff from repo root (no path, no fzf) prints rows and exits 1..."
-nofzf_path=$(make_path_without_fzf "$SANDBOX/no-fzf-bin")
+# --- Test 4: repo root without a patch context → fail early (ADR-002) ---
+log_header "Test 4: diff at the repo root fails early (no patch context)..."
 diff_rc=0
-output=$(PATH="$nofzf_path" just cross diff 2>&1) || diff_rc=$?
+output=$(just cross diff 2>&1) || diff_rc=$?
 echo "$output"
 if [ "$diff_rc" -eq 0 ]; then
-    fail "Test 4b: diff without a path outside a patch should exit non-zero"
+    fail "Test 4: diff outside a patch dir should exit non-zero"
 fi
-if ! printf '%s\n' "$output" | awk -F'\t' '$1=="vendor/alpha"{found=1} END{exit found?0:1}'; then
-    fail "Test 4b: diff should list patch rows (local_path<TAB>worktree)"
+if ! echo "$output" | grep -q "crossed directory"; then
+    fail "Test 4: diff outside a patch dir should explain the missing patch context"
 fi
-if echo "$output" | grep -q "Usage:"; then
-    fail "Test 4b: diff should not dump a Usage message"
+if ! echo "$output" | grep -q "git cross cd"; then
+    fail "Test 4: the hint should point at 'git cross cd'"
 fi
-if ! echo "$output" | grep -q "fzf is not installed"; then
-    fail "Test 4b: diff should explain that fzf is missing"
-fi
-log_success "Test 4b passed: Just diff falls back to rows+hint"
+log_success "Test 4 passed: root-level diff fails early"
 
-# --- Go implementation tests (when binary is available) ---
-GO_BIN="$REPO_ROOT/src-go/git-cross-go"
-if [ -f "$GO_BIN" ] && [ "$REPO_ROOT/src-go/main.go" -nt "$GO_BIN" ]; then
-    rm -f "$GO_BIN"
+# --- Test 5: a git pathspec does not create a patch context ---
+log_header "Test 5: diff <pathspec> at the repo root also fails early..."
+diff_rc=0
+output=$(just cross diff Justfile.cross 2>&1) || diff_rc=$?
+echo "$output"
+if [ "$diff_rc" -eq 0 ]; then
+    fail "Test 5: diff <pathspec> outside a patch dir should exit non-zero"
 fi
-if [ ! -f "$GO_BIN" ]; then
-    (cd "$REPO_ROOT/src-go" && CGO_ENABLED=0 go build -o git-cross-go main.go 2>/dev/null)
+if ! echo "$output" | grep -q "crossed directory"; then
+    fail "Test 5: a pathspec must not silently turn the passthrough into a primary-repo diff"
 fi
-_go_ok=false
-_smoke_dir=$(mktemp -d)
-git init -q "$_smoke_dir"
-printf 'smoke\n' > "$_smoke_dir/file.txt"
-git -C "$_smoke_dir" add file.txt
-git -C "$_smoke_dir" -c user.email=test@example.com -c user.name=test commit -qm init
-"$GO_BIN" use _smoke "file://$_smoke_dir" >/dev/null 2>&1 && _go_ok=true
-rm -rf "$_smoke_dir"
-if [ "$_go_ok" = false ]; then
-    log_warn "Go binary not working on this platform, skipping Go-specific diff context tests"
+log_success "Test 5 passed: git pathspecs do not create a patch context"
+
+# --- Go implementation: same contract ---
+GO_BIN=$(ensure_go_bin "$REPO_ROOT" || true)
+if [ -z "${GO_BIN:-}" ]; then
+    log_warn "Go toolchain unavailable or build failed - skipping Go part"
 else
-    # Without a path and outside a patch dir the new contract is: fzf selection,
-    # or rows + hint + exit 1 when fzf is missing. (It used to dump all patches.)
-    log_header "Test 5 (Go): diff from repo root without fzf prints rows and exits 1..."
-    nofzf_path=$(make_path_without_fzf "$SANDBOX/no-fzf-bin")
-    diff_rc=0
-    output=$(PATH="$nofzf_path" "$GO_BIN" diff 2>&1) || diff_rc=$?
-    echo "$output"
-    [ "$diff_rc" -eq 1 ] || fail "Test 5 (Go): diff without fzf should exit 1, got $diff_rc"
-    if ! printf '%s\n' "$output" | cut -f1 | grep -qx "vendor/alpha" \
-        || ! printf '%s\n' "$output" | cut -f1 | grep -qx "vendor/beta"; then
-        fail "Test 5 (Go): diff should list all patches as rows"
-    fi
-    if ! echo "$output" | grep -q "fzf is not installed"; then
-        fail "Test 5 (Go): diff should explain that fzf is missing"
-    fi
-    log_success "Test 5 passed: Go diff falls back to rows+hint"
-
-    log_header "Test 6 (Go): diff from inside patch auto-detects..."
+    log_header "Test 6 (Go): diff inside a patch dir is patch-scoped..."
     pushd vendor/alpha >/dev/null
-    output=$(PATH="$nofzf_path" "$GO_BIN" diff 2>&1 || true)
+    output=$("$GO_BIN" diff 2>&1 || true)
     echo "$output"
-    if ! echo "$output" | grep -q "alpha"; then
-        fail "Test 6 (Go): auto-detect should show alpha diff"
-    fi
-    if echo "$output" | grep -q "beta"; then
-        fail "Test 6 (Go): auto-detect should NOT show beta diff"
+    echo "$output" | grep -q "local alpha change" \
+        || fail "Test 6 (Go): diff inside the patch should show the alpha change"
+    if echo "$output" | grep -q "local beta change"; then
+        fail "Test 6 (Go): diff inside the patch should NOT show the beta change"
     fi
     popd >/dev/null
-    log_success "Test 6 passed: Go auto-detects patch from CWD"
+    log_success "Test 6 passed: Go patch-context diff"
 
-    log_header "Test 7 (Go): diff honours the fzf selection..."
-    shim_dir="$SANDBOX/fzf-shim-bin"
-    mkdir -p "$shim_dir"
-    cat > "$shim_dir/fzf" <<'EOF'
-#!/usr/bin/env bash
-cat >/dev/null
-if [ -n "${FZF_SELECT:-}" ]; then
-    printf '%b\n' "$FZF_SELECT"
-    exit 0
-fi
-exit 130
-EOF
-    chmod +x "$shim_dir/fzf"
-    output=$(FZF_SELECT='upstream\t.\tvendor/beta' PATH="$shim_dir:$PATH" "$GO_BIN" diff 2>&1 || true)
+    log_header "Test 7 (Go): diff at the repo root fails early..."
+    diff_rc=0
+    output=$("$GO_BIN" diff 2>&1) || diff_rc=$?
     echo "$output"
-    if ! echo "$output" | grep -q "beta"; then
-        fail "Test 7 (Go): fzf selection should show the beta diff"
-    fi
-    if echo "$output" | grep -q "alpha"; then
-        fail "Test 7 (Go): fzf selection should NOT show the alpha diff"
-    fi
-    log_success "Test 7 passed: Go diff uses the fzf selection"
-fi
+    [ "$diff_rc" -ne 0 ] || fail "Test 7 (Go): diff outside a patch dir should exit non-zero"
+    assert_contains "$output" "crossed directory" "Test 7 (Go): must explain the missing patch context"
+    log_success "Test 7 passed: Go root-level diff fails early"
 
-# --- Test 8: override markers print manual diff commands ---
-log_header "Test 8: override markers print manual diff commands..."
-mkdir -p vendor/alpha/config
-mkdir -p vendor/alpha/subdir
-touch vendor/alpha/subdir/.env vendor/alpha/config/private.yml
-cat > vendor/alpha/.crossignore <<'EOF'
-.env
-config/
-EOF
-output=$(just cross diff vendor/alpha 2>&1 || true)
-echo "$output"
-if ! echo "$output" | grep -q 'subdir/.env'; then
-    fail "Test 8: diff should print basename override file command from nested directory"
+    log_header "Test 8 (Go): diff from a patch subdirectory..."
+    pushd vendor/beta/src/beta/subdir >/dev/null
+    output=$("$GO_BIN" diff 2>&1 || true)
+    echo "$output"
+    echo "$output" | grep -q "local beta change" \
+        || fail "Test 8 (Go): diff from a subdirectory should show the beta change"
+    popd >/dev/null
+    log_success "Test 8 passed: Go subdirectory resolution"
 fi
-if ! echo "$output" | grep -q 'config'; then
-    fail "Test 8: diff should print directory override command"
-fi
-rm -f vendor/alpha/.crossignore
-rm -f vendor/alpha/subdir/.env vendor/alpha/config/private.yml
-rmdir vendor/alpha/subdir 2>/dev/null || true
-rmdir vendor/alpha/config 2>/dev/null || true
 
 echo ""
 echo "All context-aware diff tests passed!"

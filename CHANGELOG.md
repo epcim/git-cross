@@ -7,6 +7,276 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`cd`/`wt` are hidden from `git cross --help`** (still functional): a subprocess
+  cannot change the caller's shell, so advertising them invited the wrong
+  expectation. The shell wrapper is renamed — **`xcd`** replaces `crosscd`
+  (`git cross comp`) — and **`gx cd [path]` now actually changes directory**
+  (`gx` is a shell function, so it can; `git x cd` / `git cross cd` still print the
+  path + hint by design). The passthrough's missed-context hint points at `xcd`.
+
+### Fixed
+
+- **`git cross <git-args>` via the usual `git` alias failed with "not inside a
+  crossed directory" everywhere** — even from inside the crossed dir: git runs
+  `!`-aliases from the REPO ROOT (not the caller's CWD), so the CLI always saw
+  the repo root. The passthrough and every CWD auto-detect (`cd`, `resolve`) now
+  resolve the user's real directory through git's `GIT_PREFIX` env (both
+  implementations; the Just root wrapper feeds it into `USER_CWD`).
+
+### Added
+
+- **`--debug` / `CROSS_DEBUG=1` for the passthrough**: prints the resolved
+  working directory, the matched cross, the `GIT_DIR`/`GIT_WORK_TREE` git will
+  get and the exact git command — for troubleshooting alias/context issues:
+  `git cross --debug status` or `CROSS_DEBUG=1 git cross status` (Go CLI);
+  `CROSS_DEBUG=1` in the Just reference.
+
+## [0.5.1] - 2026-11-18
+
+### Changed: implementation scope — Go is the ONLY full implementation (no longer 1:1)
+
+- **Go** (`src-go`) is the primary and only full implementation; all new features
+  land there.
+- **Just/Fish** (`Justfile.cross`) is a CORE-only prototyping / clean-code
+  showcase reference: `use`, `set`, `del`, `ls`, `cfg`/`init` and the git
+  passthrough. `update`, `resolve`, `wipe`, `comp`, `shell-init`, `cd` and `wt`
+  are placeholder stubs printing `NOT IMPLEMENTED in Justfile version` (stderr,
+  exit 1) — the same string is the test skip marker (`just_ref_implements` in
+  `test/common.sh`): just-side sub-cases of Go-only commands SKIP; Go is the gate.
+- **Rust** was deleted from the repository (`src-rust/` is gone).
+- The `xgit` shell wrapper was removed from `comp`/`shell-init` output
+  (`crosscd`, `gx`, `cr` remain; the optional `git x` alias hint is unchanged).
+
+### Added: `update --force` + re-adoption of lost crosses
+
+When a crossed directory exists but its `.cross` state is gone (the whole
+registry deleted, or only its gitdir), `update` no longer silently overwrites:
+
+- **Go** (primary) prompts `Delete '/abs/path' and re-adopt it from upstream? [y/N]:`
+  — default **No** (empty/EOF input), `y`/`Y` adopts (wipe + re-create from
+  upstream). Declined crosses are skipped untouched and counted in a summary
+  warning. `--force` auto-applies the yes without prompting and also covers the
+  gitdir-only-loss case (stale registration dropped, cross re-set).
+- **Just/Fish** (reference): no `update` at all since the v0.5.1 scope split —
+  it is a `NOT IMPLEMENTED` stub there (see the scope note above).
+- Direct `git cross set` on an existing-but-unregistered directory now refuses
+  with a hint instead of overwriting (both implementations).
+- Unsafe local paths in Crossfile declarations (`../outside`) are a hard error
+  in both implementations — nothing is deleted.
+- Re-adoption **refuses to destroy uncommitted work**: the crossed dir is checked
+  with `git status --porcelain -- <path>` before the wipe, and anything staged or
+  unstaged refuses the run
+  (`<path> has uncommitted changes; commit or stash them first (refusing to delete them)`).
+  `--force` does not override it — a wipe is irreversible and lost `.cross` state
+  gives cross nothing to replay the edits from. Both implementations abort the run
+  on that refusal (nothing is deleted); a *declined* prompt is different — Go
+  skips that cross and continues with a summary, Just/Fish aborts (they never prompt).
+- `--force` on a healthy, registered cross is a **no-op** (it only appears in the
+  lost-state branches).
+- `update <path>` with a declined y/N prompt reports the skip
+  (`<n> cross(es) not adopted: …`) and exits 0 instead of claiming
+  `no Crossfile cross found for path: <path>`.
+- The `set` refusal hint names a remedy that works without a `Crossfile` line:
+  `(add it to Crossfile and run: git cross update --force — or remove the directory)`.
+
+### Fixed
+
+- **`ls` DIFF could never report `Modified` in the Go CLI** (always `Clean`):
+  the health diff ran against the BARE mirror without naming a work tree, so git
+  refused it (`fatal: this operation must be run in a work tree`, exit 128) and
+  the error was swallowed. The diff now passes `--work-tree=<crossed dir>`, and a
+  failing diff reports `Error` instead of a silent `Clean` (both implementations;
+  the Just reference already named the work tree).
+- **Crossed-dir recognition in the Just/Fish reference used a plain string
+  prefix**: a sibling directory that merely shares a name prefix (`infra/ipxex`
+  next to `infra/ipxe`) was wrongly treated as inside the cross. Matching is now
+  path-segment aware (exact match or `<cross>/...`, longest match wins), like the
+  Go CLI; any depth inside the crossed dir still resolves (`a/b/c/d`).
+
+### Changed
+
+- `update --resolve` is hidden from `--help` (it is the default and kept only
+  for symmetry with `--no-resolve`, which now documents its real meaning:
+  collisions resolve in upstream's favor, `-X theirs`).
+- Justfile.cross no longer requires `SHELL` to be exported: it falls back to
+  `bash` when the variable is unset (`env_var_or_default`).
+- Stdin hygiene in Justfile.cross: ssh-spawning git commands
+  (`ls-remote`/`clone`/`fetch`) run with `</dev/null` so they cannot drain
+  piped stdin.
+
+### BREAKING: command renames + crossed-directory terminology
+
+Commands are renamed so cross never shadows git commands and the vocabulary
+matches what the tool does ("cross" / "crossed directory", not "patch").
+Old names fall through to the git passthrough and fail with a hint.
+
+| old | new | notes |
+|---|---|---|
+| `patch` | **`set`** | set a cross directory (registers, bare-clones, materializes) |
+| `remove` | **`del`** | delete a cross |
+| `set` | **`cfg`** | configure the repo: Crossfile + rerere + `.gitignore` (`.cross/`); `init` kept as alias |
+| `list` | **`ls`** | `list` kept as hidden alias |
+| `completion` | **`comp`** | `completion` kept as hidden alias; help lists only `comp` |
+| `wt <git-args>` | *removed* | the upstream git passthrough is the BARE `git cross <git-args>` fall-through only; `wt [path]` is now an alias of `cd` |
+| `stat` | *removed* | health moved into `ls`: the crosses table (and `--raw` rows) gained **DIFF** (Clean/Modified/Missing Files/Missing GD) and **SHA** (short upstream commit per gitdir) columns; `git cross stat` falls through to the git passthrough |
+| `purge` | **`wipe`** | same behavior (remote + all its crosses, unused-remote sweep, orphaned gitdir sweep); `prune`/`purge` fall through to the git passthrough |
+
+Other changes in this batch:
+
+- Help regrouped: **Crossed paths/dir operations** (`use set del cfg update resolve`)
+  and **git cross overview** (`stat ls cd wt comp purge`); the "working inside a
+  crossed directory" help text is now a plain sentence: inside a crossed dir,
+  `git cross <git command>` performs its upstream git operations; anywhere else,
+  plain `git` behaves as it would in your repo — `git cross` is a wrapper for
+  crossed directories.
+- `comp` now defines `xgit`, `gx`, `cr` (aliases for `git cross`, e.g. `gx add ./file`)
+  next to `crosscd`; the `crosswt` wrapper is removed. `just install` also registers
+  the git alias `git x` (`git x add ./file`).
+- `git cross cd` prints a stderr hint when stdout is a TTY (a subprocess cannot cd
+  your shell — use `crosscd`); piped output stays path-only.
+- Crossfile declarations are now `cross set <remote>:<branch>:<path> <local>`;
+  `update` still accepts legacy `cross patch ...` lines.
+- Bug fix (Go): crossed-directory detection failed when the repo was reached
+  through a symlinked path (`os.Getwd()` logical vs `git rev-parse --show-toplevel`
+  physical); CWD is now resolved with `filepath.EvalSymlinks` — `git cross status`
+  inside a crossed dir via a symlink works again.
+- `cfg` now also ensures `.cross/` is in `.gitignore`.
+- Clearer passthrough errors: a **mistyped cross command** now says so and
+  suggests the closest one (`git cross commp` → `'commp' is not a git-cross
+  command (did you mean: comp?)`), while real git commands keep the
+  crossed-directory hint. `==> ERROR:` and `==> WARNING:` lines now go to
+  **stderr** (stdout carries data only — `git cross comp fish | source` can no
+  longer feed an error line to the shell).
+- Bug fix (Go, reported on a pre-0.5 repo): stale v0.4 metadata whose `worktree`
+  pointed into `.cross/worktrees/<name>_<hash>` made `git cross cd` print the
+  hidden gitdir instead of the crossed directory. Stale worktrees are now
+  self-healed to `local_path` on load (ADR-001); the `cd` hint is also
+  shell-aware (fish users get the `git cross comp fish | source` form).
+- Terminology sweep across code, tests, and docs: "patch(ed) directory" →
+  "crossed directory", "patch(es)" → "cross(es)", messages updated accordingly.
+  The metadata JSON schema (`patches` key, ADR-001) is unchanged.
+
+### Docs
+
+- README: new "The key trick: one directory, two git contexts" subsection — the
+  `GIT_DIR`/`GIT_WORK_TREE` mechanism explained with a side-by-side table
+  (plain `git` = your repo, `git cross <cmd>` = upstream context in the same
+  directory).
+- README: "Example run" — a complete first cycle (`use` → `patch` → edit →
+  `git cross status`/`diff` → `update` → `stat`) with output captured from a
+  real run.
+- README: the key-trick section now shows the essence of `git cross` as a tiny
+  `xgit()` wrapper function (`GIT_DIR` + `GIT_WORK_TREE` + `exec git`), plus a
+  note that both repositories keep independent histories over the same files
+  (commit via `git cross` → upstream; your repo still needs its own commit).
+- README: new "Under the hood: what `git cross patch` does" — the fetch-first
+  flow (bare clone into the hidden gitdir → sparse config → `read-tree -mu`
+  into the crossed dir) showing that a `.git` file is never created in the
+  crossed directory.
+- README: new "Design Notes: Bare Gitdir vs `git worktree`" section documenting
+  why the v0.5.0 design is a standalone bare gitdir per patch (no `.git` in the
+  patch dir → normal blobs in your repo) instead of a linked `git worktree`,
+  including the shared-objects trade-off and the `cross.depth`/`cross.filter`
+  mitigation.
+
+## [0.5.0] - 2026-11
+
+### BREAKING: gitdir patches — no rsync, no linked worktrees
+
+Each patch is now a **standalone bare gitdir** under `.cross/worktrees/<remote>/<patch>/`
+holding the upstream `.git` content, while the **work tree is the patch directory inside
+your repo**. The patched files are plain files tracked by your repository — not a gitlink,
+and there is no `.git` pointer in the patch directory.
+
+What this changes for users:
+
+- **No rsync anywhere.** The patch directory *is* the upstream checkout; `update`
+  fast-forwards it in place and never copies files.
+- **Upstream git commands run in the patch's own context.** Inside a patch directory,
+  `git cross <any-git-command>` (or the explicit `git cross wt <args>`) operates on the
+  patch's upstream: `git cross status`, `log`, `diff`, `push`, `pull -r`, `rebase`.
+- **Plain `git` still means your repository.** Committing the patched files, branching
+  your project, etc. work exactly as before.
+- **Your repo's git remotes are untouched.** `use` records the URL in `.cross/metadata.json`.
+- **The passthrough requires a patch directory.** Outside one it fails early with a hint
+  instead of silently running git on your repo (so `git cross pull -r` at the repo root
+  can no longer pull the wrong repository). See `specs/003-gitdir-patches/adr-002-*.md`.
+- **No migration path.** `.cross/` is disposable: `rm -rf .cross && git cross update`
+  rebuilds everything from your `Crossfile`.
+
+#### Command renames (cross must not shadow native git)
+
+| v0.4 | v0.5 |
+|---|---|
+| `status` | **`stat`** (`git cross status` is now the native passthrough) |
+| `prune` | **`purge`** (`git cross prune` is now the native passthrough) |
+| `init` | **`set`** (`init` kept as an alias — native `git init` is unobtainable inside a repo) |
+| `diff` (dedicated command) | **passthrough**: `git cross diff` = `git diff` vs upstream inside a patch |
+| `push` / `sync` / `replay` / `exec` | removed; `git cross push` inside a patch pushes to **upstream** |
+
+#### Added
+- **`Metadata v2`** (ADR-001): every location is recorded explicitly — `local_path`
+  (user key), `worktree` (the patch dir, equal to `local_path`), `gitdir` (the bare
+  gitdir) — all repo-relative, with `remote_url` so remotes survive without the
+  primary repo's git config.
+- **`git cross pull -r` workflow**: edit upstream, `cd` into the patch, `git cross pull -r`;
+  a conflict stops the rebase and you resolve it with `git cross add` +
+  `git cross rebase --continue`.
+- **`git cross resolve`**: update no longer refuses-or-overwrites. It fetches every
+  patch first, then lands upstream in the patch dir and re-applies your committed
+  changes on top (one three-way apply, so N local changes cost one resolution).
+  Collisions are kept as normal unmerged paths + markers in *your* repo and finished
+  with `git cross resolve --continue` (`--abort` reverts). `rerere` records and
+  replays in `<repo>/.git/rr-cache`. `update --no-resolve` lands upstream as-is.
+- **`rerere` in every patch gitdir** (each keeps its own `rr-cache`) in addition to the
+  repo config, so resolutions are reused on both sides.
+- **Opt-in shallow/partial clones** via `git config cross.depth N` / `cross.filter <f>`.
+- **`list --raw`** patch columns: `REMOTE, REMOTE_PATH, LOCAL_PATH, WORKTREE, GITDIR, BRANCH`.
+- `cross.filter` / `cross.depth` and the passthrough contract documented in `--help`.
+
+#### Changed
+- `compare` compares the **upstream export** (temp dir) against the patch directory;
+  `{left}` may be absolute when it lies outside the repo.
+- `update` refuses only **unstaged** edits (`'<path>' has modified files; commit them
+  in your repo first`): staged content is merged, never lost. On success the mirror
+  branch follows the landed revision, so the next run is incremental.
+- Just/Fish `wt` passes arguments as fish `$argv`, so multi-word values
+  (`commit -m "a b"`) reach git intact.
+
+#### Removed
+- **`compare` and the `cmp` alias.** The patch directory *is* upstream's work tree now,
+  so there is no second checkout to diff against — `git cross diff` inside a patch
+  already shows local edits vs upstream `HEAD`. Removed with the command:
+  `cross.dirdifftool`, its `{left}`/`{right}` placeholders, the built-in
+  `nvim`/`vim` DirDiff default, `DIRDIFF_EXCLUDES`/`DIRDIFF_IGNORE`, and the temp
+  `git archive` export. A leftover `cross.dirdifftool` setting is ignored.
+- `rsync` dependency (and its `check-deps` requirement).
+- Linked `git worktree` machinery, the `.git`-mirror diff, and `git diff --no-index`.
+- `.crossignore` filtering (status/diff overrides) — feature dropped in 0.5.0.
+- The legacy `cross.diffTool` fallback (no backward compatibility).
+- `gogs/git-module` and `zloylos/grsync` Go dependencies.
+
+#### Fixed
+- Go `remove` deleted the *next* patch's gitdir when removing a shared-source patch
+  (slice pointer invalidation).
+- Go `update <path>` exited with "no Crossfile patch found" after a preserved conflict.
+- Go `compare` relativized the temp export against the repo root (`../../cross-cmp-…`).
+- Just `update` never re-enabled `rerere` in a gitdir whose key was absent
+  (`test (cmd) != true` lost the empty substitution in fish).
+
+#### Tests
+- Test suite trimmed to v0.5.0 only — 19 tests, no exclusion list in `run-all.sh`:
+  deleted `005_replay.sh` (replay), `008_rust_cli.sh` + `011_rust_push.sh` (Rust is
+  unsupported), `021_fzf_diff_compare.sh` (`compare` removed; the fzf ladder lives in
+  017, 009/019 assert the retirement). Renamed to match the current command set:
+  `007_stat.sh`, `010_cd_wt_passthrough.sh`, `015_purge.sh`,
+  `017_cd_shell_integration.sh`.
+- Updated 001-004, 007, 009-020, 023, 024 for v0.5 semantics; 010 rewritten to cover
+  `cd`/`wt`/passthrough for both implementations, 025 remains the stage-1 gate.
+  `SHELL=/bin/bash bash test/run-all.sh` → all 21 suites pass (20 shell + `go test`).
+
 ## [0.4.0] - 2026-11-11
 
 ### UX refresh — navigation, selection, listing, diff tool

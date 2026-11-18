@@ -49,22 +49,28 @@ if [ $# -gt 0 ]; then
         fi
     done
 else
-    # Discover tests
-    # We look for files starting with digits in test/ directory
-    # Note: We are running from ROOT_DIR, so test/ is ./test/
+    # Discover tests.
+    # Every remaining test targets the v0.5.0+ gitdir architecture; the retired
+    # ones (005 replay, 008/011 rust, 021 compare) were deleted with their
+    # commands. Rust itself was deleted in v0.5.1; just-side sub-cases of Go-only
+    # commands SKIP (just_ref_implements in common.sh).
     tests=(test/[0-9]*.sh)
 fi
 
-active_tests=()
-for t in "${tests[@]}"; do
-    case "$(basename "$t")" in
-        005_replay.sh|006_push.sh|008_rust_cli.sh|011_rust_push.sh)
-            echo "Skipping retired workflow test: $t"
-            ;;
-        *) active_tests+=("$t") ;;
-    esac
-done
-tests=("${active_tests[@]}")
+
+# Go-level integration tests (src-go/*_test.go) cover the update/resolve contract
+# directly, so they run before the shell suite.
+if [ $# -eq 0 ] && command -v go >/dev/null 2>&1; then
+    total=$((total + 1))
+    echo "Running go test ./src-go ..."
+    if ( cd src-go && go test -mod=mod ./... ) 2>&1 | tee src-go/go-test.log; then
+        echo -e "${GREEN}PASS: go test ./src-go${NC}"
+    else
+        echo -e "${RED}FAIL: go test ./src-go${NC}"
+        failed=$((failed + 1))
+    fi
+    echo "---------------------------------------------------"
+fi
 
 for t in "${tests[@]}"; do
     # If the file doesn't exist (e.g. glob failed), skip

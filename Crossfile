@@ -5,11 +5,13 @@
 cross use git-cross https://github.com/epcim/git-cross.git
 
 # patch their paths to local
-cross patch git-cross:. vendor/git-cross
-cross sync
+cross set git-cross:. vendor/git-cross
 
-# cross exec git remote -v | grep fetch | column -t
-# cross exec git worktree list
+# v0.5.0: `cross sync` is retired. Update a patch with `git cross update` (or
+# `cd vendor/git-cross && git cross pull -r` for the upstream context).
+# Native git commands are NOT written here: `update` only interprets `use`/`patch`.
 
 cross use khue https://github.com/khuedoan/homelab
-cross patch khue:master:/metal deploy/metal
+cross set khue:master:/metal deploy/metal
+cross set git-cross:master:. vendor/git-cross
+cross set khue:master:metal deploy/metal

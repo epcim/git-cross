@@ -62,7 +62,7 @@ Use **short, consistent names**:
 - `lpath` - local path (e.g., `vendor/docs`)
 - `rpath` - remote path component
 - `git_root` - repository root
-- `wt` - worktree path
+- `wt` - patch directory (the upstream work tree; `gitdir` for the bare `.git`)
 
 **Rationale**: Shorter names improve readability in compact fish scripts.
 
@@ -71,15 +71,15 @@ Use **short, consistent names**:
 Commands should have **1-2 informative echo statements max**:
 ```fish
 # ✅ Good
-echo "Syncing files to $lpath..."
-rsync -a --delete $wt/$rpath/ $lpath/ >/dev/null 2>&1
-echo "Done. $lpath now contains files from $rspec"
+echo "Materializing $lpath from $rspec..."
+git --git-dir=$gitdir --work-tree=$wt checkout -f HEAD >/dev/null 2>&1
+echo "Done. $lpath is the work tree for $rspec"
 
 # ❌ Too verbose
-echo "Creating worktree..."
+echo "Cloning the bare gitdir..."
 echo "Configuring sparse checkout..."
 echo "Setting up git config..."
-echo "Running rsync..."
+echo "Materializing the work tree..."
 ```
 
 **Debugging**: Users can re-run with `@` prefix for verbose output (future feature).

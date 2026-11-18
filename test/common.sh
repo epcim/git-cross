@@ -248,3 +248,22 @@ cleanup() {
 }
 # Trap cleanup on exit
 trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# v0.5.1: the Just/Fish reference implements CORE commands only (use, set, del,
+# ls, cfg/init and the git passthrough). The dropped ones (update, resolve,
+# wipe, comp, shell-init, cd, wt) are placeholder stubs answering
+# "NOT IMPLEMENTED in Justfile version" with exit 1. Probe once and skip the
+# just-side sub-case — Go is the primary implementation and owns full coverage.
+#   if just_ref_implements update; then ...sub-case... else log_warn "SKIP ..."; fi
+just_ref_implements() {
+    command -v just >/dev/null 2>&1 || return 1
+    command -v fish >/dev/null 2>&1 || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+    local _jri_out
+    _jri_out=$(just cross "$1" </dev/null 2>&1)
+    case "$_jri_out" in
+        *"NOT IMPLEMENTED"*) return 1 ;;
+    esac
+    return 0
+}

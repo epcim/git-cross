@@ -1,0 +1,5 @@
+schemaVersion: "1"
+kind: mixin
+name: git-cross-opencode
+displayName: git-cross OpenCode Starter
+description: Adds a repo-local starter layout for running OpenCode in Docker sbx with git-cross guidance.

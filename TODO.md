@@ -1,9 +1,16 @@
+## Done — ADR-003 update/resolve
+
+- [x] `update` lands upstream + re-applies the user's version (no overwrite, no refusal loop)
+- [x] `git cross resolve` (list / `--continue` / `--abort`) and `update --no-resolve`
+- [x] rerere in `<repo>/.git/rr-cache` reused by `update`
+- [x] Go tests (`src-go/update_resolve_test.go`) + dual-implementation integration test 026
+
 # TODO - git-cross
 
 ## Current Direction
 
-- Supported implementations: Go (primary) and Just/Fish (reference). Rust source is retained but unsupported and unmaintained.
-- Core workflow: `Crossfile` declares `use`/`patch`; `patch` installs an initial sparse upstream path; `update` fetches and refreshes declared patches.
+- Implementations (v0.5.1, no longer 1:1): Go is the primary and only full implementation; Just/Fish is a core-only prototyping/showcase reference (use/set/del/ls/cfg + git passthrough; every other command is a NOT IMPLEMENTED stub). Rust was deleted from the repo.
+- Core workflow: `Crossfile` declares `use`/`set`; `set` installs an initial sparse upstream path; `update` fetches and refreshes declared crosses.
 - If the local patch differs from the previously installed upstream tree, `update` preserves local files, advances the sparse worktree, and provides a manual comparison command. No automatic conflict resolution or back-propagation is provided.
 - `push`, `sync`, and `replay` are retired. Manual upstream contributions use `wt`, a directory comparison tool, and ordinary Git commands.
 - Legacy notes below describe historical work and are not the current product direction.
@@ -50,12 +57,12 @@
 ### P1: High Priority
 - [x] **Implement `cross prune [remote name]`** - Remove git remote registration from "cross use" command and ask user whether to remove all git remotes without active cross patches (like after: cross remove), then `git worktree prune` to remove all worktrees. Optional argument (a remote repo alias/name) would enforce removal of all its patches together with worktrees and remotes.
   - **Effort:** 3-4 hours (completed 2025-01-06)
-  - **Files:** `src-go/main.go`, `src-rust/src/main.rs`, `Justfile.cross`, `test/015_prune.sh`
+  - **Files:** `src-go/main.go`, `src-rust/src/main.rs`, `Justfile.cross`, `test/015_purge.sh`
   - **Implementation:**
     - ✅ Justfile.cross (lines 230-303): Full interactive prune with confirmation
     - ✅ Go (src-go/main.go): Cobra command with same logic
     - ✅ Rust (src-rust/src/main.rs): Clap command with same logic
-    - ✅ Test coverage (test/015_prune.sh): 3 test scenarios
+    - ✅ Test coverage (test/015_purge.sh): 3 test scenarios
   - **Behavior:**
     - `cross prune`: Finds unused remotes, asks for confirmation, removes them, prunes stale worktrees
     - `cross prune <remote>`: Removes all patches for that remote, then removes the remote itself
@@ -66,7 +73,7 @@
   - **Issue:** Commands needed proper separation of concerns and clipboard functionality
   - **Design Intent:**
     - `cross wt [path]` → Navigate to WORKTREE (`.cross/worktrees/<remote>_<hash>`) - for git history operations
-    - `cross cd [path]` → Navigate to LOCAL_PATH (patched directory) - for editing files
+    - `cross cd [path]` → Navigate to LOCAL_PATH (crossed directory) - for editing files
     - With explicit path: Open subshell in target directory
     - Without path (fzf): Copy selected path to clipboard for flexibility
   - **Implemented Behavior:**
@@ -81,9 +88,9 @@
     - ✅ Justfile.cross (lines 754-865): Simplified `_open_shell` with path-based logic
     - ✅ Go (src-go/main.go lines 681-818): Removed `--copy` flag, path-based behavior
     - ✅ Rust (src-rust/src/main.rs lines 424-525, 905-910): Added clipboard support, path-based logic
-    - ✅ Test coverage (test/017_cd_wt_fix.sh): Basic functionality and error handling
+    - ✅ Test coverage (test/017_cd_shell_integration.sh): Basic functionality and error handling
   - **Effort:** 3 hours (completed 2025-01-06)
-  - **Files:** `Justfile.cross`, `src-go/main.go`, `src-rust/src/main.rs`, `test/common.sh`, `test/017_cd_wt_fix.sh`
+  - **Files:** `Justfile.cross`, `src-go/main.go`, `src-rust/src/main.rs`, `test/common.sh`, `test/017_cd_shell_integration.sh`
   - **Impact:** HIGH - Fixes command behavior, adds clipboard workflow for flexibility
   - **Status:** COMPLETE - All three implementations updated with feature parity
 
@@ -92,7 +99,7 @@
 
 - [ ] **Root overlay patching with `.crossignore`** - Support patching upstream root or upstream subdirectory into local repo root while preserving local-only files and preventing secret leakage upstream.
   - **Problem:** Current patch/sync/push flows are mirror-oriented and unsafe for repo-root usage.
-  - **Requirements:** Safe root-target patching, `.crossignore` protection, non-destructive `remove`/`prune`, selective and batch-safe operations.
+  - **Requirements:** Safe root-target patching, `.crossignore` protection, non-destructive `del`/`purge`, selective and batch-safe operations.
   - **Spec:** `specs/002-root-overlay-patching/`
   - **Effort:** 1-2 days for design and safety groundwork, plus implementation/testing across all three implementations.
   
@@ -177,7 +184,7 @@
 
 ### ✅ P0: Sync Command Data Loss (FIXED)
 
-- [x] **Issue:** The `cross sync` command in Go (and Rust) did not preserve local uncommitted changes. When users modified files in patched directory and ran sync, changes were lost/reverted.
+- [x] **Issue:** The `cross sync` command in Go (and Rust) did not preserve local uncommitted changes. When users modified files in crossed directory and ran sync, changes were lost/reverted.
 
 **Fix Applied (2025-01-06):**
 - ✅ Go implementation (`src-go/main.go`): Added complete stash/restore workflow
@@ -231,7 +238,7 @@ Error: exit status 128 - fatal: couldn't find remote ref main
 - [x] on Golang implementation, the patch command can't properly use recognized branch, failed example:
 
 ```sh
-❯ git cross patch khue:/metal deploy/metal
+❯ git cross set khue:/metal deploy/metal
 ==> Patching khue:/metal to deploy/metal
 ==> Syncing files to deploy/metal...
 Error: rsync failed: exit status 23
@@ -243,7 +250,7 @@ sent 19 bytes  received 12 bytes  62.00 bytes/sec
 total size is 0  speedup is 0.00
 }
 Usage:
-  git-cross patch [spec] [local_path] [flags]
+  git-cross set [spec] [local_path] [flags]
 
 Flags:
   -h, --help   help for patch
@@ -252,7 +259,7 @@ Flags:
 - [x] on Golang implementation, the patch command doesn't accept properly the branch name in remote_spec.
 
 ```sh
- git cross patch khue:main:/metal deploy/metal
+ git cross set khue:main:/metal deploy/metal
 ==> Patching khue:main:/metal to deploy/metal
 ==> Syncing files to deploy/metal...
 Error: rsync failed: exit status 23

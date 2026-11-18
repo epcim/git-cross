@@ -1,3 +1,9 @@
+> **v0.5.0 note.** The crossed directory *is* the upstream work tree now (bare gitdir
+> under `.cross/worktrees/`, no rsync, no linked worktree), `status` is `stat`,
+> `prune` is `purge`, `diff` is the upstream-context passthrough (`cd` into the
+> patch first), and `compare` was removed. `.crossignore` is no longer read by
+> `git-cross` — treat any such file as your own plain ignore list.
+
 # Tutorial: Whole Upstream Into A Local Directory
 
 ## Goal
@@ -33,13 +39,13 @@ git cross use app https://github.com/example/app.git
 You can use either `:.` or `:/`.
 
 ```bash
-git cross patch app:. vendor/upstream-app
+git cross set app:. vendor/upstream-app
 ```
 
 Equivalent form:
 
 ```bash
-git cross patch app:/ vendor/upstream-app
+git cross set app:/ vendor/upstream-app
 ```
 
 After that, `vendor/upstream-app` contains the full upstream checkout as normal files.
@@ -47,8 +53,8 @@ After that, `vendor/upstream-app` contains the full upstream checkout as normal 
 ## Step 3: Inspect The Imported Tree
 
 ```bash
-git cross status
-git cross diff vendor/upstream-app
+git cross stat
+cd vendor/upstream-app && git cross diff   # upstream-context diff
 ```
 
 At this point the patch should normally be `Clean` and `Synced`.
@@ -66,7 +72,7 @@ printf '\nlocal customization\n' >> vendor/upstream-app/README.md
 Review the result:
 
 ```bash
-git cross diff vendor/upstream-app
+cd vendor/upstream-app && git cross diff   # upstream-context diff
 ```
 
 ## Step 5: Keep Local-Only Files Next To It
@@ -85,8 +91,8 @@ EOF
 
 Current behavior:
 
-- `git cross status` reports `Override`
-- `git cross diff vendor/upstream-app` prints a manual compare command for `.env`
+- `git cross stat` reports `Override`
+- `cd vendor/upstream-app && git cross diff   # upstream-context diff` prints a manual compare command for `.env`
 
 Treat this as a review aid. Local-only files remain local and are not copied into the sparse worktree.
 
@@ -99,8 +105,8 @@ git cross update vendor/upstream-app
 Then review again:
 
 ```bash
-git cross status
-git cross diff vendor/upstream-app
+git cross stat
+cd vendor/upstream-app && git cross diff   # upstream-context diff
 ```
 
 ## Step 7: Publish To Your Own Repo
@@ -117,8 +123,8 @@ git push origin main
 
 If some of your changes belong upstream:
 
-1. open the worktree with `git cross wt vendor/upstream-app`
-2. compare the local directory and worktree with `git cross compare vendor/upstream-app`
+1. `cd vendor/upstream-app` — that directory is the upstream work tree
+2. `git cross diff` shows your edits against upstream `HEAD`
 3. manually copy intended changes into the worktree
 4. commit and push from the worktree with normal Git commands
 

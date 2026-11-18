@@ -1,13 +1,15 @@
 #!/usr/bin/env bash
 # Test 019: whole-repo patches (remote path ".") + row-based patch listing.
 #
-# Covers the UX refresh contract:
-#   - the worktree's `.git` pointer must not count as a local change, so
-#     `update` re-syncs and `status` reports Clean for whole-repo patches
-#   - `diff` shows real changes and never the `.git` pointer
-#   - bare `git-cross` and an unresolved `compare` print machine-parseable
-#     rows (`local_path<TAB>worktree`) instead of a Usage dump
-#   - `cross.dirdifftool` template placeholders receive repo-relative paths
+# v0.5.0 contract:
+#   - a whole-repo patch has NO sparse filter, so every upstream file lands in the
+#     patch dir; the patch dir never contains a `.git` pointer (nothing to leak)
+#   - `update` fast-forwards the work tree in place
+#   - `stat` (renamed from status) reports Clean for a synced whole-repo patch
+#   - `diff` inside the patch dir shows real content changes
+#   - bare `git-cross` prints machine-parseable rows (`local_path<TAB>gitdir`)
+#     instead of a Usage dump
+#   - `compare`/`cmp` are retired (v0.5.0) and no longer resolve to a command
 source "$(dirname "$0")/common.sh"
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -34,13 +36,18 @@ if [ -n "$GO_BIN" ]; then
     upstream_url="file://$upstream_path"
 
     "$GO_BIN" use up "$upstream_url" >/dev/null
-    "$GO_BIN" patch "up:." ./sub >/dev/null
+    "$GO_BIN" set "up:." ./sub >/dev/null
     assert_file_exists "sub/README.md"
     assert_file_exists "sub/docs/guide.md"
+    # v2: no .git pointer exists in the patch dir at all
+    [ ! -e sub/.git ] || fail "whole-repo patch dir must not contain a .git pointer"
+    # whole-repo patches are not sparse
+    gd=$(jq -r '.patches[] | select(.local_path == "sub") | .gitdir' .cross/metadata.json)
+    [ ! -e "$gd/info/sparse-checkout" ] || fail "whole-repo patch must not write a sparse pattern"
     log_success "whole-repo patch created at sub/"
 
-    # --- upstream commit + update must re-sync without a .git false positive
-    log_header "019: update re-syncs whole-repo patch (no .git false positive)"
+    # --- upstream commit + update must re-sync
+    log_header "019: update re-syncs whole-repo patch"
     pushd "$upstream_path" >/dev/null
     echo "docs v2 upstream, longer content" > docs/guide.md
     echo "brand new" > new-file.txt
@@ -51,33 +58,33 @@ if [ -n "$GO_BIN" ]; then
     update_output=$("$GO_BIN" update 2>&1)
     echo "$update_output"
     assert_not_contains "$update_output" "differs from upstream" \
-        "update falsely reported local edits for a whole-repo patch (.git leak)"
+        "update falsely reported local edits for a whole-repo patch"
     assert_grep "sub/docs/guide.md" "docs v2"
     assert_file_exists "sub/new-file.txt"
     assert_grep "sub/new-file.txt" "brand new"
     log_success "update re-synced the whole-repo patch"
 
-    # --- status must not report Modified just because of the .git pointer
-    log_header "019: status reports Clean for a synced whole-repo patch"
-    status_output=$("$GO_BIN" status 2>&1)
-    echo "$status_output"
-    sub_line=$(printf '%s\n' "$status_output" | grep -E '(^|[[:space:]])sub([[:space:]]|$)' | head -n 1)
-    [ -n "$sub_line" ] || fail "status did not list the whole-repo patch 'sub'"
-    assert_contains "$sub_line" "Clean" "status reported a non-Clean diff for a synced whole-repo patch"
-    assert_not_contains "$sub_line" "Modified" "status falsely reported Modified (worktree .git leak)"
-    log_success "status reports Clean"
+    # --- ls must report Clean (DIFF) for a synced whole-repo cross
+    log_header "019: ls reports Clean for a synced whole-repo cross"
+    stat_output=$("$GO_BIN" ls 2>&1)
+    echo "$stat_output"
+    sub_line=$(printf '%s\n' "$stat_output" | grep -E '(^|[[:space:]])sub([[:space:]]|$)' | head -n 1)
+    [ -n "$sub_line" ] || fail "ls did not list the whole-repo cross 'sub'"
+    assert_contains "$sub_line" "Clean" "ls reported a non-Clean DIFF for a synced whole-repo cross"
+    assert_not_contains "$sub_line" "Modified" "ls falsely reported Modified"
+    log_success "ls reports Clean"
 
-    # --- diff shows the real change, never the .git pointer
-    log_header "019: diff shows real content and excludes .git"
+    # --- diff inside the patch dir shows the real change
+    log_header "019: diff inside the patch dir shows real content"
     echo "local docs tweak" >> sub/docs/guide.md
-    diff_output=$("$GO_BIN" diff sub 2>&1 || true)
+    diff_output=$(cd sub && "$GO_BIN" diff 2>&1 || true)
     echo "$diff_output"
     assert_contains "$diff_output" "local docs tweak"
-    assert_not_contains "$diff_output" ".git" "diff must not include the worktree .git pointer file"
-    log_success "diff excludes .git"
+    assert_not_contains "$diff_output" ".git" "diff must not mention a .git pointer"
+    log_success "diff shows the change"
 
-    # --- bare command + unresolved compare print rows (fzf absent)
-    log_header "019: bare listing and unresolved compare print rows"
+    # --- bare command prints rows; a retired subcommand does not dump Usage
+    log_header "019: bare listing and retired 'compare'"
     nofzf_path=$(make_path_without_fzf "$SANDBOX/no-fzf-bin")
 
     bare_rc=0
@@ -91,40 +98,17 @@ if [ -n "$GO_BIN" ]; then
     fi
     printf '%s\n' "$bare_stdout" | cut -f1 | grep -qx "sub" \
         || fail "bare listing missing local_path 'sub' in the first column"
-    printf '%s\n' "$bare_stdout" | cut -f2 | grep -q '^\.cross/worktrees/up_' \
-        || fail "bare listing missing worktree path in the second column"
-    log_success "bare 'git-cross' prints local_path<TAB>worktree rows"
+    printf '%s\n' "$bare_stdout" | cut -f2 | grep -q '^\.cross/worktrees/up/' \
+        || fail "bare listing missing the gitdir in the second column"
+    log_success "bare 'git-cross' prints local_path<TAB>gitdir rows"
 
-    compare_rc=0
-    compare_stdout=$(PATH="$nofzf_path" "$GO_BIN" compare 2>"$SANDBOX/compare.err") || compare_rc=$?
-    echo "$compare_stdout"
-    echo "--- stderr ---"
-    cat "$SANDBOX/compare.err"
-    [ "$compare_rc" -eq 1 ] || fail "unresolved 'compare' should exit 1, got $compare_rc"
-    assert_not_contains "$compare_stdout" "Usage:" "unresolved 'compare' should not print a Usage dump"
-    printf '%s\n' "$compare_stdout" | cut -f1 | grep -qx "sub" \
-        || fail "unresolved 'compare' should list 'sub' in the first column"
-    if ! grep -Eq "fzf is not installed|No patch detected" "$SANDBOX/compare.err"; then
-        fail "unresolved 'compare' should explain why it could not pick a patch"
-    fi
-    log_success "unresolved 'compare' prints rows and exits 1"
-
-    # --- diffTool template substitution uses repo-relative paths
-    log_header "019: cross.dirdifftool {left}/{right} template substitution"
-    git config cross.dirdifftool 'echo TOOL {left} {right}'
-
-    tool_out=$("$GO_BIN" compare sub 2>&1 || true)
-    echo "$tool_out"
-    printf '%s\n' "$tool_out" | grep -Eq "TOOL \.cross/worktrees/up_[0-9a-f]+ sub" \
-        || fail "expected 'TOOL .cross/worktrees/up_<hash> sub', got: $tool_out"
-    assert_not_contains "$tool_out" "$SANDBOX" \
-        "template placeholders must be substituted with repo-relative paths"
-
-    alias_out=$("$GO_BIN" cmp sub 2>&1 || true)
-    echo "$alias_out"
-    assert_contains "$alias_out" "TOOL .cross/worktrees/up_" "the 'cmp' alias should behave like 'compare'"
-    git config --unset cross.dirdifftool || true
-    log_success "diffTool template substitution verified"
+    # `compare` is gone in v0.5.0; an unknown subcommand must not dump Usage.
+    unknown_rc=0
+    unknown_out=$(PATH="$nofzf_path" "$GO_BIN" compare 2>"$SANDBOX/unknown.err") || unknown_rc=$?
+    echo "$unknown_out"; echo "--- stderr ---"; cat "$SANDBOX/unknown.err"
+    [ "$unknown_rc" -ne 0 ] || fail "'compare' must not resolve to a cross command any more"
+    assert_not_contains "$unknown_out" "Usage:" "retired 'compare' should not print a Usage dump"
+    log_success "retired 'compare' fails without a Usage dump"
 fi
 
 # -------------------------------------------------------------- Just section
@@ -144,8 +128,9 @@ if command -v fish >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -
     upstream_url="file://$upstream_path"
 
     just cross use up "$upstream_url" >/dev/null
-    just cross patch "up:." ./sub >/dev/null
+    just cross set "up:." ./sub >/dev/null
     assert_file_exists "sub/README.md"
+    [ ! -e sub/.git ] || fail "Just: whole-repo patch dir must not contain a .git pointer"
 
     pushd "$upstream_path" >/dev/null
     echo "docs v2 upstream, longer content" > docs/guide.md
@@ -154,37 +139,31 @@ if command -v fish >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 && command -
     git commit -m "Upstream v2" -q
     popd >/dev/null
 
-    update_output=$(just cross update 2>&1)
+    # v0.5.1: update is Go-only in the Just reference (stub) — the landing flow is
+    # covered by the Go variant above; here the stub contract is what is left.
+    update_output=$(just cross update 2>&1); update_rc=$?
     echo "$update_output"
-    assert_not_contains "$update_output" "differs from upstream" \
-        "Just update falsely reported local edits for a whole-repo patch (.git leak)"
-    assert_grep "sub/docs/guide.md" "docs v2"
-    assert_file_exists "sub/new-file.txt"
+    assert_contains "$update_output" "NOT IMPLEMENTED" "Just update must be a Go-only stub (v0.5.1)"
+    [ "$update_rc" -ne 0 ] || fail "Just update stub must exit 1"
 
-    status_output=$(just cross status 2>&1)
-    echo "$status_output"
-    sub_line=$(printf '%s\n' "$status_output" | grep -E '(^|[[:space:]])sub([[:space:]]|$)' | head -n 1)
-    [ -n "$sub_line" ] || fail "Just status did not list the whole-repo patch 'sub'"
-    assert_contains "$sub_line" "Clean" "Just status reported a non-Clean diff for a synced whole-repo patch"
+    stat_output=$(just cross ls 2>&1)
+    echo "$stat_output"
+    sub_line=$(printf '%s\n' "$stat_output" | grep -E '(^|[[:space:]])sub([[:space:]]|$)' | head -n 1)
+    [ -n "$sub_line" ] || fail "Just ls did not list the whole-repo cross 'sub'"
+    assert_contains "$sub_line" "Clean" "Just ls reported a non-Clean DIFF for a synced whole-repo cross"
 
     echo "local docs tweak" >> sub/docs/guide.md
-    diff_output=$(just cross diff sub 2>&1 || true)
+    diff_output=$(cd sub && just cross diff 2>&1 || true)
     echo "$diff_output"
     assert_contains "$diff_output" "local docs tweak"
-    assert_not_contains "$diff_output" ".git" "Just diff must not include the worktree .git pointer file"
+    assert_not_contains "$diff_output" ".git" "Just diff must not mention a .git pointer"
 
-    nofzf_path=$(make_path_without_fzf "$SANDBOX/no-fzf-bin")
+    # `compare` is retired: the Justfile has no such recipe, so it is not a cross
+    # command any more (the root wrapper falls through / errors).
     compare_rc=0
-    compare_output=$(PATH="$nofzf_path" just cross compare 2>&1) || compare_rc=$?
+    compare_output=$(just cross compare 2>&1) || compare_rc=$?
     echo "$compare_output"
-    [ "$compare_rc" -eq 1 ] || fail "Just unresolved 'compare' should exit 1, got $compare_rc"
-    assert_not_contains "$compare_output" "Usage:" "Just unresolved 'compare' should not print a Usage dump"
-    if ! printf '%s\n' "$compare_output" | awk -F'\t' '$1=="sub"{found=1} END{exit found?0:1}'; then
-        fail "Just unresolved 'compare' should print local_path<TAB>worktree rows"
-    fi
-    if ! printf '%s\n' "$compare_output" | grep -Eq "fzf is not installed|No patch detected"; then
-        fail "Just unresolved 'compare' should explain why it could not pick a patch"
-    fi
+    [ "$compare_rc" -ne 0 ] || fail "Just 'compare' must not be a recipe any more"
     log_success "Just whole-repo patch behavior verified"
 else
     echo "SKIP: fish and/or jq/just unavailable; skipping Just whole-repo assertions"

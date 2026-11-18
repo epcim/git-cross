@@ -13,11 +13,11 @@ testdir
 !.claude/**
 !.agents
 !.agents/**
-!.opencode
-!.opencode/**
 !.gitignore
 !.goreleaser.yaml
 
+!.opencode/**/**
+!.pi/**/**
 
 # builds
 src-go/git-cross-go
@@ -27,3 +27,11 @@ src-rust/target
 
 # git-cross state directory
 .cross/
+.pi/profiles/
+.pi/settings.local.json
+.opencode/
+sbxenv.yaml
+opencode.yaml
+
+# uncommitted backup of the pre-split full Just reference (see AGENTS.md)
+Justfile.cross.full-*

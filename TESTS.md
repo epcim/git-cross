@@ -1,280 +1,92 @@
-# Test Documentation
+# Tests
 
-This document describes all available tests for `git-cross`, including their purpose and how to execute them.
-
-## Test Summary
-
-| ID | Test Name | Description | Command |
-|----|-----------|-------------|---------|
-| TC-001 | crossfile-001 | Basic patch workflow | `just test 001` or `./test/bash/examples/crossfile-001.sh` |
-| TC-002 | crossfile-002 | Dual remote workflow | `just test 002` or `./test/bash/examples/crossfile-002.sh` |
-| TC-003 | crossfile-003 | Asciinema example | `just test 003` or `./test/bash/examples/crossfile-003.sh` |
-| TC-005 | crossfile-005 | Exec command & post-hooks | `just test 005` or `./test/bash/examples/crossfile-005.sh` |
-| TC-006 | core-improvements | Core improvements suite | `./test/bash/core-improvements.sh` |
-
-**Quick Start:**
-```bash
-# Run all tests
-just test
-
-# Run specific test by ID
-just test 001
-
-# Run directly
-./test/bash/examples/crossfile-001.sh
-```
-
-## Prerequisites
-
-Before running tests, ensure you have:
-
-- **fish** shell ≥ 3.0
-- **just** command runner
-- **git** ≥ 2.20
-- **Homebrew** (for PATH setup on macOS/Linux)
-- **rsync**
-
-## Running All Tests
-
-Execute the complete test suite:
+The test suite lives in [`test/`](test/) and targets the **v0.5.0 gitdir
+architecture** only. There is no exclusion list: retired tests were deleted with
+their commands.
 
 ```bash
-./test/run-all.sh
+# everything (21 tests)
+SHELL=/bin/bash bash test/run-all.sh        # or: just cross-test
+
+# one test
+SHELL=/bin/bash bash test/012_sparse_checkout.sh
+
+# skip network-dependent tests
+SKIP_NETWORK_TESTS=true SHELL=/bin/bash bash test/run-all.sh
 ```
 
-This runs all example Crossfile tests and generates a report in `test/results/verification.json`.
-
-## Individual Test Cases
-
-### Example Crossfile Tests
-
-These tests validate the core workflow using numbered Crossfile examples.
-
-#### TC-001: Basic Patch Workflow
-
-**Test ID**: `crossfile-001`  
-**Description**: Tests basic `use` and `patch` commands with a single remote repository. Validates that files are correctly vendored from upstream.  
-**Command**:
-```bash
-./test/bash/examples/crossfile-001.sh
-```
-**What it tests**:
-- Remote registration (`cross use`)
-- Basic patching (`cross patch`)
-- Sparse checkout configuration
-- File synchronization via rsync
-
----
-
-#### TC-002: Dual Remote Workflow
-
-**Test ID**: `crossfile-002`  
-**Description**: Tests vendoring from multiple remote repositories (khue and bill) into different local paths.  
-**Command**:
-```bash
-./test/bash/examples/crossfile-002.sh
-```
-**What it tests**:
-- Multiple remote management
-- Concurrent patches from different upstreams
-- Worktree isolation
-- Path organization (deploy/metal, deploy/flux)
-
----
-
-#### TC-003: Asciinema Example
-
-**Test ID**: `crossfile-003`  
-**Description**: Tests patching a directory with the same name as the remote path (asciinema → asciinema).  
-**Command**:
-```bash
-./test/bash/examples/crossfile-003.sh
-```
-**What it tests**:
-- Same-name directory patching
-- `CROSS_FETCH_DEPENDENCIES` environment handling
-- Path mapping edge cases
-
----
-
-#### TC-005: Exec Command & Post-hooks
-
-**Test ID**: `crossfile-005`  
-**Description**: Tests the `cross exec` command for running post-hooks and custom Justfile recipes.  
-**Command**:
-```bash
-./test/bash/examples/crossfile-005.sh
-```
-**What it tests**:
-- `cross exec` command execution
-- Integration with user Justfile recipes
-- Post-hook automation
-- Command chaining in Crossfile
-
----
-
-### Core Improvements Tests
-
-#### TC-006: Core Improvements Suite
-
-**Test ID**: `core-improvements`  
-**Description**: Validates all core improvements implemented in Phase 7: patch arguments, branch detection, mkdir support, Crossfile idempotency, and sync safety.  
-**Command**:
-```bash
-./test/bash/core-improvements.sh
-```
-**What it tests**:
-- `remote:path:branch` syntax support
-- Automatic branch detection (main/master)
-- `mkdir -p` for intermediate directories
-- Crossfile idempotency (no duplicates on re-run)
-- Sync safety checks (uncommitted changes warning)
-
----
-
-## Test Output & Results
-
-### Log Files
-
-Test runs generate logs in `test/results/`:
-
-```
-test/results/
-├── examples/
-│   ├── crossfile-001-bash.log
-│   ├── crossfile-002-bash.log
-│   ├── crossfile-003-bash.log
-│   └── crossfile-005-bash.log
-├── verification.json      # Machine-readable test report
-└── verification.log        # Human-readable test log
-```
-
-### Interpreting Results
-
-- **PASS**: Test completed successfully
-- **FAIL**: Test failed (check log file for details)
-- **SKIPPED**: Test script missing or not executable
-
-View the JSON report:
-```bash
-cat test/results/verification.json | jq
-```
-
----
-
-## Running Tests in Isolation
-
-Each test runs in a temporary workspace (`/tmp/cross-e2e-*`) and uses sandboxed git configuration:
-
-- **No GPG signing** (uses `GIT_CONFIG_GLOBAL` override)
-- **Isolated from user settings** (custom .gitconfig)
-- **Clean environment** (no interference with `~/.gitconfig`)
-
-To debug a specific test:
+`run-all.sh` is the **CI/CD entry point** (serial, shared `testdir`). When
+iterating, run the suite as parallel groups instead — see
+`.agents/skills/git-cross-parallel-tests/SKILL.md` (measured groups, ~20s wall).
 
 ```bash
-# Enable verbose mode
-set -x
-./test/bash/examples/crossfile-001.sh
+# one group is just sequential files; never export TESTDIR in parallel workers
+unset TESTDIR
+for t in test/017_* test/020_* test/010_*; do SHELL=/bin/bash bash "$t" || break; done
 ```
 
----
+`SHELL` must be exported so `just` can run the Fish recipes; the Go binary is
+built on demand by `test/common.sh:ensure_go_bin`.
 
-## Test Scenarios (Advanced)
+Three layers, by design:
 
-The test suite supports scenario-based execution:
+| Layer | File | Role |
+|---|---|---|
+| readable reference | `Justfile.cross` | the git commands, in order (a workflow document that also runs) |
+| implementation | `src-go/main.go` | the real CLI |
+| Go tests | `src-go/*_test.go` | unit/integration of the implementation (`go test ./src-go`) |
+| integration | `test/*.sh` | end-to-end; `run-all.sh` also runs `go test ./src-go` first |
 
-### Examples Scenario (Default)
-```bash
-./test/run-all.sh --scenario examples
-```
-Runs all numbered Crossfile tests (001, 002, 003, 005).
+Integration tests that take an `exercise()`/`xc()` dispatcher run the same scenario
+through both implementations, so a divergence fails there.
 
-### Use Scenario
-```bash
-./test/run-all.sh --scenario use
-```
-Tests alias registration and idempotency checks (not yet implemented).
+## What each test covers
 
-### Patch Scenario
-```bash
-./test/run-all.sh --scenario patch
-```
-Tests patch workflow regression suite (not yet implemented).
+| Test | Scope |
+|---|---|
+| `001_use.sh` | `use` → metadata only, primary git remotes untouched |
+| `002_patch.sh` | `set` → bare gitdir + in-repo work tree (D3 nesting) |
+| `003_diff.sh` | `diff` as the patch-context passthrough |
+| `004_update.sh` | edit upstream → `git cross pull -r` in the patch context |
+| `007_ls_health.sh` | `ls` health columns (DIFF/SHA) (clean/modified/missing/conflict) |
+| `009_go_cli.sh` | full Go CLI: use/set/cfg/ls/update/diff-passthrough/del/wipe |
+| `010_cd_wt_passthrough.sh` | `cd`, `wt` and the native-git passthrough |
+| `012_sparse_checkout.sh` | sparse plumbing (bare gitdir + `info/sparse-checkout`) |
+| `013_real_world.sh` | real upstream (runtipi-appstore); network, skippable |
+| `014_remove.sh` | `del` cleans gitdir, crossed dir, Crossfile, metadata |
+| `015_wipe.sh` | `wipe <remote>` and the orphan-gitdir sweep |
+| `016_diff_context.sh` | diff context inside/outside a crossed dir (ADR-002) |
+| `017_cd_shell_integration.sh` | path printing, fzf picker, `comp` wrappers |
+| `018_sbx_sandbox.sh` | concurrent local edit + upstream update (preserve) |
+| `019_whole_repo_patch_and_listing.sh` | `remote:.` patches + row listings |
+| `020_help_groups.sh` | grouped `--help` (Go only: CLI presentation) |
+| `023_localpath_normalization.sh` | `./sub` normalization, independent gitdirs |
+| `024_rerere.sh` | rerere in the repo config **and** every patch gitdir |
+| `025_gitdir_patch.sh` | stage-1 gate: creation/checkout for both implementations |
+| `026_update_resolve.sh` | update/resolve lifecycle (land, refusal, conflict, abort, continue, `--no-resolve`) — Go (the just variant skips: Go-only) |
+| `027_update_force.sh` | `update --force` / y-N re-adoption of lost crosses (Go prompt matrix; the just variant skips: Go-only) |
 
-### All Scenarios
-```bash
-./test/run-all.sh --scenario all
-```
-Runs every scenario sequentially.
+Retired (deleted, not skipped): `005_replay`, `008_rust_cli`, `011_rust_push`,
+`021_fzf_diff_compare` — `replay`/`push` are gone, `compare` was removed in
+0.5.0; the Rust implementation itself was deleted in v0.5.1.
 
----
+**Just/Fish variants (v0.5.1):** the reference implements core commands only.
+Just-side sub-cases of Go-only commands (update, resolve, wipe, comp, cd, wt)
+SKIP via the `just_ref_implements` probe in `test/common.sh` — a `SKIP (just)`
+line is expected output, not a failure. Go coverage is the gate.
 
-## Creating New Tests
+## Layout
 
-To add a new test:
-
-1. **Create test script**: `test/bash/examples/crossfile-XXX.sh`
-2. **Follow the pattern**:
-   ```bash
-   #!/usr/bin/env bash
-   set -euo pipefail
-   
-   workspace=${1:?"workspace path required"}
-   ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-   
-   # Your test logic here
-   ```
-3. **Create example Crossfile**: `examples/Crossfile-XXX`
-4. **Update this documentation**: Add TC-XXX section above
-5. **Test it**:
-   ```bash
-   ./test/bash/examples/crossfile-XXX.sh
-   ```
-
----
-
-## Troubleshooting
-
-### Test fails with "unbound variable"
-- Ensure you're using Bash ≥ 3.2
-- Check that all required variables are initialized
-- Run with `set -x` for debugging
-
-### Test fails with "command not found: fish"
-- Install fish shell: `brew install fish`
-- Verify: `fish --version`
-
-### Test fails with "command not found: just"
-- Install just: `brew install just` or `cargo install just`
-- Verify: `just --version`
-
-### Fixture warnings
-- The fixture tool (`scripts/fixture-tooling/seed-fixtures.sh`) is not yet implemented
-- Tests use real git repositories instead (slower but functional)
-
----
-
-## CI Integration
-
-Tests are designed to run in CI environments:
-
-```yaml
-# Example GitHub Actions
-- name: Run tests
-  run: ./test/run-all.sh
-  
-- name: Upload test results
-  uses: actions/upload-artifact@v3
-  with:
-    name: test-results
-    path: test/results/
+```text
+test/
+├── common.sh                 # setup_sandbox, ensure_go_bin, create_upstream, assert_*
+├── run-all.sh                # runner: discovers test/NNN_*.sh
+└── NNN_name.sh               # one logical group each
 ```
 
----
+Tests use `setup_sandbox` (a throwaway repo under `testdir/`) and
+`create_upstream` (a local upstream served over `file://`). Assertions such as
+`assert_file_exists` resolve against `$SANDBOX`, not the current directory.
 
-## Related Documentation
-
-- [README.md](README.md#testing) - Quick start testing guide
-- [specs/001-cross-test-strategy/](specs/001-cross-test-strategy/) - Detailed test strategy
-- [AGENTS.md](AGENTS.md#testing) - Testing section for AI agents
+Architecture, coverage matrix and the test-authoring procedure live in
+[AGENTS.md](AGENTS.md) and `.agents/skills/git-cross-test-update/SKILL.md`.

@@ -1,0 +1,42 @@
+# Docker Sandbox environment file (schema version 1).
+# See https://docs.docker.com/ai/sandboxes/configuration/environment-files/
+#
+# https://docs.docker.com/ai/sandboxes/configuration/environment-files/
+# https://docs.docker.com/ai/sandboxes/configuration/environment-files/#add-v3-kits
+# https://docs.docker.com/ai/sandboxes/customize/use-kits/
+#
+# https://github.com/docker/sbx-kits-contrib/tree/v3
+#
+# https://docs.docker.com/ai/sandboxes/customize/use-kits/#published-v3-workloads
+# https://hub.docker.com/search?type=sbx_kit&badges=verified_publisher
+#
+# sbx env run sbxenv.yaml sbxenv.local.yaml
+
+schemaVersion: "1"
+workspace: .
+
+# Must match the workload kit below.
+agent: pi
+
+env:
+  # The sandbox reads the committed workspace profile instead of an empty
+  # ~/.pi/agent; without this Pi finds no models and no providers.
+  PI_CODING_AGENT_DIR: .pi/agent
+
+kits:
+  # collision with sbx's built-in `opencode` agent.
+  - /home/epcim/.config/sbx-kits/pi
+  # sbx settings set kit.allowedSources '["docker.io/","github.com/docker/"]'
+  #
+  # - "git+https://github.com/docker/sandbox-kit-spec.git#ref=main&dir=examples/mem0-context"
+  # - "git+https://github.com/docker/sbx-kits-contrib.git#ref=v3&dir=neovim"
+  # - "git+https://github.com/docker/sbx-kits-contrib.git#ref=v3&dir=docker-agent-mixin"
+  # - "git+https://github.com/docker/sandbox-kit-spec.git#ref=main&dir=examples/gh"
+
+  # Add local kits as needed; replace with absolute host paths:
+  - /home/epcim/.config/sbx-kits/requesty
+  - /home/epcim/.config/sbx-kits/apealive
+  - /home/epcim/.config/sbx-kits/melious
+  # - /home/you/.config/sbx-kits/cuelang
+  # - /home/you/.config/sbx-kits/mxc
+

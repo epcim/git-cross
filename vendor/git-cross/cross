@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Wrapper script to call 'just' with the same arguments
+# This allows users to run './cross patch ...' instead of 'just patch ...'
+
+test -e .env && source .env
+exec just cross "$@"

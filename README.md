@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/epcim/git-cross/workflows/CI/badge.svg)](https://github.com/epcim/git-cross/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](https://github.com/epcim/git-cross/blob/main/CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.5.1-blue.svg)](https://github.com/epcim/git-cross/blob/main/CHANGELOG.md)
 
-`git-cross` is a small tool for pulling part of one Git repository into another with `git worktree` plus `rsync`.
+`git-cross` is a small tool for pulling part of one Git repository into another and keeping it as **real files** in your tree — no submodule, no gitlink, no copying step.
 
 It is for the cases where you want real files in your tree, not a gitlink, and want a simple way to refresh them from upstream.
 
@@ -15,10 +15,10 @@ It is for the cases where you want real files in your tree, not a gitlink, and w
 - vendor only one subdirectory from another repository
 - keep vendored code as normal files in your own repository
 - pull upstream updates without converting your repo into a submodule setup
-- manually compare local edits with the sparse upstream worktree when both have changed
+- manually compare your local edits with the upstream state when both have changed
 - let AI tools work on a mounted subfolder instead of your full repository
 
-Compared with submodules or subrepo-style flows, the tradeoff is simple: `git-cross` keeps files physical and visible in your repo, and tracks the upstream relationship separately through hidden worktrees and `Crossfile`.
+Compared with submodules or subrepo-style flows, the tradeoff is simple: `git-cross` keeps files physical and visible in your repo, and tracks the upstream relationship separately through a per-cross gitdir and `Crossfile`.
 
 ## Common Use Cases
 
@@ -30,11 +30,23 @@ Compared with submodules or subrepo-style flows, the tradeoff is simple: `git-cr
 
 ## Status
 
-The repository supports two implementations:
+Version **0.5.1** — a breaking release: the implementations are no longer 1:1
+(Go is the only full implementation, the Just/Fish reference carries core
+commands only, Rust was deleted), plus the `ls` DIFF and crossed-dir
+recognition fixes. The 0.5.0 architecture underneath is unchanged: crosses are
+a **standalone gitdir per cross with the work tree inside your repo** — no
+migration path; `.cross/` is disposable (`rm -rf .cross && git cross update`).
+See [CHANGELOG.md](CHANGELOG.md).
 
-1. Go: primary production implementation
-2. Just/Fish: readable reference implementation
+The repository supports two implementations (no longer 1:1 since v0.5.1):
 
+1. **Go** — the primary and ONLY full implementation: every command, production use
+2. **Just/Fish** — a CORE-only reference (`use`, `set`, `del`, `ls`, `cfg`/`init`
+   and the git passthrough) for prototyping and as a readable code showcase;
+   `update`, `resolve`, `wipe`, `comp`, `shell-init`, `cd` and `wt` answer
+   `NOT IMPLEMENTED in Justfile version` there
+
+The Rust implementation was deleted from the repository (v0.5.1).
 For normal usage, prefer the Go binary.
 
 ## Installation
@@ -45,12 +57,12 @@ For normal usage, prefer the Go binary.
 just install
 ```
 
-Manual build:
+Manual build (remove a stale vendor dir first; `-mod=mod` for the module path):
 
 ```bash
-cd src-go
-go build -o git-cross-go main.go
-git config --global alias.cross "!$(pwd)/git-cross-go"
+cd src-go && rm -rf vendor
+CGO_ENABLED=0 go build -mod=mod -o git-cross-go main.go
+git config --global alias.cross "!$(pwd)/src-go/git-cross-go"
 ```
 
 ### Just/Fish Reference
@@ -66,117 +78,295 @@ just install shell
 git cross use demo https://github.com/example/demo.git
 
 # 2. Materialize one directory locally
-git cross patch demo:docs vendor/docs
+git cross set demo:docs vendor/docs
 
-# 3. Inspect local state
-git cross status
-git cross diff vendor/docs
+# 3. Commit the vendored files in YOUR repo (they are normal files)
+git add vendor/docs && git commit -m "vendor: docs"
 
-# 4. Pull new upstream changes later
+# 4. Inspect local state
+git cross ls                      # crosses + health (DIFF, upstream SHA)
+cd vendor/docs && git cross diff   # upstream-context diff (your edits vs upstream)
+
+# 5. Later: fetch upstream, land it, and re-apply your changes
 git cross update vendor/docs
+#    collision? resolve it in your repo, then:
+git cross resolve --continue
 ```
 
 ## How It Works
 
 `git-cross` connects four things:
 
-1. Your main repository
-2. A hidden worktree for each upstream patch under `.cross/worktrees/`
-3. A local physical directory such as `vendor/docs`
+1. Your main repository (the patched files are **tracked by it as normal files**)
+2. A standalone **bare gitdir** per patch under `.cross/worktrees/<remote>/<patch>/`
+   holding the upstream `.git` content (objects, refs, remotes, sparse config, rerere)
+3. A crossed directory such as `vendor/docs` — this **is** the upstream work tree
 4. A `Crossfile` that records how to rebuild the setup
 
 On disk:
 
 ```text
 your-repo/
-├── Crossfile                      # declarative use/patch records
-├── .cross/
-│   ├── metadata.json              # patch registry (worktree, branch, paths)
+├── Crossfile                          # declarative use/set records
+├── .cross/                            # disposable state (gitignored)
+│   ├── metadata.json                  # local_path + worktree + gitdir + branch + remote_url
 │   └── worktrees/
-│       └── <remote>_<hash>/       # sparse git worktree; contains a .git pointer FILE
-│           └── <remote_path>/     # checked-out upstream subtree
-└── vendor/docs/                   # rsynced files; no .git at all
+│       └── <remote>/<patch>/          # BARE gitdir: HEAD, config, objects/, info/sparse-checkout
+└── vendor/docs/                       # THE WORK TREE: plain files, no .git, tracked by your repo
 ```
 
-Worktrees live in the repository tree under `.cross/` (gitignored), and the
-local directory holds plain rsynced files with no `.git` of its own.
+There is no `.git` file in the crossed directory, no linked worktree, and no rsync:
+the work tree lives in your repository, and the upstream `.git` content lives in
+`.cross/`.
+
+### The key trick: one directory, two git contexts
+
+The crossed directory has **no `.git` of its own**, so the same files belong
+to two repositories at once — which one you talk to depends on how you invoke
+git:
+
+| You run (inside `vendor/docs`) | git operates on | Why |
+|---|---|---|
+| `git status` | **your** repository | no `.git` in the crossed dir → git walks up to your repo root |
+| `git cross status` | **upstream** repository | git-cross runs git with `GIT_DIR=<gitdir>` + `GIT_WORK_TREE=<crossed dir>` |
+
+That is the whole mechanism. `git cross <git-cmd>` is plain `git` with two
+environment variables set for the child process:
+
+```text
+GIT_DIR=.cross/worktrees/<remote>/<patch>       # the bare upstream gitdir
+GIT_WORK_TREE=<repo>/<local_path>               # the crossed directory
+```
+
+Or as a shell function — this is essentially all `git cross` is inside a
+crossed directory:
+
+```bash
+xup() {           # "upstream git": git cross <cmd> inside vendor/docs, minus the bookkeeping
+  GIT_DIR="$repo/.cross/worktrees/demo/vendor_docs"   # the hidden upstream gitdir
+  GIT_WORK_TREE="$repo/vendor/docs"                   # the crossed directory
+  exec git "$@"
+}
+```
+
+To git it looks exactly like standing in a normal clone of upstream whose
+working tree is `vendor/docs`: `status`, `diff`, `log`, `add`, `push`,
+`pull -r` all operate on **upstream**, while your own repo keeps tracking the
+same files as plain blobs. No second checkout exists — the crossed directory
+*is* the upstream work tree.
+
+Both repositories keep **independent histories** over the same files, and
+nothing is auto-synced between them:
+
+- `git cross add` + `git cross commit` (+ `git cross push`) lands the change
+  in **upstream** — your repo still shows the file as modified until you
+  commit it there too, with plain `git`.
+- `git cross pull -r` (or `git cross update` from anywhere in your repo)
+  changes the files on disk — your repo simply sees them as changes to commit.
+
+### Under the hood: what `git cross set` does
+
+`git cross set demo:docs vendor/docs` performs that whole setup in one
+command. Stripped of the bookkeeping it is:
+
+```bash
+gd=.cross/worktrees/demo/vendor_docs          # 1. hidden home for upstream's .git
+git clone --bare https://github.com/example/demo.git "$gd"   #  (full clone by default;
+git --git-dir="$gd" config core.sparseCheckout true           #   shallow/partial is opt-in:
+echo 'docs/' > "$gd/info/sparse-checkout"                     #   git config cross.depth 1)
+GIT_DIR="$gd" GIT_WORK_TREE=vendor/docs \
+  git read-tree -mu HEAD                       # 2. materialize the work tree, as plain files
+```
+
+Fetch-first, work-tree-second: the clone goes **only** into the hidden gitdir,
+then the work tree is written into `vendor/docs/`. A `.git` file is **never
+created** in the crossed directory — that is what makes your repo track the
+files as normal blobs instead of a submodule.
+
+### Example run
+
+A complete first cycle — register, materialize, edit, update (output captured
+from a real run):
+
+```bash
+$ git cross use demo https://github.com/example/demo.git
+==> Remote demo registered (https://github.com/example/demo.git).
+
+$ git cross set demo:docs vendor/docs
+==> Autodetecting default branch...
+==> Using branch: main
+==> Setting cross demo:main:docs -> vendor/docs
+==> Cloning upstream into .cross/worktrees/demo/vendor_docs (bare)...
+Cloning into bare repository '.cross/worktrees/demo/vendor_docs'...
+==> Cross set successfully.
+
+$ ls vendor/docs/docs            # the crossed dir mirrors the upstream ROOT
+guide.md
+
+$ git add vendor/docs            # normal files — tracked by YOUR repo
+$ git commit -m "vendor: demo docs"
+
+$ echo "My local tweak." >> vendor/docs/docs/guide.md    # edit with any tool
+
+$ cd vendor/docs
+$ git cross status               # UPSTREAM context (GIT_DIR/GIT_WORK_TREE)
+On branch main
+Changes not staged for commit:
+        modified:   docs/guide.md
+no changes added to commit (use "git add" and/or "git commit -a")
+
+$ git status --short             # plain git, SAME directory: your repo
+ M docs/guide.md
+
+$ git cross diff --stat          # your edits vs upstream HEAD
+ docs/guide.md | 1 +
+```
+
+Days later, upstream published something new:
+
+```bash
+$ git cross update               # from anywhere in your repo
+==> Updated vendor/docs
+
+$ git cross ls
+==> Configured crosses:
+┌────────┬─────────────┬────────────┬────────────┬──────────────────────────────┬────────┬───────┬────────┐
+│ REMOTE │ REMOTE PATH │ LOCAL PATH │  WORKTREE  │            GITDIR            │ BRANCH │ DIFF  │  SHA   │
+├────────┼─────────────┼────────────┼────────────┼──────────────────────────────┼────────┼───────┼────────┤
+│ demo   │ docs        │ vendor/docs │ vendor/docs │ .cross/worktrees/demo/vendor_docs │ main │ Clean │ c0448a9 │
+└────────┴─────────────┴────────────┴────────────┴────────────────────────────┴────────┴───────┴────────┘
+
+$ git status --short             # upstream landed, staged, in YOUR repo
+A  vendor/docs/docs/extra.md
+```
+
+`update` refuses to run over unstaged edits under the crossed path
+(`==> WARNING: 'vendor/docs' has modified files; commit them in your repo first`),
+and a collision is kept as conflict markers you finish with
+`git cross resolve`. Cross never commits for you.
 
 In practice:
 
-- your editor sees normal files
+- your editor, `git add`, and CI see normal files
 - AI tools can work on normal files
-- upstream history stays in the hidden worktree
-- `Crossfile` records the `use` and `patch` declarations; `git cross update` reads them to refresh patches
+- upstream git operations run in the cross's own context:
+  `cd vendor/docs && git cross status | log | diff | push | pull -r`
+- plain `git` still means *your* repository (that is how you commit patched files)
+- `Crossfile` records the `use` and `set` declarations; `git cross update` reads them
+
+Two docs hold the decisions:
+`specs/003-gitdir-patches/adr-001-metadata-locations.md` (location fields) and
+`adr-002-passthrough-requires-patch.md` (the passthrough needs a patch context).
+
+## Design Notes: Bare Gitdir vs `git worktree`
+
+Why a **standalone bare gitdir per cross** instead of one clone of upstream plus
+`git worktree add`? The deciding constraint is the core feature:
+
+> The crossed directory must contain **no `.git`** — only then does the primary
+> repo track the patched files as **normal blobs** instead of a gitlink/submodule.
+
+Every alternative that puts `.git` (or a `.git` file) into the crossed directory
+is disqualified by that one rule:
+
+| Approach | `.git` in crossed dir? | Files tracked by your repo | Isolation |
+|---|---|---|---|
+| submodule | yes (its own) | no — gitlink, not blobs | separate repo, init/update dance |
+| full clone in `vendor/x` | yes | no — nested repo/gitlink | independent, but never your blobs |
+| linked `git worktree` | yes (`.git` **file**) | no — nested repo/gitlink | bound to a full clone of upstream + shared refs |
+| **git-cross bare gitdir** | **no** | **yes — plain blobs** | fully standalone gitdir |
+
+A linked `git worktree` also needs a full clone of upstream somewhere inside
+your repo and couples every cross to that clone: one shared object store and one
+shared refs namespace mean two crosses from the same upstream fight over branch
+state, and deleting the main clone orphans the worktrees.
+
+What the gitdir-per-cross design gives up is shared object storage: each cross
+keeps its own copy of upstream objects. In exchange every cross is an island —
+own objects, own refs, own `rerere` — which is exactly what enables:
+
+- the **same upstream patched into several local directories** with different
+  branches, each pair fully independent (`.cross/worktrees/<remote>/<patch>/`)
+- different upstream **repos** side by side (one gitdir per cross, trivially)
+- `.cross/` being **disposable**: `rm -rf .cross && git cross update` rebuilds
+  every cross from `Crossfile`
+
+Disk duplication is the whole trade-off, and it is opt-in mitigable:
+`git config cross.depth 1` / `cross.filter blob:none` shrink each gitdir.
+The **sparse checkout** config inside each gitdir is the filter that decides which
+upstream subtree gets materialized into the work tree (`set demo:docs …`
+checks out only `docs/`, whole-repo crosses get everything).
 
 ## Conflict Resolution Memory (`rerere`)
 
 `git-cross` enables Git's **rerere** ("reuse recorded resolution") so that
-conflict resolutions survive across updates. This is what solves resolving the
-same update conflict twice:
+conflict resolutions survive across updates — you resolve the same update
+conflict once, not every time:
 
-- `git cross init` turns `rerere.enabled` on and tells you so.
-- `git cross patch` enables it silently.
-- `git cross update` re-enables it when it was turned off, so repositories
-  created before this feature self-heal.
+- `git cross cfg` (or the `init` alias) turns `rerere.enabled` on and tells you so.
+- `git cross set` enables it silently **in the cross's own gitdir**.
+- `git cross update` re-ensures it on both sides, so older setups self-heal.
 
-When upstream changes collide with your local copy, resolve the conflict once —
-typically inside the sparse worktree, after entering it with
-`git cross wt <path>` and merging or rebasing there. Git records that
-resolution, and every later update that hits the same conflict replays the
-recorded resolution instead of asking you again: the next merge or rebase over
-the same upstream hunk is resolved without a second manual edit.
+The usual conflicting-update loop — `update` itself replays what it remembers:
+
+```bash
+git cross update               # fetch + land + re-apply; conflict stays in your repo
+# ... edit the marked files ...
+git add <files>
+git cross resolve --continue   # then commit
+git commit -m "vendor: resolve upstream"
+```
+
+The manual alternative, when you want to drive the upstream side yourself:
+
+```bash
+cd vendor/app                  # the crossed directory IS the upstream work tree
+git cross pull -r              # fetch + rebase against upstream
+git cross add <file>
+git cross rebase --continue
+```
+
+Either way Git records the resolution; when the same conflict reappears, the next
+apply replays it (`Resolved '<file>' using previous resolution`).
 
 Notes:
 
-- The setting lives in the repository's shared Git config, so it applies to the
-  main repository and to every `git-cross` worktree.
-- Recorded resolutions are local to each worktree (its `rr-cache`), so every
-  patch keeps its own conflict memory.
+- The setting lives in **two** places: your repository's config (the patched
+  files are tracked by it) and **every cross gitdir**. A cross gitdir is a
+  standalone repository — it does not inherit your config.
+- Recorded resolutions are per-repository: `update`/`resolve` record and replay in
+  **your** repo (`<repo>/.git/rr-cache`), while the manual `pull -r` flow records in
+  the cross gitdir. Each cross therefore has its own conflict memory on both sides.
 - `rerere.autoUpdate` is deliberately **not** enabled. Replayed resolutions are
-  applied to the working tree but not staged, so a merge still stops and waits
-  for `git add` + `git commit` (without `rerere.autoUpdate`). To let Git stage
-  what it resolved for you, opt in:
-
-  ```bash
-  git config rerere.autoUpdate true
-  ```
-
-- `git cross update` itself uses `--ff-only` and therefore never conflicts; the
-  recorded resolutions matter in the manual workflow where you merge or rebase
-  upstream inside the worktree.
+  applied to the working tree but not staged, so a rebase still stops for
+  `git add` + continue. Opt in with `git config rerere.autoUpdate true`.
+- `git cross update` is where rerere pays off: the re-apply is a real three-way
+  apply in your repo, so a conflict you already resolved is replayed instead of
+  asked again.
 
 ## Local Custom Files On Top Of Upstream
 
-One common pattern is to keep local-only files next to upstream-managed files.
-
-Example:
+The common pattern is local-only files next to upstream-managed ones:
 
 ```bash
 git cross use app https://github.com/example/app.git
-git cross patch app:src vendor/app
+git cross set app:src vendor/app
 
-cat > vendor/app/.crossignore <<'EOF'
-.env
-compose.override.yaml
-EOF
+echo "API_KEY=..." > vendor/app/.env        # local-only, next to upstream files
 ```
 
-Rule of thumb:
+**v0.5.0 removed `.crossignore`** (the v0.4 status/diff override filter). Local
+extra files are simply untracked-by-upstream files in the crossed directory:
 
-- a plain basename entry such as `.env` matches that name in any subdirectory under the patch
-- a directory entry such as `config` or `config/` matches that directory tree
-- a basename glob such as `*.env` also matches anywhere under the patch
-- this is intentionally simpler than full `.gitignore` semantics
+- they never affect `git cross update` (only tracked upstream paths are applied),
+- they do not appear in the cross's upstream-context `git cross diff`
+  (`git diff` shows tracked changes only),
+- they will appear in `git status` of **your** repository, exactly like any other
+  new file you did not commit — add them to your `.gitignore` (or commit them
+  deliberately) if that matters.
 
-What this does today:
-
-- `git cross status` shows `Override` for that patch
-- `git cross diff vendor/app` prints manual `git diff --no-index ...` commands for the override paths
-- your local files stay in place for normal local work
-
-This is intentionally conservative. `.crossignore` entries are review signals, not a substitute for review before updating.
-
-If you keep secrets or machine-local files in a patched directory, review them explicitly before updating.
+If you keep secrets or machine-local files in a crossed directory, review them
+explicitly before publishing.
 
 ## Publish To Your Own Repo And Upstream
 
@@ -196,22 +386,33 @@ Your own repository stores the final combined result, including local overlay fi
 
 ### 2. Manually contribute changes upstream
 
-When you want to contribute upstream-managed changes back:
+The crossed directory **is** the upstream work tree, so contributing is just git
+in the crossed-directory context:
 
 ```bash
-cd "$(git cross wt vendor/app)"   # or: crosswt vendor/app (see shell integration)
-git cross compare vendor/app
+xcd vendor/app             # or: gx cd vendor/app  (see shell integration)
+git cross diff              # line diff of your copy against upstream HEAD
+git cross status            # git status IN THE UPSTREAM context (plain `git` = YOUR repo)
+git cross add -p            # stage just your fixes
+git cross commit -m "fix: ..."
+git cross push              # pushes to the PATCH's upstream, not your repo
 ```
+
+`git cross status` here is the passthrough — plain `git status` run with the
+cross's `GIT_DIR`/`GIT_WORK_TREE`. The cross overview (with DIFF + upstream
+SHA) is `git cross ls`, runnable from anywhere in the repo.
 
 Recommended pattern:
 
-1. Enter the sparse worktree with `git cross wt vendor/app` (or `crosswt vendor/app`).
-2. Compare it with the local patch using `git cross compare vendor/app`, or print a console diff with `git cross diff vendor/app`.
-3. Manually copy desired changes into the worktree, then commit and push with Git.
+1. `cd` into the crossed directory (`xcd vendor/app`).
+2. `git cross diff` for a line diff against upstream `HEAD`.
+3. Stage and commit only the upstream-worthy changes, then `git cross push`.
+4. Keep the rest as your local result: commit it in your own repository with
+   plain `git add` / `git commit` (the files are normal repo files).
 
-`compare` uses the command configured in `cross.dirdifftool`; see [Directory Diff Tool](#directory-diff-tool-crossdirdifftool).
-
-This lets your main repo keep its local opinionated result while the upstream contribution stays focused.
+Directory-level comparison is no longer a cross command: the crossed directory is
+already the upstream work tree, so `git cross diff` / `--stat` is the natural
+view. See [Directory Comparison](#directory-comparison).
 
 ## Tutorials
 
@@ -224,46 +425,44 @@ This lets your main repo keep its local opinionated result while the upstream co
 
 ## Commands
 
-`git cross --help` groups commands by intent, starting with the two you need
-first — `use`, then `patch`:
+`git cross --help` groups commands by intent (Go CLI):
 
 ```text
-Patch Lifecycle:
-  use         Add a remote repository
-  patch       Create a patch from a remote path
-  remove      Remove a patch
-  prune       Remove a remote and all its patches
+Crossed paths/dir operations:
+  use         Register an upstream remote in metadata (your git remotes are not touched)
+  set         Set a cross directory: vendor an upstream path into your repo (bare gitdir + in-repo work tree)
+  del         Delete a cross: gitdir + crossed dir + Crossfile/metadata entries
+  cfg         Configure the repo for git-cross: Crossfile + rerere + .gitignore (init kept as alias)
+  update      Fetch upstream and land it in the crossed dir, re-applying your changes
+  resolve     Finish an update conflict: report unmerged paths, or continue/abort
 
-Repository:
-  init        Create an empty Crossfile
-  completion  Print shell completions and cd wrappers to evaluate
-  list        Show all configured patches and remotes
-  status      Show patch status
-  update      Update patches from Crossfile declarations
-  compare     Open the configured directory comparison tool for a patch
-
-Inspect & Navigate:
-  cd          Print a patch local_path to cd into
-  wt          Print a patch worktree to cd into
-  diff        Show changes between local and upstream
+git cross overview:
+  ls          Show all configured remotes and crosses (with DIFF + upstream SHA)
+  comp        Print shell completions + wrappers (xcd, gx, cr) to evaluate
+  wipe        Remove unused remotes (metadata + gitdirs), or all crosses of a specific remote
+  help        Help about any command
 ```
 
-`compare` also answers to the short alias `git cross cmp`.
+**Cross never shadows native git.** Any command name that is not a cross command
+falls through to the passthrough: `git cross status`, `git cross log`,
+`git cross push`, `git cross pull -r` run **git in the cross's upstream context**
+when you are inside a crossed directory. Outside one they fail early with a hint —
+they never silently operate on your own repository. Use plain `git` for that.
 
 Running `git cross` with no subcommand does not print help. It prints one row
-per configured patch to stdout:
+per configured cross to stdout:
 
 ```text
 $ git cross
-vendor/app        .cross/worktrees/app_1a2b3c4d
-vendor/lib        .cross/worktrees/lib_5e6f7a8b
+vendor/app        .cross/worktrees/app/vendor_app
+vendor/lib        .cross/worktrees/lib/vendor_lib
 ```
 
 The listing is the machine-readable row format used throughout the tool:
 when stdout is a terminal the first column is space-padded for readability;
-when piped, rows stay `local_path<TAB>worktree` so
-`git cross 2>/dev/null | cut -f1` yields local paths. Warnings and error
-hints go to stderr. Use `git cross -h` or `git cross --help` for the grouped
+when piped, rows stay `local_path<TAB>gitdir` so
+`git cross 2>/dev/null | cut -f1` yields local paths. `==> WARNING:`/`==> ERROR:` lines and hints go to stderr
+(status `==>` lines stay on stdout, so pipes carry data only). Use `git cross -h` or `git cross --help` for the grouped
 help shown above.
 
 ### `use`
@@ -272,100 +471,143 @@ help shown above.
 git cross use <name> <url>
 ```
 
-Register an upstream remote alias and detect its default branch.
+Register an upstream remote alias in `.cross/metadata.json` (and `Crossfile`).
+The URL is verified as reachable. **Your repository's git remotes are not
+touched** — upstream remotes live in each cross's gitdir.
 
-### `patch`
+### `set`
 
 ```bash
-git cross patch <remote>:<path> [local_dest]
+git cross set <remote>:<branch>:<path> [local_dest]
 ```
 
-Create or reuse a hidden worktree, sparse-check out the upstream path, and sync it into your local directory.
+Clone the upstream `.git` content into a standalone bare gitdir at
+`.cross/worktrees/<remote>/<local_dest>/`, sparse-filter `<path>`, and materialize
+the work tree **in place** at `local_dest` (no copy step).
 
-The worktree is keyed by `remote:branch:path`, not by the local destination, so the same upstream source can be materialized into several local directories — they share one `.cross/worktrees/` checkout while keeping one metadata entry each:
+`<path>` mirrors the upstream root: setting `app:src` into `vendor/app` puts the
+files at `vendor/app/src/...` (the crossed directory is a checkout of the upstream
+repo, restricted to that path). Whole-repo crosses (`app:.` or `app:/`) get
+Everything.
+
+Every cross owns its own gitdir, so the same upstream source set into
+several local directories is fully independent:
 
 ```bash
-git cross patch app:src vendor/app
-git cross patch app:src vendor/app-copy   # same worktree, second local copy
+git cross set app:src vendor/app
+git cross set app:src vendor/app-copy   # separate gitdir, separate work tree
+```
+
+`set` never overwrites silently: when `local_dest` exists but is not
+registered, it refuses with a hint (`refusing to overwrite it (add it to
+Crossfile and run: git cross update --force — or remove the directory)`). The
+hint names both remedies because `update` only walks `Crossfile`: without a
+`set` line, `--force` has nothing to adopt.
+
+Opt in to a smaller clone:
+
+```bash
+git config cross.depth 1          # shallow
+git config cross.filter blob:none # partial (blobless)
 ```
 
 ### `update`
 
 ```bash
-git cross update [path]
+git cross update [path] [--no-resolve] [--force]
 ```
 
-Read `Crossfile`, fetch upstream updates, and update each patch.
+Two phases, in this order:
 
-If the local copy still matches the previously installed upstream content, `update` refreshes it in place. If the local copy has edits, `update` preserves it, advances the sparse worktree to the new upstream state, and prints only the fact:
+1. **Fetch every patch** into its mirror (`.cross/worktrees/<remote>/<patch>/`).
+   Fetching is innocent: it only writes `refs/remotes/origin/<branch>`, never a
+   work tree.
+2. **Land upstream and re-apply your version** in your repo:
+   - **unstaged** changes under the crossed path → refuse
+     (`'<path>' has modified files; commit them in your repo first`). Only
+     unstaged edits can be lost: the apply merges into your index, so staged
+     content (e.g. files `set` just added) is safe.
+   - **pending conflict** under the crossed path → skip and tell you to run
+     `git cross resolve`.
+   - otherwise: upstream lands in the crossed directory and your committed changes
+     are re-applied on top, in one three-way apply. Clean → the merged result is
+     staged, report `Updated <path>`, and the mirror follows. Collision →
+     **kept**: conflict markers plus unmerged paths in *your* repo, and `rerere`
+     records/replays the resolution (`.git/rr-cache`).
+   - `--no-resolve` lands upstream as-is (upstream wins every collision, no
+     markers); your version stays in your history for a later `git cross resolve`.
+   - `--resolve` is accepted for symmetry with `--no-resolve` (it is the
+     default, and hidden from `--help`).
 
-```text
-==> WARNING: 'vendor/docs' differs from upstream; local copy preserved
-```
+**Lost `.cross` state.** When a crossed directory exists but its registration
+is gone — the whole `.cross/` deleted, or only its gitdir — `update` will not
+silently overwrite your files:
 
-After the run, a generic review block follows (both commands use fzf or the current patch when no path is given):
+- **Go** (primary) asks: `Delete '/abs/path' and re-adopt it from upstream? [y/N]:`.
+  The default is **No** (empty/EOF input), `y` adopts: the directory is wiped
+  and re-created from upstream (`Re-adopting <path> from upstream (existing dir wiped)`).
+  Declined crosses are skipped untouched and counted in a summary warning
+  (`<n> cross(es) not adopted: not confirmed (use --force to adopt without asking).`).
+  `--force` auto-applies the yes — no prompt.
+- **Just/Fish** (reference) is non-interactive: plain `update` refuses with a
+  hint (`use --force to re-adopt it from upstream`); `update --force` adopts
+  the same way as Go (wipe + re-create from upstream).
 
-```text
-Review the differences:
-  git cross diff        # pick a patch with fzf and see the diff
-  git cross compare     # pick a patch and update it (dirdiff tool)
-```
+`--force` also covers the gitdir-only case (registration intact, gitdir lost):
+the stale registration is dropped first and the cross is re-set from upstream.
 
-Review the differences and merge manually. Whole-repository patches (`remote:.` and `remote:/`) take part in this check correctly: the worktree's `.git` pointer file is not counted as a local edit, so a clean whole-repo patch is updated instead of warned about.
+Re-adoption deletes a directory, so **both** implementations guard the wipe
+before it happens:
 
-Resolutions you record manually are remembered for later updates — see [Conflict Resolution Memory (`rerere`)](#conflict-resolution-memory-rerere).
+- **Uncommitted edits block the wipe.** Before deleting, the crossed dir is
+  checked with `git status --porcelain -- <path>`; anything staged or unstaged
+  (a modified tracked file, a new untracked file) refuses the run:
+  `<path> has uncommitted changes; commit or stash them first (refusing to delete them)`
+  (Go: `Error: …`, exit 1; Just/Fish: `==> ERROR: …`, exit 1). `--force` does
+  **not** override this: a wipe is irreversible and lost `.cross` state leaves
+  cross nothing to replay your edits from, so it refuses instead of guessing.
+  Commit or stash the work, or delete the directory yourself.
+- **Declined vs aborted**: when you decline the prompt, **Go** skips that cross
+  and continues with the summary warning (other crosses still update);
+  **Just/Fish** aborts the whole run with exit 1, so no cross is updated.
+- `--force` on a **healthy** registered cross is a **no-op** — it only appears in
+  the lost-state branches and never wipes a registered cross.
+- `git cross update <path>` with a declined prompt reports the skip
+  (`<n> cross(es) not adopted: …`) and exits 0; the hard error
+  `no Crossfile cross found for path: <path>` is reserved for paths genuinely
+  absent from `Crossfile`.
 
-### `compare`
+Cross never commits for you: after a clean update you commit the staged result as
+usual (`git add` / `git commit`).
+
+### `resolve`
 
 ```bash
-git cross compare [path]
-git cross cmp [path]
+git cross resolve [path]              # list what is left
+git cross resolve --continue [path]   # verify resolved, let the mirror follow
+git cross resolve --abort [path]      # crossed dir back to HEAD (upstream stays fetched)
 ```
 
-Open the configured directory comparison tool between one patch's local copy and its sparse worktree.
+Resolution is ordinary git in your repo: edit the marked files, `git add` them,
+`git commit`. `resolve` only reports, gates, and cleans up; it never invents merge
+logic and never commits. `--continue` refuses while `git ls-files -u` still lists
+paths under the patch.
 
-`compare` works on exactly one patch. With no path argument it resolves the patch the same way `diff` does: CWD auto-detect first, then an `fzf` selection. If no patch can be resolved (including when `fzf` is missing), it prints the available patches as rows, exits with status 1, and does not dump a usage block.
+Because the apply is **one** three-way diff of `BASE..THEIRS` against your `HEAD`,
+thirty local changes cost one resolution round, not thirty — the upstream side is
+what gets squashed, not your commits.
 
-### `diff`
+### `ls`
 
 ```bash
-git cross diff [path]
+git cross ls [--raw] [--no-header]
 ```
 
-Print a unified diff between local files and the hidden worktree copy on the console.
-
-With no path argument, the patch is resolved in this order:
-
-1. **CWD auto-detect** — if the current directory is inside a patch's `local_path`, that patch is used (and an auto-detect note is printed).
-2. **`fzf` selection** — otherwise, if `fzf` is installed, pick a patch interactively.
-3. **Rows + hint** — if `fzf` is not installed, print the available patch rows plus a hint to `cd` into a patch directory or pass a path, and exit 1.
-
-Cancelling the `fzf` selection (Esc) exits 0 without doing anything.
-
-**Behavior change:** `diff` with no path from outside a patch directory used to dump diffs for all patches. It is now interactive.
-
-### Choosing between `diff` and `compare`
-
-Both commands view the same pair of directories — the local copy and the sparse worktree — but they target different workflows:
-
-| | `diff` | `compare` |
-|---|---|---|
-| Output | unified diff on stdout | the tool from `cross.dirdifftool` |
-| Scope | one patch (from a path, CWD, or `fzf`) | exactly one patch (from a path, CWD, or `fzf`) |
-| Unresolved patch | rows + exit 1 | rows + exit 1 |
-| Typical use | quick review, scripting, CI | side-by-side editing in an editor |
-
-`.crossignore` overrides are still review signals: `status` shows `Override`, and `diff` prints manual `git diff --no-index ...` commands for the override paths instead of a full diff.
-
-### `list`
-
-```bash
-git cross list [--raw] [--no-header]
-```
-
-Show configured remotes and patches. Default output is a table with
-`Configured Remotes:` / `Configured Patches:` banners and descriptive column
-headers.
+Show configured remotes and crosses. Default output is a table with
+`Configured Remotes:` / `Configured crosses:` banners and descriptive column
+headers. The crosses table carries the health columns (the old `stat`):
+**DIFF** — `Clean`, `Modified`, `Missing Files`, `Missing GD` — and **SHA**,
+the short upstream commit the cross has checked out (per gitdir; no fetch).
 
 `--raw` switches to machine-readable output: no table borders and no banners.
 When stdout is a terminal, columns are space-padded so they line up; when
@@ -375,145 +617,150 @@ remotes first, then all patches:
 
 ```text
 REMOTE_NAME  REMOTE_URL
-REMOTE       REMOTE_PATH  LOCAL_PATH     WORKTREE                               BRANCH
+REMOTE  REMOTE_PATH  LOCAL_PATH  WORKTREE  GITDIR  BRANCH  DIFF  SHA
 ```
 
-Each remote with a different fetch and push URL produces one row per URL; both
-rows stay in the two-column schema, so the URL field is never decorated with
-`(fetch)` / `(push)` suffixes. Remote rows are sorted by name. In pipes, header
-rows are themselves tab-separated, so use `--no-header` in pipelines.
+`LOCAL_PATH` is the user-facing key, `WORKTREE` the crossed directory git operates
+on (equal to `LOCAL_PATH` in 0.5.0), and `GITDIR` the bare upstream repository
+under `.cross/worktrees/`. Remote rows are sorted by name. In pipes, header rows
+are themselves tab-separated, so use `--no-header` in pipelines.
 
 Parsing examples:
 
 ```bash
-# Local paths only (patch rows have 5 fields, remote rows have 2)
-git cross list --raw --no-header | awk -F'\t' 'NF == 5 { print $3 }'
+# Local paths only (patch rows have 6 fields, remote rows have 2)
+git cross ls --raw --no-header | awk -F'\t' 'NF == 8 { print $3 }'
 
-# Worktree paths
-git cross list --raw --no-header | awk -F'\t' 'NF == 5 { print $4 }'
+# Worktree (patch) directories
+git cross ls --raw --no-header | awk -F'\t' 'NF == 8 { print $4 }'
+
+# Bare gitdirs (upstream .git content)
+git cross ls --raw --no-header | awk -F'\t' 'NF == 8 { print $5 }'
 
 # "<remote>:<branch>" for every patch
-git cross list --raw --no-header | awk -F'\t' 'NF == 5 { print $1 ":" $5 }'
+git cross ls --raw --no-header | awk -F'\t' 'NF == 8 { print $1 ":" $6 }'
 
 # Remote URLs
-git cross list --raw --no-header | awk -F'\t' 'NF == 2 { print $2 }'
+git cross ls --raw --no-header | awk -F'\t' 'NF == 2 { print $2 }'
 ```
 
 A plain `cut` works on the patch rows, but leaves blank lines for the
 two-column remote rows:
 
 ```bash
-git cross list --raw --no-header | cut -f3 | sed '/^$/d'
+git cross ls --raw --no-header | cut -f3 | sed '/^$/d'
 ```
 
 When nothing is configured, raw mode writes the empty-state message to stderr
 so stdout stays a clean pipe.
 
-### `status`
+### `del`
 
 ```bash
-git cross status
+git cross del <path>
 ```
 
-Show local diff state, upstream divergence, and conflicts.
+Remove one patch: its gitdir, the crossed directory (a visible deletion in your
+repository), the `Crossfile` line, and the metadata entry.
 
-### `remove`
+### `wipe`
 
 ```bash
-git cross remove <path>
+git cross wipe [remote]
 ```
 
-Remove one patch and clean up local state.
+- `git cross wipe <remote>` removes the remote record, every cross of that
+  remote, and the remote's gitdir directory.
+- `git cross wipe` (no argument) offers to remove remotes that no cross uses,
+  then sweeps orphaned gitdirs that metadata does not reference.
 
-### `prune`
+> v0.4 called this `prune`, 0.5.0 `purge`; now `wipe`. `git cross prune` and
+> `git cross purge` fall through to the git passthrough.
 
-```bash
-git cross prune [remote]
-```
-
-Remove unused remotes, stale worktrees, or all patches for one remote.
-
-### `cd` and `wt`
+### `cd` (hidden from help)
 
 ```bash
 git cross cd [path]
-git cross wt [path]
 ```
 
-Print the absolute destination path for one patch: `cd` targets the local copy
-(`local_path`), `wt` targets the hidden sparse worktree.
+Print the absolute crossed directory — the only thing written to stdout (hints
+and errors go to stderr). Run directly, the command only prints a path: a child
+process cannot change your shell, which is why `cd`/`wt` are hidden from
+`git cross --help`. The real directory change lives in the wrappers:
+`xcd [path]` and `gx cd [path]`.
 
-The path is the only thing written to stdout; hints and errors go to stderr.
-Run directly, the command only prints a path: a child process cannot change
-your shell, so `cd "$(git cross cd)"` would change a throwaway sub-shell only.
+`wt [path]` is a hidden alias of `cd` (kept from <=0.5.0, where it was the
+upstream git passthrough — that role now lives only on the bare
+`git cross <git-args>` fall-through).
 
 ### Shell integration (real `cd`)
 
 A child process cannot change the working directory of the shell that started
 it — no CLI can. Tools that appear to do it (yazi, zoxide, autojump) all use
 the same pattern: the program prints the destination, and a small **shell
-function** captures it and runs `cd` in your shell. `git cross completion`
+function** captures it and runs `cd` in your shell. `git cross comp`
 prints that function pair together with the completion script:
 
 ```fish
 # fish (~/.config/fish/config.fish, or a file in ~/.config/fish/functions/)
-git cross completion fish | source
+git cross comp fish | source
 
 # shell auto-detected from $SHELL:
-git cross completion | source
+git cross comp | source
 ```
 
 ```bash
 # bash / zsh (~/.bashrc, ~/.zshrc)
-eval "$(git cross completion)"
+eval "$(git cross comp)"
 
 # or force a shell:
-eval "$(git cross completion bash)"
+eval "$(git cross comp bash)"
 ```
 
-That defines two functions, which take the same optional path (and `fzf`
+That defines these functions, which take the same optional path (and `fzf`
 selection) as the commands themselves:
 
 ```bash
-crosscd vendor/app     # cd into the local copy
-crosswt vendor/app     # cd into the sparse worktree
-crosswt                # no path: fzf selection
+xcd vendor/app         # cd into the crossed directory
+gx cd vendor/app       # same — gx is a shell function, so it CAN cd
+gx add ./file          # short alias for git cross
+cr log --oneline       # short alias for git cross
 ```
 
-`git cross init` prints the matching one-liner for your `$SHELL` when it
-creates a `Crossfile`.
+`git cross cfg` (alias: `git cross init`) prints the matching one-liner for your
+`$SHELL` when it creates a `Crossfile`. For an even shorter git-level alias:
+
+```bash
+git config --global alias.x '!git cross'    # then: git x add ./file
+```
 
 Prefer to install the wrappers by hand? Copy the function into your shell's
 function directory (fish) or profile (bash/zsh); they are plain wrappers, not
 special builtins:
 
 ```fish
-# ~/.config/fish/functions/crosswt.fish
-function crosswt --description 'cd into a git-cross worktree'
-    set -l p (git cross wt $argv)
-    or return
-    test -n "$p"; and cd $p
+# ~/.config/fish/functions/gx.fish
+function gx --description 'short alias for git cross (gx cd changes directory)'
+    if begin; test (count $argv) -ge 1; and test $argv[1] = cd; end
+        set -l rest $argv
+        set -e rest[1]
+        xcd $rest
+    else
+        git cross $argv
+    end
 end
 ```
 
 ```bash
 # ~/.bashrc / ~/.zshrc
-crosswt() { local p; p="$(git cross wt "$@")" || return; [ -n "$p" ] && cd "$p"; }
-crosscd() { local p; p="$(git cross cd "$@")" || return; [ -n "$p" ] && cd "$p"; }
+xcd() { local p; p="$(git cross cd "$@")" || return; [ -n "$p" ] && cd "$p"; }
+gx() { if [ "$1" = "cd" ]; then shift; xcd "$@"; else git cross "$@"; fi; }
 ```
 
-Short aliases work as ordinary aliases; for example `gccd`/`gcwt` behave like
-`cd` into the local copy/worktree:
-
-```fish
-alias gcwt crosswt
-alias gccd crosscd
-```
-
-```bash
-alias gcwt=crosswt
-alias gccd=crosscd
-```
+`xcd` is already the short, idiomatic name — `x` as cross (like `git x` and
+`gx`), so `xcd` reads as "cross cd". No further aliasing is needed; if the
+name ever collides with something in your shell, wrap it instead of renaming
+it (`my-xcd() { xcd "$@"; }`).
 
 Keeping stdout path-only is deliberate: it makes the output composable in
 scripts (`dir=$(git cross cd vendor/app)`) and safe to capture in a function.
@@ -536,101 +783,58 @@ Select patch>
 If `fzf` is not installed, the command prints the available patch rows plus a
 hint to `cd` manually, and exits 1.
 
-## Directory Diff Tool (`cross.dirdifftool`)
+## Directory Comparison
 
-`compare` uses the command configured in `cross.dirdifftool`. Configure it
-globally or per repository:
-
-```bash
-git config --global cross.dirdifftool '<command>'
-```
-
-The key is named after the *directory* diff tool it configures (DirDiff and
-similar tools compare whole trees of files). The pre-0.4 key `cross.diffTool`
-is still read as a deprecated fallback; migrate with:
+`compare` (and its `cmp` alias) was **removed in 0.5.0**. In v0.4 it diffed two
+directories — a hidden worktree and your copy. In 0.5.0 the crossed directory *is*
+the upstream work tree, so there is no second checkout: the comparison is a
+normal upstream-context git diff.
 
 ```bash
-git config --global cross.dirdifftool "$(git config --global --get cross.diffTool)" \
-  && git config --global --unset cross.diffTool
+cd vendor/app
+git cross diff --stat        # your changes vs upstream HEAD
+git cross diff               # the same as a line diff
+git cross log --oneline -5   # upstream history
 ```
 
-### Template form (current)
-
-If the command contains `{left}` or `{right}`, both placeholders are replaced
-before the command is run:
-
-- `{left}` — the patch's path inside the sparse worktree
-- `{right}` — the patch's local copy
-
-The substituted paths are **repo-relative**, and the command runs with the
-repository root as its working directory. When `cross.dirdifftool` is unset the
-built-in default is used — `nvim` if it is installed, otherwise `vim`:
-
-```text
-nvim "+let g:DirDiffExcludes = '.git'" "+DirDiff {left} {right}"
-vim  "+let g:DirDiffExcludes = '.git'" "+DirDiff {left} {right}"
-```
-
-Note the two separate `+cmd` arguments: `DirDiffIgnore=...` is not a vim
-command, so the exclusion is set with `let` first, then `DirDiff` runs with the
-directories as arguments. To pin a specific editor, set it explicitly:
+Against a different upstream revision, fetch it into the gitdir and diff two
+trees explicitly:
 
 ```bash
-git config --global cross.dirdifftool "nvim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
-# strictly vim:
-git config --global cross.dirdifftool "vim \"+let g:DirDiffExcludes = '.git'\" \"+DirDiff {left} {right}\""
+cd vendor/app
+git cross fetch origin
+git cross diff origin/main -- .
 ```
 
-A custom ignore list passes DirDiff a comma-separated list of names to skip:
-
-```bash
-git config --global cross.dirdifftool "nvim \"+let g:DirDiffExcludes = '.git,ves.io,f5fed.com,volterra.us'\" \"+DirDiff {left} {right}\""
-```
-
-### Environment variables (when `cross.dirdifftool` is unset)
-
-Two optional variables feed the built-in default; both are comma-separated:
-
-| Variable | Effect |
-|---|---|
-| `DIRDIFF_EXCLUDES` | Extra file/dir names to hide. `.git` is **always** excluded (permanent prefix). |
-| `DIRDIFF_IGNORE` | Keywords ignored inside the diff content — useful when the upstream is e.g. `github.com` and your copy is `gitlab.com`. |
-
-```bash
-export DIRDIFF_EXCLUDES='vendor,node_modules,dist'
-export DIRDIFF_IGNORE='github.com,gitlab.com'
-git cross compare app   # -> nvim "+let g:DirDiffExcludes = '.git,vendor,node_modules,dist'"
-                        #         "+let g:DirDiffIgnore = '\Vgithub.com\|gitlab.com'" "+DirDiff ..."
-```
-
-`DIRDIFF_IGNORE` is converted to a vim **very-nomagic** regexp (`\V`), so dots
-and other characters match literally; items are joined with `\|` (alternation).
-Unset or empty variables simply omit the corresponding `+let` argument.
-
-In this form the paths are part of the vim `+` command string, which is where
-DirDiff reads them. The repository default already ignores `.git`, so the
-worktree's `.git` pointer file never appears in the comparison.
-
-### Legacy append form (deprecated)
-
-A command without `{left}` / `{right}` keeps the old behavior: the two absolute
-paths are appended as trailing arguments.
-
-```bash
-# Deprecated: paths become vim file arguments, not DirDiff arguments.
-git config --global cross.dirdifftool 'vim "+DirDiff"'
-```
-
-This form is deprecated because it does not invoke DirDiff correctly. Migrate
-to the template form above.
+`cross.dirdifftool`, its `{left}`/`{right}` placeholders, the built-in
+`nvim`/`vim` DirDiff default, and the `DIRDIFF_EXCLUDES` / `DIRDIFF_IGNORE`
+variables went with the command. A leftover setting is ignored — remove it with
+`git config --unset cross.dirdifftool`.
 
 ## Safety Notes
 
-- `remove` and `prune` now guard against deleting repo root contents when a patch targets `.`
-- whole-upstream patching with `remote:.` and `remote:/` works for vendoring into local directories
-- repository-root local targets are not supported by `update` yet
-- override markers in `.crossignore` currently affect review surfaces: `status` and `diff`
-- if you are experimenting with root-target overlay workflows, treat them as advanced usage and verify results carefully
+- `remove` and `purge` guard against deleting repository-root contents when a
+  patch targets `.`.
+- Whole-upstream patches (`remote:.` and `remote:/`) are supported: no sparse
+  filter is written and every upstream file is materialized.
+- Repository-root local targets (`local_path = "."`) are not supported by `update`.
+- The git passthrough requires a crossed directory. Outside one it exits 1 instead
+  of running git against your repository (ADR-002).
+- `.cross/` is disposable state. Deleting it and running `git cross update`
+  rebuilds every cross from `Crossfile`.
+- The crossed directory is tracked by your repository. `git cross del` therefore
+  shows up as a deletion in your working tree — review before committing.
+- `.crossignore` overrides were removed in 0.5.0; local-only files simply stay
+  untracked/ignored by your own `.gitignore`.
+- `update` never overwrites your committed work: a collision is left as unmerged
+  paths + markers in your repo. It does refuse to run over **unstaged** edits, so
+  commit (or stash) before updating.
+- While a conflict is unresolved, `git add -A` in your repo would stage the
+  markers. Resolve first, then stage: `git cross resolve` lists exactly what is
+  left.
+- `update --no-resolve` takes upstream as-is (upstream wins every collision). Your
+  version is not lost — it is still in your history — but the crossed dir no longer
+  reflects it; re-run `git cross resolve` after restoring what you want.
 
 ## AI Tooling And Skills
 
@@ -672,11 +876,20 @@ See [sbx-kits/README.md](sbx-kits/README.md) for the structure, starter kits, an
 
 High level:
 
-- Just/Fish is the readable behavior reference
-- Go is the main production CLI
-- Rust source remains in the repository but is not maintained or supported
+- One **bare gitdir per patch** under `.cross/worktrees/<remote>/<patch>/` holds the
+  upstream `.git` content (objects, refs, remotes, sparse config, rerere).
+- The **work tree is the crossed directory inside your repository** — plain files,
+  tracked by your repo, no `.git` pointer, no rsync.
+- Upstream git runs through `GIT_DIR`/`GIT_WORK_TREE` — the bare `git cross <git-args>`
+  fall-through, only from inside a crossed directory (cd/wt are hidden path-printers).
+- `.cross/metadata.json` records `local_path`, `worktree`, `gitdir`, `branch` and
+  `remote_url` (ADR-001).
+- Go is the primary and only full implementation; Just/Fish is the core-only
+  prototyping reference (Go-only commands are `NOT IMPLEMENTED` stubs there).
+  Rust was deleted (v0.5.1).
 
-Detailed architecture notes live in [docs/overview.md](docs/overview.md).
+Decisions: `specs/003-gitdir-patches/adr-001-metadata-locations.md`,
+`adr-002-passthrough-requires-patch.md`. Design notes: [docs/overview.md](docs/overview.md).
 
 ## License
 

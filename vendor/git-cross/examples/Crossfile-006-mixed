@@ -1,0 +1,22 @@
+# git-cross Mixed Prefix Example
+# This example demonstrates that replay is agnostic to the command prefix.
+# 'cross' is the standard, portable prefix.
+# 'git cross' can be used if you have the git alias configured.
+# 'just cross' can be used if you have 'just' installed.
+
+# 1. Standard portable prefix (Recommended)
+cross use portable https://github.com/epcim/git-cross.git
+
+# 2. Git alias prefix (Requires 'git config --global alias.cross ...')
+git cross use git-aliased https://github.com/epcim/git-cross.git
+
+# 3. Just implementation prefix (Requires 'just' in PATH)
+just cross use just-impl https://github.com/epcim/git-cross.git
+
+# 4. Mixed patches
+cross patch portable:README.md vendor/docs/readme-portable.md
+git cross patch git-aliased:LICENSE vendor/docs/license-git.md
+just cross patch just-impl:AGENTS.md vendor/docs/agents-just.md
+
+# 5. Post-patching hooks
+cross exec "echo 'Mixed replay completed successfully!'"

@@ -15,31 +15,35 @@ cd "$SANDBOX"
 log_header "Testing with real-world repo: runtipi-appstore"
 
 # Use Go implementation for this real-world test as it's the primary one
-GO_BIN="$REPO_ROOT/src-go/git-cross-go"
-if [ ! -f "$GO_BIN" ]; then
-    # Remove stale vendor dir that causes "inconsistent vendoring" errors
-    rm -rf "$REPO_ROOT/src-go/vendor" 2>/dev/null || true
-    (cd "$REPO_ROOT/src-go" && CGO_ENABLED=0 go build -mod=mod -tags purego -o "$GO_BIN" main.go)
-fi
-
-# Verify Go binary works on this platform
-if ! "$GO_BIN" --version >/dev/null 2>&1; then
-    echo "SKIP: Go binary crashes on this platform (QEMU ARM64 emulation)"
+GO_BIN=$(ensure_go_bin "$REPO_ROOT" || true)
+if [ -z "${GO_BIN:-}" ]; then
+    echo "SKIP: Go toolchain unavailable or binary cannot run on this platform"
     exit 0
 fi
 
-"$GO_BIN" init
+"$GO_BIN" cfg
 "$GO_BIN" use runtipi https://github.com/runtipi/runtipi-appstore.git
-"$GO_BIN" patch runtipi:apps/adguard vendor/adguard
+"$GO_BIN" set runtipi:apps/adguard vendor/adguard
 
-assert_dir_exists "vendor/adguard"
-assert_file_exists "vendor/adguard/config.json"
-assert_file_exists "vendor/adguard/docker-compose.yml"
+# v2 D3 nesting: the patch dir mirrors the upstream ROOT, so the sparse subtree
+# apps/adguard/ is materialized at vendor/adguard/apps/adguard/.
+assert_dir_exists "vendor/adguard/apps/adguard"
+assert_file_exists "vendor/adguard/apps/adguard/config.json"
+assert_file_exists "vendor/adguard/apps/adguard/docker-compose.yml"
 
-# Verify no extra files in worktree
-wt_path=$(find .cross/worktrees -maxdepth 1 -name "runtipi_*" | head -n 1)
-if [ -f "$wt_path/README.md" ]; then
-    fail "README.md found in worktree! Sparse checkout failed."
+# Sparse filter: files outside apps/adguard must not be materialized.
+gd=$(jq -r '.patches[] | select(.local_path == "vendor/adguard") | .gitdir' .cross/metadata.json)
+wt=$(jq -r '.patches[] | select(.local_path == "vendor/adguard") | .worktree' .cross/metadata.json)
+if [ -z "$gd" ] || [ "$gd" = "null" ]; then
+    fail "metadata is missing 'gitdir' for vendor/adguard"
 fi
+grep -qx "apps/adguard/" "$gd/info/sparse-checkout" \
+    || fail "info/sparse-checkout must contain 'apps/adguard/' (trailing slash)"
+if [ -f "$wt/README.md" ]; then
+    fail "README.md found in the patch dir! Sparse checkout failed."
+fi
+
+# The work tree is the patch dir: no .git pointer, plain files in the repo.
+[ -e "$wt/.git" ] && fail "patch dir must not contain a .git file"
 
 echo "Real-world test passed!"

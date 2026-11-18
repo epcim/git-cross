@@ -2,7 +2,7 @@
 cross use demo https://github.com/example/demo-repo
 
 # Patch a directory
-cross patch demo:docs vendor/docs
+cross set demo:docs vendor/docs
 
 # Later: sync updates from upstream
 # (simulated by updating the remote and running sync)

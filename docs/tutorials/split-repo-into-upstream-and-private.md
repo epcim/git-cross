@@ -1,3 +1,9 @@
+> **v0.5.0 note.** The crossed directory *is* the upstream work tree now (bare gitdir
+> under `.cross/worktrees/`, no rsync, no linked worktree), `status` is `stat`,
+> `prune` is `purge`, `diff` is the upstream-context passthrough (`cd` into the
+> patch first), and `compare` was removed. `.crossignore` is no longer read by
+> `git-cross` — treat any such file as your own plain ignore list.
+
 # Tutorial: Split One Repo Into A Clean Upstream And A Private Overlay
 
 Start from one **original repo** that mixes shareable code with secrets, and end
@@ -154,7 +160,7 @@ git-cross.
 
 ```bash
 git cross use upstream git@github.com:your-org/project.git
-git cross patch upstream:. .            # `upstream:/` is equivalent
+git cross set upstream:. .            # `upstream:/` is equivalent
 ```
 
 Register a writable fork instead if you plan to contribute back.
@@ -164,8 +170,8 @@ Register a writable fork instead if you plan to contribute back.
 ```bash
 rsync -av ../private-overrides-backup/ ./ 2>/dev/null || true
 cat .crossignore                        # confirm it survived the patch
-git cross status                        # shows `Override` for the root patch
-git cross diff .
+git cross stat                          # health table (was `status`)
+cd . && git cross diff
 ```
 
 ## 7. Commit and day-2 workflow · *run in: private fork*
@@ -176,8 +182,8 @@ git push origin main
 ```
 
 - repository-root updates are currently blocked until root-overlay safety is implemented; use a local subdirectory patch for update workflows
-- review: `git cross diff .` / `git cross status`
-- contribute manually: compare with `git cross compare .`, copy intended files
+- review: `git cross diff` / `git cross stat`
+- contribute manually: `git cross diff`, then stage and `git cross push`
   into the sparse worktree, then commit/push with Git from that worktree
 
 ## Related

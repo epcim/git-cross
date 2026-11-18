@@ -1,3 +1,9 @@
+> **v0.5.0 note.** The crossed directory *is* the upstream work tree now (bare gitdir
+> under `.cross/worktrees/`, no rsync, no linked worktree), `status` is `stat`,
+> `prune` is `purge`, `diff` is the upstream-context passthrough (`cd` into the
+> patch first), and `compare` was removed. `.crossignore` is no longer read by
+> `git-cross` — treat any such file as your own plain ignore list.
+
 # Tutorial: Migrate A Private Fork To `git-cross`
 
 ## Goal
@@ -11,8 +17,8 @@ This tutorial shows a cautious migration path for a private repository that star
 The end state is:
 
 - the repo root is tracked as a `git-cross` patch
-- upstream relationship is managed through a hidden worktree
-- local-only files are restored and marked for review with `.crossignore`
+- upstream relationship is managed through a per-patch bare gitdir
+- local-only files are restored as plain untracked files (`.crossignore` is no longer read)
 
 ## Important Safety Note
 
@@ -20,16 +26,16 @@ This is an advanced workflow.
 
 Current shipped behavior:
 
-- non-comment entries in `.crossignore` affect review surfaces such as `status` and `diff`
+- a `.crossignore` file is just your own plain ignore list now; cross ignores it
 - they do **not** guarantee protection during the initial repo-root materialization step
 
-So for the first migration patch, do **not** rely on `.crossignore` alone.
+So for the first migration patch, do **not** rely on an ignore list alone.
 
 Use:
 
 1. a backup branch or tag
 2. a fresh clone or throwaway migration branch
-3. an external copy of all local-only files before running `git cross patch upstream:. .`
+3. an external copy of all local-only files before running `git cross set upstream:. .`
 
 ## Scenario
 
@@ -122,7 +128,7 @@ Typical examples:
 - `config/private/`
 - machine-local certificate files
 
-For current shipped behavior, write them into `.crossignore` first.
+Keep them in a plain list file (e.g. `.crossignore`, read only by you) as a checklist.
 
 Current parsing rules are simple:
 
@@ -192,16 +198,16 @@ git cross use upstream https://github.com/example/project.git
 Now create the repo-root patch:
 
 ```bash
-git cross patch upstream:. .
+git cross set upstream:. .
 ```
 
 Equivalent form:
 
 ```bash
-git cross patch upstream:/ .
+git cross set upstream:/ .
 ```
 
-This is the key migration step: repo root is now associated with the upstream root through a hidden worktree.
+This is the key migration step: the repo root is now the upstream work tree, backed by the patch's bare gitdir.
 
 ## Step 7: Restore Local-Only Files And Create `.crossignore`
 
@@ -231,7 +237,7 @@ Use simple explicit patterns. The current code treats `.crossignore` here as a s
 Run:
 
 ```bash
-git cross status
+git cross stat
 git cross diff .
 ```
 
@@ -258,15 +264,15 @@ After the migration:
 
 - repository-root updates are currently blocked until root-overlay safety is implemented
 - review root changes with `git cross diff .`
-- inspect state with `git cross status`
+- inspect state with `git cross stat`
 - publish the combined result to your private `origin` with normal Git
 
 ## Step 11: Manually Contribute Changes Back Upstream
 
 If you want to send some changes back upstream later:
 
-1. open the sparse worktree with `git cross wt .`
-2. compare it with the local repo using `git cross compare .`
+1. `cd` into the crossed directory (it is the upstream work tree)
+2. compare it with the upstream state using `git cross diff`
 3. manually copy intended upstream changes into the worktree
 4. commit and push from that worktree with normal Git commands
 

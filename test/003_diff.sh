@@ -3,178 +3,94 @@ source test/common.sh
 
 CLEANUP={$CLEANUP:-true} source test/002_patch.sh
 
-# Diff
-log_header "Testing 'just cross diff' (003)..."
+# v0.5.0: `diff` is the git passthrough — it only works INSIDE a crossed directory
+# (GIT_DIR/GIT_WORK_TREE = the patch's upstream context). At the repo root it
+# fails early (ADR-002). Local changes are tracked files under the nested
+# upstream path (D3: vendor/lib/src/lib/lib.txt).
 
+log_header "Testing 'just cross diff' inside the patch dir (003)..."
 
-# Add/Modify local
-echo "added" >> "vendor/lib/file.txt"
-git add vendor/lib/file.txt
+# Add/Modify local (v2 D3 nesting: tracked files live under vendor/lib/src/lib/)
+echo "added" >> "vendor/lib/src/lib/lib.txt"
+git add vendor/lib/src/lib/lib.txt
 git commit -m "add file" -q
-echo "modified" >> "vendor/lib/file.txt"
-echo "added" >> "vendor/lib/file2.txt"
+echo "modified" >> "vendor/lib/src/lib/lib.txt"
 
-
-# We expect diff to fail (exit 1) because diff found differences, or just output diff
-# git diff exits 1 if differences found.
-# Our Justfile implementation: git diff --no-index ... || true
-# So it should exit 0 but print diff.
-
-output=$(just cross diff vendor/lib) # AICONTEXT: do not modify the inner subcommand. It is expected behaviour. The diff argument is either optional, if the user CWD is in the local_path of tracked worktree (ie: vendor/lib directory)
-echo "$output"
-
-if [[ "$output" != *"diff --git"* ]]; then
-    echo "Failed: Diff output missing."
-    exit 1
-fi
-
-# Modify upstream
-echo "upstream change" > "$upstream_path/file.txt"
-git -C "$upstream_path" commit -am "Upstream change" -q
-
-# Status
-log_header "Testing 'just cross status'..."
-# We need to fetch in the worktree to see upstream changes?
-# The status command does:
-# behind=$(git -C $wt rev-list --count HEAD..@{upstream} 2>/dev/null)
-# But we need to fetch first. `status` doesn't fetch. `sync` fetches.
-# But `status` checks `@{upstream}`.
-
-# Let's manually fetch in the worktree to simulate background fetch or check if status should fetch.
-# The implementation of status does NOT fetch.
-# So we might not see "behind" unless we fetch.
-# Let's try running sync (which fetches) but maybe just fetch manually for test.
-
-# Find worktree
-# AICONTEXT: finding worktree, shall be possible with metadata.yaml and with just cross _resolve_context, better keep the test code DRY principle.
-wt=$(jq -r '.patches[] | select(.local_path == "vendor/lib") | .worktree' .cross/metadata.json)
-if [ -z "$wt" ] || [ ! -d "$wt" ]; then
-    echo "Failed: worktree for vendor/lib not found in metadata."
-    exit 1
-fi
-
-git -C "$wt" fetch -q
-
-
-log_header "Testing 'just cross status'... and show diff"
-output=$(just cross status)
-echo "$output"
-
-if [[ "$output" != *"Modified"* ]]; then
-    echo "Failed: Status should show behind."
-    exit 1
-fi
-
-
-#####################################################
-log_header "Testing diff (auto detect patch path)"
-
-pushd "vendor/lib"
-    output=$(just cross diff) # AICONTEXT: do not modify the inner subcommand. It is expected behaviour. The diff argument is either optional, if the user CWD is in the local_path of tracked worktree (ie: vendor/lib directory)
+pushd vendor/lib >/dev/null
+    output=$(just cross diff || true)
     echo "$output"
+    if [[ "$output" != *"src/lib/lib.txt"* ]]; then
+        echo "Failed: Diff of the tracked nested file missing."
+        exit 1
+    fi
     if [[ "$output" != *"diff --git"* ]]; then
         echo "Failed: Diff output missing."
         exit 1
     fi
-popd
+popd >/dev/null
 
-log_header "Testing 'just cross status'... and show diff"
-output=$(just cross status)
+# Modify upstream and fetch into the gitdir (bare clones need an explicit refspec).
+# NB: use a tracked upstream file — `commit -am` ignores untracked files.
+echo "upstream change" > "$upstream_path/src/lib/lib.txt"
+git -C "$upstream_path" commit -am "Upstream change" -q || true
+
+log_header "Testing 'just cross ls' DIFF column..."
+gd=$(jq -r '.patches[] | select(.local_path == "vendor/lib") | .gitdir' .cross/metadata.json)
+if [ -z "$gd" ] || [ ! -d "$gd" ]; then
+    echo "Failed: gitdir for vendor/lib not found in metadata."
+    exit 1
+fi
+br=$(jq -r '.patches[] | select(.local_path == "vendor/lib") | .branch' .cross/metadata.json)
+git --git-dir="$gd" fetch -q origin "+refs/heads/$br:refs/remotes/origin/$br"
+
+output=$(just cross ls)
 echo "$output"
 if [[ "$output" != *"Modified"* ]]; then
-    echo "Failed: Status should show behind."
+    echo "Failed: ls DIFF should report the patch as Modified (local edits)."
     exit 1
-fi  
-
+fi
+# (v0.5.1) the "N behind" state went away with stat's UPSTREAM column; the
+# gitdir fetch itself is covered by the Modified DIFF above and by 026's
+# mirror-advance assertions.
 
 #####################################################
-log_header "Testing diff changes in remote upstream"
+log_header "Testing diff auto-detect from a patch subdirectory"
 
-# Add content
-echo "original" > "$upstream_path/src/lib/file3.txt"
-git -C "$upstream_path" add src/lib/file3.txt
-git -C "$upstream_path" commit -m "Add file3" -q
+mkdir -p vendor/lib/src/lib/nested
+pushd vendor/lib/src/lib/nested >/dev/null
+    output=$(just cross diff || true)
+    echo "$output"
+    if [[ "$output" != *"src/lib/lib.txt"* ]]; then
+        echo "Failed: diff from a patch subdirectory should still show the patch diff."
+        exit 1
+    fi
+popd
 
-output=$(just cross diff vendor/lib) # AICONTEXT: do not modify the inner subcommand. It is expected behaviour. The diff argument is either optional, if the user CWD is in the local_path of tracked worktree (ie: vendor/lib directory)
+#####################################################
+log_header "Testing diff with an explicit git pathspec inside the patch"
+
+pushd vendor/lib >/dev/null
+    output=$(just cross diff src/lib/lib.txt || true)
+    echo "$output"
+    if [[ "$output" != *"modified"* ]]; then
+        echo "Failed: diff with a pathspec should show the modification."
+        exit 1
+    fi
+popd
+
+#####################################################
+log_header "Testing that diff at the repo root fails early (ADR-002)"
+
+rc=0
+output=$(just cross diff vendor/lib 2>&1) || rc=$?
 echo "$output"
-
-if [[ "$output" != *"diff --git"* ]]; then
-    echo "Failed: Diff output missing."
+if [ "$rc" -eq 0 ]; then
+    echo "Failed: diff outside a crossed directory must exit non-zero."
     exit 1
 fi
-
-
-#####################################################
-log_header "Testing diff with relative paths (NEW FEATURE)"
-
-# Test 1: diff with . (current directory)
-pushd "vendor/lib" >/dev/null
-    echo "Test: git cross diff . (from within patch directory)"
-    output=$(just cross diff .)
-    if [[ "$output" != *"diff --git"* ]]; then
-        echo "Failed: Diff with '.' should show diffs"
-        exit 1
-    fi
-    echo "✓ Passed: diff . works from patch directory"
-popd >/dev/null
-
-# Test 2: diff with relative path from parent
-echo "Test: git cross diff vendor/lib (from repo root)"
-output=$(just cross diff vendor/lib)
-if [[ "$output" != *"diff --git"* ]]; then
-    echo "Failed: Diff with repo-relative path should work"
+if [[ "$output" != *"crossed directory"* ]]; then
+    echo "Failed: diff outside a crossed directory must explain the missing context."
     exit 1
 fi
-echo "✓ Passed: diff vendor/lib works from repo root"
-
-# Test 3: diff with ../ (navigate to sibling - if we have one)
-# First create another patch for testing
-mkdir -p "$upstream_path/src/lib2"
-echo "original" > "$upstream_path/src/lib2/other.txt"
-git -C "$upstream_path" add src/lib2/other.txt
-git -C "$upstream_path" commit -m "Add lib2" -q
-just cross patch repo1:src/lib2 vendor/lib2
-echo "modified in lib2" >> "vendor/lib2/other.txt"
-
-pushd "vendor/lib" >/dev/null
-    echo "Test: git cross diff ../lib2 (relative to sibling)"
-    output=$(just cross diff ../lib2 2>&1 || true)
-    # This should either work or give a clear error
-    # The key is it shouldn't crash with "patch not found for path: ../lib2"
-    if [[ "$output" == *"patch not found for path: ../lib2"* ]]; then
-        echo "Failed: Should resolve ../lib2 to vendor/lib2"
-        exit 1
-    fi
-    echo "✓ Passed: diff ../lib2 resolves correctly"
-popd >/dev/null
-
-# Test 4: diff with absolute path
-abs_path="$(pwd)/vendor/lib"
-echo "Test: git cross diff $abs_path (absolute path)"
-output=$(just cross diff "$abs_path" 2>&1 || true)
-if [[ "$output" == *"patch not found for path: $abs_path"* ]]; then
-    echo "Failed: Should resolve absolute path to repo-relative"
-    exit 1
-fi
-echo "✓ Passed: diff with absolute path resolves correctly"
-
-# Test 5: diff from subdirectory of a patch
-mkdir -p vendor/lib/subdir
-pushd "vendor/lib/subdir" >/dev/null
-    echo "Test: git cross diff . (from subdirectory of patch)"
-    output=$(just cross diff . 2>&1 || true)
-    # From vendor/lib/subdir, "." should resolve to that path
-    # and we should find the parent patch vendor/lib
-    if [[ "$output" == *"patch not found"* ]]; then
-        echo "Failed: Should find parent patch from subdirectory"
-        exit 1
-    fi
-    echo "✓ Passed: diff . from subdirectory finds parent patch"
-popd >/dev/null
-
-echo ""
-echo "=========================================="
-echo "All relative path tests passed!"
-echo "=========================================="
 
 echo "Success!"

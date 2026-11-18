@@ -1,3 +1,9 @@
+> **v0.5.0 note.** The crossed directory *is* the upstream work tree now (bare gitdir
+> under `.cross/worktrees/`, no rsync, no linked worktree), `status` is `stat`,
+> `prune` is `purge`, `diff` is the upstream-context passthrough (`cd` into the
+> patch first), and `compare` was removed. `.crossignore` is no longer read by
+> `git-cross` — treat any such file as your own plain ignore list.
+
 # Tutorial: Local Overlays And Upstream Contribution
 
 ## Goal
@@ -27,7 +33,7 @@ vendor/app/
   src/
   .env
   compose.override.yaml
-  .crossignore
+  .gitignore          # your own ignore list for local-only files
 ```
 
 ## Step 1: Register Upstream
@@ -41,7 +47,7 @@ This creates a named upstream alias, here `app`.
 ## Step 2: Patch The Upstream Directory Locally
 
 ```bash
-git cross patch app:src vendor/app
+git cross set app:src vendor/app
 ```
 
 Now `vendor/app` contains normal files from the upstream `src` directory.
@@ -58,7 +64,7 @@ touch vendor/app/compose.override.yaml
 Then mark them as local overrides:
 
 ```bash
-cat > vendor/app/.crossignore <<'EOF'
+cat > vendor/app/.gitignore <<'EOF'
 .env
 compose.override.yaml
 EOF
@@ -67,14 +73,15 @@ EOF
 ## Step 4: Review Local State
 
 ```bash
-git cross status
-git cross diff vendor/app
+git cross stat
+cd vendor/app && git cross diff
 ```
 
 What you should see:
 
-- `status` reports `Override` for `vendor/app`
-- `diff` prints manual compare commands for the override paths
+- `git cross stat` reports `vendor/app` as modified in your repo
+- `git cross diff` (inside the patch) shows only tracked upstream files — the
+  local-only files are untracked, so they never reach upstream's diff
 
 This is a deliberate review point.
 
@@ -103,8 +110,8 @@ git cross update vendor/app
 Then review again:
 
 ```bash
-git cross status
-git cross diff vendor/app
+git cross stat
+cd vendor/app && git cross diff
 ```
 
 Especially if local-only files live next to upstream-managed files, keep the review loop explicit.
@@ -117,17 +124,20 @@ The cleanest setup is to track a writable fork from the start, then open a PR or
 
 To manually prepare upstream-bound changes:
 
-1. open the sparse worktree with `git cross wt vendor/app`
-2. compare it with local files using `git cross compare vendor/app`
-3. manually copy intended changes into the worktree
-4. commit and push from there with normal Git commands
+1. `cd vendor/app` (the crossed directory is upstream's work tree)
+2. `git cross diff` — your edits against upstream `HEAD`
+3. stage only the upstream-worthy files: `git cross add <paths>`
+4. `git cross commit -m "..."` then `git cross push` (this pushes to the PATCH's
+   upstream, not your repo)
 
 ## Practical Advice
 
 - Use your main repo `origin` for your final combined product state.
 - Use a fork remote if you plan to contribute upstream.
-- Keep local secrets and machine config clearly marked in `.crossignore`.
-- Treat `.crossignore` entries as review helpers, not as a replacement for manual comparison.
+- Keep local secrets and machine config in your own `.gitignore` (cross no longer
+  reads `.crossignore` — that feature was removed in 0.5.0).
+- Local-only files never affect `git cross update` and never appear in the
+  upstream-context diff, but they do appear as untracked files in your repo.
 
 ## When To Use A Sandbox
 
