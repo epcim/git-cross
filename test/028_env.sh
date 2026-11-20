@@ -66,6 +66,7 @@ echo "$out"
 assert_contains "$out" "export GIT_DIR='$GD_ABS'" "env must export the absolute gitdir"
 assert_contains "$out" "export GIT_WORK_TREE='$WT_ABS'" "env must export the absolute work tree"
 assert_contains "$out" "export CROSS_ACTIVE='vendor/docs'" "env must export the local_path marker"
+assert_contains "$out" "export CROSS_REMOTE='up'" "env must export the remote name"
 log_success "env prints GIT_DIR + GIT_WORK_TREE + CROSS_ACTIVE"
 
 log_header "028: env works from any depth inside the cross and from a path arg"
@@ -98,6 +99,7 @@ log_header "028: --gitdir / --worktree / --local-path / --json print bare values
 [ "$("$GO_BIN" env --gitdir vendor/docs)" = "$GD_ABS" ] || fail "--gitdir must print the absolute gitdir"
 [ "$("$GO_BIN" env --worktree vendor/docs)" = "$WT_ABS" ] || fail "--worktree must print the absolute work tree"
 [ "$("$GO_BIN" env --local-path vendor/docs)" = "vendor/docs" ] || fail "--local-path must print the local_path"
+[ "$("$GO_BIN" env --remote vendor/docs)" = "up" ] || fail "--remote must print the remote name"
 json=$("$GO_BIN" env --json vendor/docs)
 [ "$(printf '%s' "$json" | jq -r .git_dir)" = "$GD_ABS" ] || fail "--json git_dir"
 [ "$(printf '%s' "$json" | jq -r .work_tree)" = "$WT_ABS" ] || fail "--json work_tree"
@@ -111,9 +113,9 @@ out=$("$GO_BIN" env --fish vendor/docs)
 echo "$out"
 assert_contains "$out" "set -gx GIT_DIR '$GD_ABS'" "fish must use set -gx"
 assert_contains "$out" "set -gx CROSS_ACTIVE 'vendor/docs'" "fish must set the marker"
-[ "$("$GO_BIN" env --unset)" = "unset GIT_DIR GIT_WORK_TREE CROSS_ACTIVE" ] \
+[ "$("$GO_BIN" env --unset)" = "unset GIT_DIR GIT_WORK_TREE CROSS_ACTIVE CROSS_REMOTE" ] \
     || fail "--unset must print the POSIX unload line"
-[ "$("$GO_BIN" env --fish --unset)" = "set -e GIT_DIR GIT_WORK_TREE CROSS_ACTIVE" ] \
+[ "$("$GO_BIN" env --fish --unset)" = "set -e GIT_DIR GIT_WORK_TREE CROSS_ACTIVE CROSS_REMOTE" ] \
     || fail "--fish --unset must print the fish unload line"
 printf '%s\n' "$out" | fish -n 2>/dev/null || true
 log_success "fish syntax + unload lines"
@@ -164,16 +166,20 @@ assert_contains "$out" "parent GIT_DIR=[] ACTIVE=[]" \
     "gxenv must NOT leak the context into the caller's shell"
 out=$(cd vendor/docs && bash -c '
     eval "$("$GO_BIN" comp bash)" || exit 1
+    PS1="prompt\$ "
     gxenv -i || exit 1
     echo "loaded GIT_DIR=[$GIT_DIR] ACTIVE=[$CROSS_ACTIVE] git=$(git log --oneline -1)"
+    echo "marked PS1=[$PS1]"
     gxenv -u
-    echo "unloaded GIT_DIR=[${GIT_DIR:-}] ACTIVE=[${CROSS_ACTIVE:-}]"
+    echo "unloaded GIT_DIR=[${GIT_DIR:-}] ACTIVE=[${CROSS_ACTIVE:-}] PS1=[$PS1]"
 ')
 echo "$out"
 assert_contains "$out" "loaded GIT_DIR=[$GD_ABS] ACTIVE=[vendor/docs] git=" \
     "gxenv -i must load the context into the current shell"
 assert_contains "$out" "docs v2" "gxenv -i must make plain git see upstream"
-assert_contains "$out" "unloaded GIT_DIR=[] ACTIVE=[]" "gxenv -u must unload the context"
+assert_contains "$out" "marked PS1=[prompt\$ [cross:up] ]" "gxenv -i must mark the prompt"
+assert_contains "$out" "unloaded GIT_DIR=[] ACTIVE=[] PS1=[prompt\$ ]" \
+    "gxenv -u must unload the context and restore the prompt"
 log_success "gxenv: nested by default, -i loads, -u unloads"
 
 if command -v fish >/dev/null 2>&1; then
@@ -184,14 +190,21 @@ source $SANDBOX/init.fish
 gxenv -i
 echo "in=[\$GIT_DIR][\$CROSS_ACTIVE]"
 git log --oneline -1
+echo "marked_prompt:"(fish_prompt)
 gxenv -u
 echo "out=[\$GIT_DIR]"
+echo "restored_prompt:"(fish_prompt)
 EOS
     out=$(cd vendor/docs && fish "$SANDBOX/gxenv_test.fish" 2>&1)
     echo "$out"
     assert_contains "$out" "in=[$GD_ABS][vendor/docs]" "fish gxenv -i must export the context"
     assert_contains "$out" "docs v2" "fish gxenv -i must let plain git see upstream"
     assert_contains "$out" "out=[]" "fish gxenv -u must unload the context"
+    assert_contains "$out" "marked_prompt:" "[cross:up]" "fish gxenv -i must mark fish_prompt"
+    marked=$(printf '%s\n' "$out" | grep -A1 "marked_prompt:" | tail -1)
+    restored=$(printf '%s\n' "$out" | grep -A1 "restored_prompt:" | tail -1)
+    case "$restored" in *"[cross:up]"*) fail "fish gxenv -u must restore fish_prompt" ;; esac
+    [ -n "$marked" ] && [ -n "$restored" ] || fail "fish prompt markers must be printable"
     log_success "fish gxenv -i / -u"
     cat > "$SANDBOX/gxenv_nested.fish" <<EOS
 source $SANDBOX/init.fish
@@ -202,6 +215,18 @@ EOS
     assert_contains "$out" "nested GIT_DIR=$GD_ABS" "fish gxenv must open a nested shell with the context"
     assert_contains "$out" "parent=[]" "fish gxenv must not leak into the caller shell"
     log_success "fish gxenv nested shell"
+fi
+
+if command -v bash >/dev/null 2>&1; then
+    log_header "028: gxenv nested shell marks the prompt too (bash)"
+    out=$(cd vendor/docs && printf 'echo "PROMPT=[$PS1] GIT_DIR=[$GIT_DIR]"
+exit
+' \
+        | SHELL=/bin/bash bash -c 'eval "$("$GO_BIN" comp bash)"; gxenv' 2>/dev/null)
+    echo "$out"
+    assert_contains "$out" "[cross:up]" "the nested shell must mark its prompt"
+    assert_contains "$out" "GIT_DIR=[$GD_ABS]" "the nested shell must carry the context"
+    log_success "nested prompt marker"
 fi
 
 log_header "028: quoting survives paths with spaces"

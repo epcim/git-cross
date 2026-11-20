@@ -1484,24 +1484,42 @@ const posixShellInit = `# git-cross shell wrappers (part of: eval "$(git cross c
 xcd() { local p; p="$(git cross cd "$@")" || return; [ -n "$p" ] && cd "$p"; }
 gx() { if [ "$1" = "cd" ]; then shift; xcd "$@"; else git cross "$@"; fi; }   # short alias for git cross (gx cd changes directory)
 cr() { git cross "$@"; }     # short alias for git cross: cr log --oneline
-# gxenv: give plain 'git' the crossed dir's UPSTREAM context for one shell.
-#   gxenv [path]        nested shell (exit unloads; nothing leaks into yours)
-#   gxenv -i [path]     load into THIS shell (remember: gxenv -u before leaving)
-#   gxenv -u            unload from this shell
-# optional prompt marker (add after PS1 is set, e.g. at the end of ~/.bashrc):
-#   PS1='${CROSS_ACTIVE:+(cross:$CROSS_ACTIVE) }'"$PS1"
+# --- gxenv: give plain 'git' the crossed dir's UPSTREAM context ----------------
+#   gxenv [path]      nested shell (exit unloads; nothing leaks into yours)
+#   gxenv -i [path]   load into THIS shell (remember: gxenv -u before leaving)
+#   gxenv -u          unload from this shell
+# While loaded, PS1 ends with [cross:REMOTE] so the terminal is visibly marked
+# (a PROMPT_COMMAND/theme that rewrites PS1 wholesale will hide the marker).
+_gx_mark() { echo "[cross:${CROSS_REMOTE:-${CROSS_ACTIVE:-cross}}]"; }
+_gx_prompt_off() { if [ -n "${_GX_PS1_SAVED+x}" ]; then PS1="$_GX_PS1_SAVED"; unset _GX_PS1_SAVED; fi; return 0; }
+_gx_prompt_on() { _gx_prompt_off; _GX_PS1_SAVED="${PS1-}"; PS1="${PS1-}$(_gx_mark) "; }
 gxenv() { case "${1-}" in
-    -u|--unset) eval "$(git cross env --unset)"; return 0 ;;
-    -i|--in-place) local src; src=$(git cross env "${2-}") && eval "$src"; return $? ;;
+    -u|--unset) eval "$(git cross env --unset)"; _gx_prompt_off; return 0 ;;
+    -i|--in-place)
+        local src; src=$(git cross env "${2-}") && eval "$src" && _gx_prompt_on
+        return $? ;;
     -h|--help) echo 'usage: gxenv [-i|--in-place|-u|--unset] [path]'
         echo '  (default) nested shell with the crossed dir upstream context'
         echo '  -i        load into this shell    -u  unload from this shell'; return 0 ;;
   esac
-  local gd wt lp
+  local gd wt lp rm sh
   gd=$(git cross env --gitdir "$@") || return
   wt=$(git cross env --worktree "$@") || return
   lp=$(git cross env --local-path "$@") || return
-  GIT_DIR=$gd GIT_WORK_TREE=$wt CROSS_ACTIVE=$lp "${SHELL:-/bin/sh}" -i
+  rm=$(git cross env --remote "$@") || return
+  sh=$(basename "${SHELL:-/bin/sh}")
+  case "$sh" in
+    bash)
+        GIT_DIR=$gd GIT_WORK_TREE=$wt CROSS_ACTIVE=$lp CROSS_REMOTE=$rm \
+            bash --rcfile <(cat "$HOME/.bashrc" 2>/dev/null; echo 'PS1="${PS1}[cross:${CROSS_REMOTE}] "') -i ;;
+    zsh)
+        local zd; zd=$(mktemp -d) || return
+        { cat "$HOME/.zshrc" 2>/dev/null; echo 'PS1="${PS1}[cross:${CROSS_REMOTE}] "'; } > "$zd/.zshrc"
+        GIT_DIR=$gd GIT_WORK_TREE=$wt CROSS_ACTIVE=$lp CROSS_REMOTE=$rm ZDOTDIR=$zd zsh -i
+        local rc=$?; rm -rf "$zd"; return $rc ;;
+    *)
+        GIT_DIR=$gd GIT_WORK_TREE=$wt CROSS_ACTIVE=$lp CROSS_REMOTE=$rm "${SHELL:-/bin/sh}" -i ;;
+  esac
 }
 # optional git alias so 'git x add ./file' also works:
 #   git config --global alias.x '!git cross'
@@ -1525,16 +1543,45 @@ end
 function cr --description 'short alias for git cross'
     git cross $argv
 end
-# gxenv: plain 'git' sees the crossed dir's UPSTREAM in a nested shell
-# (exit unloads). 'gxenv -i' loads into this fish, 'gxenv -u' unloads.
-# optional prompt marker: a fish_prompt that shows $CROSS_ACTIVE when set.
+# --- gxenv: plain 'git' in a crossed dir speaks to its upstream ----------------
+#   gxenv [path]      nested shell (exit unloads; nothing leaks into yours)
+#   gxenv -i [path]   load into THIS fish     gxenv -u  unload from this fish
+# While loaded the prompt is marked with [cross:REMOTE] (fish_prompt wrapper).
+function _gx_mark
+    if set -q CROSS_REMOTE
+        echo -n "[cross:$CROSS_REMOTE]"
+    else
+        echo -n "[cross:$CROSS_ACTIVE]"
+    end
+end
+function _gx_prompt_on
+    if set -q __gx_prompt_wrapped
+        return 0
+    end
+    functions -c fish_prompt __gx_orig_fish_prompt; or return 0
+    function fish_prompt
+        __gx_orig_fish_prompt
+        echo -n (_gx_mark)" "
+    end
+    set -g __gx_prompt_wrapped 1
+end
+function _gx_prompt_off
+    if not set -q __gx_prompt_wrapped
+        return 0
+    end
+    functions -e fish_prompt
+    functions -c __gx_orig_fish_prompt fish_prompt
+    functions -e __gx_orig_fish_prompt
+    set -e __gx_prompt_wrapped
+end
 function gxenv --description 'plain git in a crossed dir speaks to its upstream (nested shell)'
     switch "$argv[1]"
         case -u --unset
             git cross env --fish --unset | source
+            _gx_prompt_off
             return
         case -i --in-place
-            git cross env --fish $argv[2..-1] | source
+            git cross env --fish $argv[2..-1] | source; and _gx_prompt_on
             return
         case -h --help
             echo 'usage: gxenv [-i|--in-place|-u|--unset] [path]'
@@ -1543,7 +1590,14 @@ function gxenv --description 'plain git in a crossed dir speaks to its upstream 
     set -l gd (git cross env --gitdir $argv); or return
     set -l wt (git cross env --worktree $argv); or return
     set -l lp (git cross env --local-path $argv); or return
-    GIT_DIR=$gd GIT_WORK_TREE=$wt CROSS_ACTIVE=$lp $SHELL -i
+    set -l rm (git cross env --remote $argv); or return
+    set -l mrk (_gx_mark)
+    if test (basename $SHELL) = fish
+        GIT_DIR=$gd GIT_WORK_TREE=$wt CROSS_ACTIVE=$lp CROSS_REMOTE=$rm \
+            fish -i -C "functions -c fish_prompt __gx_orig_fish_prompt; function fish_prompt; __gx_orig_fish_prompt; echo -n '$mrk '; end"
+    else
+        GIT_DIR=$gd GIT_WORK_TREE=$wt CROSS_ACTIVE=$lp CROSS_REMOTE=$rm $SHELL -i
+    end
 end
 # optional git alias so 'git x add ./file' also works:
 #   git config --global alias.x '!git cross'
@@ -2469,14 +2523,15 @@ shell and 'gxenv -u' unloads it.`,
   eval "$(git cross env)"          # bash/zsh, run inside the crossed dir
   git cross env --fish | source    # fish
 
-It defines GIT_DIR (the patch's bare gitdir), GIT_WORK_TREE (the crossed dir)
-and CROSS_ACTIVE (its local_path, handy for a prompt). After that, plain 'git'
-means the cross's upstream: log, diff, status, fetch, push, ...
+It defines GIT_DIR (the patch's bare gitdir), GIT_WORK_TREE (the crossed dir),
+CROSS_ACTIVE (its local_path) and CROSS_REMOTE (the remote name). After that,
+plain 'git' means the cross's upstream: log, diff, status, fetch, push, ...
 
-Keep the context scoped — two variables in an interactive shell are easy to
-forget. The gxenv wrapper (from: git cross comp) runs a NESTED shell by default
-(leaving it unloads), 'gxenv -i' loads into the current shell and 'gxenv -u'
-unloads again. 'git cross ...' keeps working with the context loaded; it is
+Keep the context scoped — exported variables in an interactive shell are easy
+to forget. The gxenv wrapper (from: git cross comp) runs a NESTED shell by
+default (leaving it unloads), 'gxenv -i' loads into the current shell and
+'gxenv -u' unloads again; either way the prompt is marked [cross:<remote>] so
+a modified terminal is obvious. 'git cross ...' keeps working with the context loaded; it is
 plain 'git' that changes meaning. Commits made in this context land in the
 mirror branch, NOT in your repo — commit the crossed files from your repo.
 
@@ -2489,12 +2544,13 @@ flags: --fish (fish syntax), --unset (print the unload code), --json,
 			wantGitdir, _ := cmd.Flags().GetBool("gitdir")
 			wantWorktree, _ := cmd.Flags().GetBool("worktree")
 			wantLocalPath, _ := cmd.Flags().GetBool("local-path")
+			wantRemote, _ := cmd.Flags().GetBool("remote")
 
 			if unset {
 				if fish {
-					fmt.Println("set -e GIT_DIR GIT_WORK_TREE CROSS_ACTIVE")
+					fmt.Println("set -e GIT_DIR GIT_WORK_TREE CROSS_ACTIVE CROSS_REMOTE")
 				} else {
-					fmt.Println("unset GIT_DIR GIT_WORK_TREE CROSS_ACTIVE")
+					fmt.Println("unset GIT_DIR GIT_WORK_TREE CROSS_ACTIVE CROSS_REMOTE")
 				}
 				return nil
 			}
@@ -2530,6 +2586,8 @@ flags: --fish (fish syntax), --unset (print the unload code), --json,
 				fmt.Println(wtAbs)
 			case wantLocalPath:
 				fmt.Println(patch.LocalPath)
+			case wantRemote:
+				fmt.Println(patch.Remote)
 			case asJSON:
 				payload := struct {
 					Remote    string `json:"remote"`
@@ -2544,11 +2602,11 @@ flags: --fish (fish syntax), --unset (print the unload code), --json,
 				}
 				fmt.Println(string(b))
 			case fish:
-				fmt.Printf("set -gx GIT_DIR %s\nset -gx GIT_WORK_TREE %s\nset -gx CROSS_ACTIVE %s\n",
-					shellQuote(gdAbs), shellQuote(wtAbs), shellQuote(patch.LocalPath))
+				fmt.Printf("set -gx GIT_DIR %s\nset -gx GIT_WORK_TREE %s\nset -gx CROSS_ACTIVE %s\nset -gx CROSS_REMOTE %s\n",
+					shellQuote(gdAbs), shellQuote(wtAbs), shellQuote(patch.LocalPath), shellQuote(patch.Remote))
 			default:
-				fmt.Printf("export GIT_DIR=%s\nexport GIT_WORK_TREE=%s\nexport CROSS_ACTIVE=%s\n",
-					shellQuote(gdAbs), shellQuote(wtAbs), shellQuote(patch.LocalPath))
+				fmt.Printf("export GIT_DIR=%s\nexport GIT_WORK_TREE=%s\nexport CROSS_ACTIVE=%s\nexport CROSS_REMOTE=%s\n",
+					shellQuote(gdAbs), shellQuote(wtAbs), shellQuote(patch.LocalPath), shellQuote(patch.Remote))
 			}
 			return nil
 		},
@@ -2559,6 +2617,7 @@ flags: --fish (fish syntax), --unset (print the unload code), --json,
 	envCmd.Flags().Bool("gitdir", false, "print only the absolute gitdir")
 	envCmd.Flags().Bool("worktree", false, "print only the absolute work tree")
 	envCmd.Flags().Bool("local-path", false, "print only the local_path")
+	envCmd.Flags().Bool("remote", false, "print only the remote name")
 
 	cdCmd := &cobra.Command{
 		Use:           "cd [path]",

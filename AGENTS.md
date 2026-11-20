@@ -391,9 +391,10 @@ just sub-cases of Go-only commands are guarded by `just_ref_implements` and SKIP
   powershell gets completions only.
 - **`git cross env` + `gxenv` (upstream git context)**: `env` prints evaluable shell
   code — `export GIT_DIR='<gitdir>'`, `export GIT_WORK_TREE='<crossed dir>'` and
-  `export CROSS_ACTIVE='<local_path>'` (`--fish` → `set -gx ...`, `--unset` → the
-  inverse, `--json` / `--gitdir` / `--worktree` / `--local-path` → bare values for
-  wrappers). Path arg or the cross at the CWD, same segment-aware matcher; no cross
+  `export CROSS_ACTIVE='<local_path>'` + `export CROSS_REMOTE='<remote>'` (`--fish` →
+  `set -gx ...`, `--unset` → the inverse, `--json` / `--gitdir` / `--worktree` /
+  `--local-path` / `--remote` → bare values for wrappers). Path arg or the cross at
+  the CWD, same segment-aware matcher; no cross
   or a missing gitdir is a hard error with empty stdout (the env would be a lie).
   After `eval`ing it, plain `git` means the cross's UPSTREAM (log/status/diff/push),
   which is what editor/`gh`/lazygit integrations need — `git cross <args>` already
@@ -405,9 +406,17 @@ just sub-cases of Go-only commands are guarded by `just_ref_implements` and SKIP
   objects. So the wrapper is **process-scoped**: `gxenv` (no flag) runs a NESTED
   shell (`GIT_DIR=... GIT_WORK_TREE=... CROSS_ACTIVE=... "$SHELL" -i`), so leaving
   it unloads; `gxenv -i` loads into the current shell and `gxenv -u` unloads.
-  Prompt marker is a static fragment that only expands while loaded, e.g.
-  `PS1='${CROSS_ACTIVE:+(cross:$CROSS_ACTIVE) }'"$PS1"` — no chpwd/direnv hook, no
-  serialized `.envrc`, no shell state written by the binary.
+  **Prompt marker** (`_gx_mark`/`_gx_prompt_on`/`_gx_prompt_off` in the wrappers) so a
+  modified terminal is obvious — no rc edit, no hook, nothing written by the binary:
+  `gxenv -i` appends `[cross:<remote>] ` to `PS1` (bash/zsh, saved in `_GX_PS1_SAVED`
+  and restored verbatim by `gxenv -u`; a second `-i` re-marks, it never stacks), and
+  in fish it wraps `fish_prompt` (`functions -c fish_prompt __gx_orig_fish_prompt`,
+  marker echoed after it, undone by `-u`). The NESTED shell gets the same marker from
+  the shell's own startup hook: `bash --rcfile <(cat ~/.bashrc; echo 'PS1+=[cross:$CROSS_REMOTE]')`,
+  `ZDOTDIR=<tmp> zsh -i` (temp `.zshrc` = user's + marker; removed after), and
+  `fish -i -C '<fish_prompt wrapper>'`. Unknown shells fall back to an unmarked nested
+  shell. Caveat documented in the wrapper: a theme/`PROMPT_COMMAND` that rewrites PS1
+  wholesale hides the marker.
 - **Loaded-context discovery (why `env` is idempotent)**: `getRepoRoot` ignores a
   `GIT_DIR` that points into `.cross/worktrees/` (`crossEnvLoaded` → `gitEnvWithoutCross`),
   so `git cross ...` keeps finding the PRIMARY repo and its registry with the env

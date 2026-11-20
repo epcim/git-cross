@@ -17,21 +17,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   git cross env --fish | source      # fish
   ```
 
-  It prints `export GIT_DIR='<gitdir>'`, `export GIT_WORK_TREE='<crossed dir>'`
-  and `export CROSS_ACTIVE='<local_path>'` for the cross at `$PWD` (or for the
+  It prints `export GIT_DIR='<gitdir>'`, `export GIT_WORK_TREE='<crossed dir>'`,
+  `export CROSS_ACTIVE='<local_path>'` and `export CROSS_REMOTE='<remote>'` for the cross at `$PWD` (or for the
   `[path]` argument). Plain `git` in that shell then speaks the cross's
   **upstream** — `log`, `diff`, `status`, `push` — which is what third-party
   tools (editor git integrations, `gh`, `lazygit`) need; `git cross <args>` /
   `gx` / `cr` keep covering the shell. `--fish` prints `set -gx ...`, `--unset`
-  the inverse, `--json` / `--gitdir` / `--worktree` / `--local-path` bare values
-  for scripting. No cross or a missing gitdir is a hard error (exit 1, empty
+  the inverse, `--json` / `--gitdir` / `--worktree` / `--local-path` / `--remote`
+  bare values for scripting. No cross or a missing gitdir is a hard error (exit 1, empty
   stdout) instead of a half-working environment.
 - **`gxenv` wrapper** (printed by `git cross comp` / `shell-init`, bash+zsh+fish).
   Plain `gxenv` opens a **nested shell** with that context, so leaving it
   unloads and nothing leaks into your shell; `gxenv -i` loads into the current
   shell and `gxenv -u` unloads again. Nothing is written to disk — no `.envrc`,
-  no chpwd/direnv hook. The optional prompt marker is a static fragment:
-  `PS1='${CROSS_ACTIVE:+(cross:$CROSS_ACTIVE) }'"$PS1"`.
+  no chpwd/direnv hook.
+- **The prompt is marked `[cross:<remote>]` while the context is loaded**, so a
+  modified terminal is obvious at a glance — automatically, no rc edit needed:
+  `gxenv -i` appends the marker to `PS1` (bash/zsh) or wraps `fish_prompt`
+  (fish), and `gxenv -u` restores the prompt exactly as it was. The nested shell
+  gets the same marker through the shell's own startup hook (`bash --rcfile`,
+  `zsh` via a temporary `ZDOTDIR`, `fish -C`). `git cross env` also exports
+  `CROSS_REMOTE` (and `--remote`) for hand-rolled prompts. Caveat: a theme or
+  `PROMPT_COMMAND` that rewrites `PS1` wholesale hides the marker.
 
 ### Fixed
 
