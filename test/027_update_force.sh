@@ -1,20 +1,27 @@
 #!/usr/bin/env bash
-# Test 027: update --force / y-N re-adoption of lost crosses — BOTH implementations.
+# Test 027: update --force / re-adoption of lost crosses — Go implementation.
 #
 # v0.5.x contract (Go is primary, Just/Fish is the reference):
 #   Go `update`: a crossed dir that exists but lost its .cross state (whole
-#     registry gone, or only its gitdir) triggers a y/N prompt with the
-#     ABSOLUTE path; default No (EOF/empty), y/Y adopts (wipe + re-set from
-#     upstream); declined crosses are skipped and counted in a summary warning.
-#     `--force` auto-applies the "yes" — no prompt.
+#     registry gone, or only its gitdir) triggers a 3-way prompt with the
+#     ABSOLUTE path: [y] re-initialize from upstream (dir wiped), [p]
+#     re-initialize but preserve local (dir moved aside, re-created from
+#     upstream, backup copied back, backup removed), [N] skip (default;
+#     EOF/empty input). Declined crosses are skipped and counted in a summary
+#     warning. `--force` auto-applies the "y" (wipe) — no prompt.
+#     A preserved re-adoption keeps local edits + local-only files, leaves the
+#     cross registered (DIFF=Modified, upstream SHA) and removes the backup.
 #   Just/Fish `update` is NON-INTERACTIVE: it refuses and tells the user to
 #     re-run with `--force`, which auto-adopts (wipe + re-set).
 #   Direct `set` on an existing-but-unregistered dir refuses with a hint in
 #     both implementations (never a silent overwrite).
 #   Unsafe local paths (`../outside`) are a hard error in both.
-#   Re-adoption guards (both implementations, `--force` included): a crossed dir
-#   with staged/unstaged changes is refused and left intact, and `--force` on a
-#   HEALTHY registered cross is a no-op (it never wipes it).
+#   Re-adoption guards: a crossed dir with staged/unstaged changes is never
+#   silently destroyed. Go offers the lossless paths — [p] preserves the dir in
+#   place, [y]/`--force` stash the changes first (restore with `git stash
+#   apply "stash@{0}"`), and a declined prompt leaves everything untouched.
+#   The Just/Fish reference still refuses a dirty loss-state dir outright.
+#   `--force` on a HEALTHY registered cross is a no-op (it never wipes it).
 #   Go only: `update <path>` + a declined prompt reports the skip and exits 0.
 source "$(dirname "$0")/common.sh"
 
@@ -62,13 +69,19 @@ ls_raw_row() {
 if [ -n "$GO_BIN" ]; then
     xc() { "$GO_BIN" "$@"; }
 
-    log_header "027: go — EOF piped to the y/N prompt skips (default No)"
+    log_header "027: go — EOF piped to the re-adoption prompt skips (default No)"
     setup_cross go
     disaster_full
     out=$("$GO_BIN" update </dev/null 2>&1)
     echo "$out"
-    assert_contains "$out" "Delete '$(pwd)/vendor/docs' and re-adopt it from upstream? [y/N]:" \
+    assert_contains "$out" "'$(pwd)/vendor/docs' exists but its .cross state is lost. Re-initialize how?" \
         "go: the prompt must show the absolute path"
+    assert_contains "$out" "  [y] re-initialize from upstream (existing dir wiped)" \
+        "go: the prompt must offer the wipe option"
+    assert_contains "$out" "  [p] re-initialize but preserve local (existing dir backed up, then copied back)" \
+        "go: the prompt must offer the preserve-local option"
+    assert_contains "$out" "Choice [y/p/N]:" \
+        "go: the prompt must list the choices with N as the default"
     assert_contains "$out" "Skipped vendor/docs (not confirmed; re-run with --force to adopt without asking)" \
         "go: a declined cross must be skipped with a warning"
     assert_contains "$out" "1 cross(es) not adopted: not confirmed (use --force to adopt without asking)." \
@@ -82,7 +95,7 @@ if [ -n "$GO_BIN" ]; then
     assert_file_exists "vendor/docs/docs/guide.md"
     log_success "N skips"
 
-    log_header "027: go — piped y adopts the cross from upstream"
+    log_header "027: go — piped y adopts the cross from upstream (wipe)"
     out=$(printf 'y\n' | "$GO_BIN" update 2>&1)
     echo "$out"
     assert_contains "$out" "Re-adopting vendor/docs from upstream (existing dir wiped)" \
@@ -101,7 +114,7 @@ if [ -n "$GO_BIN" ]; then
     disaster_full
     out=$("$GO_BIN" update --force </dev/null 2>&1)
     echo "$out"
-    assert_not_contains "$out" "Delete '" "go: --force must not prompt"
+    assert_not_contains "$out" "Choice [y/p/N]" "go: --force must not prompt"
     assert_contains "$out" "Re-adopting vendor/docs from upstream (existing dir wiped)" \
         "go: --force must adopt"
     assert_file_exists "vendor/docs/docs/guide.md"
@@ -111,7 +124,7 @@ if [ -n "$GO_BIN" ]; then
     log_header "027: go — gitdir-only loss prompts and --force re-adopts"
     rm -rf .cross/worktrees/up/vendor_docs
     out=$("$GO_BIN" update </dev/null 2>&1)
-    assert_contains "$out" "Delete '$(pwd)/vendor/docs' and re-adopt it from upstream? [y/N]:" \
+    assert_contains "$out" "'$(pwd)/vendor/docs' exists but its .cross state is lost. Re-initialize how?" \
         "go: a lost gitdir must trigger the same prompt"
     assert_contains "$out" "1 cross(es) not adopted" "go: gitdir-only loss must be skippable"
     assert_file_exists "vendor/docs/docs/guide.md"
@@ -121,6 +134,44 @@ if [ -n "$GO_BIN" ]; then
     assert_file_exists "vendor/docs/docs/guide.md"
     [ -n "$(ls_raw_row)" ] || fail "go: re-adoption after gitdir loss must register the cross"
     log_success "gitdir-only loss handled"
+
+    log_header "027: go — piped p re-adopts and preserves local content"
+    echo "local edit" >> vendor/docs/docs/guide.md
+    echo "local only" > vendor/docs/docs/local-only.md
+    git add -A && git commit -qm "local: keep me" >/dev/null
+    disaster_full
+    out=$(printf 'p\n' | "$GO_BIN" update 2>&1)
+    echo "$out"
+    assert_contains "$out" "Backed up vendor/docs to .cross/backup-" \
+        "go: the preserve flow must announce the temporary backup"
+    assert_contains "$out" "Re-adopting vendor/docs from upstream (local content preserved)" \
+        "go: preserve adoption must be announced"
+    assert_contains "$(cat vendor/docs/docs/guide.md)" "local edit" \
+        "go: local modifications must survive the preserve re-adoption"
+    assert_file_exists "vendor/docs/docs/local-only.md"
+    registered=$(jq -r '.patches[] | select(.local_path == "vendor/docs") | .gitdir' .cross/metadata.json)
+    [ -n "$registered" ] || fail "go: a preserved adoption must register the cross"
+    row=$(ls_raw_row)
+    [ -n "$row" ] || fail "go: ls --raw must list the preserved cross"
+    assert_contains "$row" "Modified" "go: preserved local edits must show as Modified vs upstream"
+    sha=$(printf '%s' "$row" | awk -F'\t' '{print $8}')
+    [ -n "$sha" ] && [ "$sha" != "-" ] || fail "go: the preserved cross must have an upstream SHA"
+    [ -z "$(ls -d .cross/backup-* 2>/dev/null)" ] || fail "go: the temporary backup must be removed"
+    log_success "p preserves local content, registers the cross, removes the backup"
+
+    log_header "027: go — gitdir-only loss + p preserves local content too"
+    echo "edit two" >> vendor/docs/docs/guide.md
+    git add -A && git commit -qm "local: edit two" >/dev/null
+    rm -rf .cross/worktrees/up/vendor_docs
+    out=$(printf 'p\n' | "$GO_BIN" update 2>&1)
+    echo "$out"
+    assert_contains "$out" "Re-adopting vendor/docs from upstream (local content preserved)" \
+        "go: preserve must also work after gitdir-only loss"
+    assert_contains "$(cat vendor/docs/docs/guide.md)" "edit two" \
+        "go: local modifications must survive gitdir-loss preservation"
+    assert_file_exists "vendor/docs/docs/local-only.md"
+    [ -z "$(ls -d .cross/backup-* 2>/dev/null)" ] || fail "go: the temporary backup must be removed"
+    log_success "gitdir-loss preserve keeps local content"
 
     log_header "027: go — --force leaves a healthy registered cross alone"
     setup_cross go
@@ -134,7 +185,7 @@ if [ -n "$GO_BIN" ]; then
     echo "$out"
     [ "$rc" -eq 0 ] || fail "go: --force on a healthy cross must succeed"
     assert_not_contains "$out" "Re-adopting" "go: --force must never wipe a registered cross"
-    assert_not_contains "$out" "Delete '" "go: --force on a healthy cross must not prompt"
+    assert_not_contains "$out" "Choice [y/p/N]" "go: --force on a healthy cross must not prompt"
     assert_file_exists "vendor/docs/docs/local-only.md"
     [ "$(jq -r '.patches[] | select(.local_path == "vendor/docs") | .gitdir' .cross/metadata.json)" = "$gitdir_before" ] \
         || fail "go: --force must not re-clone a healthy cross"
@@ -142,32 +193,81 @@ if [ -n "$GO_BIN" ]; then
         || fail "go: --force must not move a healthy cross's mirror"
     log_success "--force is a no-op on a healthy cross"
 
-    log_header "027: go — --force refuses a dirty lost-state dir (no data loss)"
+    log_header "027: go — declining on a dirty lost-state dir keeps the work, no stash"
     setup_cross go
     disaster_full
     echo "uncommitted work" > vendor/docs/docs/wip.md
-    out=$("$GO_BIN" update --force </dev/null 2>&1)
+    echo "edited" >> vendor/docs/docs/guide.md
+    out=$("$GO_BIN" update </dev/null 2>&1)
     rc=$?
     echo "$out"
-    [ "$rc" -ne 0 ] || fail "go: --force must refuse a dirty lost-state dir"
+    [ "$rc" -eq 0 ] || fail "go: a declined dirty re-adoption is a skip, not an error"
     assert_contains "$out" \
-        "vendor/docs has uncommitted changes; commit or stash them first (refusing to delete them)" \
-        "go: the dirty refusal must explain why"
-    assert_not_contains "$out" "Re-adopting" "go: a refused re-adoption must not wipe"
-    assert_not_contains "$out" "Delete '" "go: --force must not prompt"
+        "'$(pwd)/vendor/docs' exists but its .cross state is lost and it has uncommitted changes. Re-initialize how?" \
+        "go: the dirty prompt must show the absolute path and the dirty warning"
+    assert_contains "$out" "  [y] re-initialize from upstream (uncommitted changes stashed first)" \
+        "go: the dirty prompt must say that y stashes first"
+    assert_contains "$out" "1 cross(es) not adopted" "go: the declined summary must be printed"
+    assert_not_contains "$out" "Stashed" "go: a declined re-adoption must not stash"
+    [ -z "$(git stash list)" ] || fail "go: a declined re-adoption must not create a stash"
     assert_file_exists "vendor/docs/docs/wip.md"
-    assert_file_exists "vendor/docs/docs/guide.md"
-    log_success "dirty lost-state refused, content intact"
+    assert_contains "$(cat vendor/docs/docs/guide.md)" "edited" "go: the tracked edit must survive"
+    log_success "dirty + decline keeps everything, no stash"
 
-    log_header "027: go — a modified tracked file also blocks re-adoption"
+    log_header "027: go — a dirty lost-state dir: y stashes the work, then adopts"
+    out=$(printf 'y\n' | "$GO_BIN" update 2>&1)
+    echo "$out"
+    assert_contains "$out" "Stashed uncommitted changes in vendor/docs" \
+        "go: y on a dirty dir must stash first"
+    assert_contains "$out" "Re-adopting vendor/docs from upstream (uncommitted changes stashed, existing dir wiped)" \
+        "go: the stash-then-adopt path must be announced"
+    assert_contains "$(git stash list)" "git-cross: changes in vendor/docs before re-adoption" \
+        "go: the stash entry must carry the git-cross message"
+    [ -f vendor/docs/docs/wip.md ] && fail "go: the wipe must not keep the stale untracked file"
+    assert_contains "$(cat vendor/docs/docs/guide.md)" "guide v1" "go: the dir must be re-created from upstream"
+    git stash apply "stash@{0}" >/dev/null 2>&1 || fail "go: the stash must be applicable"
+    assert_file_exists "vendor/docs/docs/wip.md"
+    assert_contains "$(cat vendor/docs/docs/guide.md)" "edited" "go: stash apply must bring the edit back"
+    git stash drop "stash@{0}" >/dev/null 2>&1
+    log_success "dirty + y stashes, wipes, and the stash restores the work"
+
+    log_header "027: go — a dirty lost-state dir: p preserves in place without a stash"
+    setup_cross go
+    disaster_full
+    echo "uncommitted work" > vendor/docs/docs/wip.md
+    echo "edited" >> vendor/docs/docs/guide.md
+    out=$(printf 'p\n' | "$GO_BIN" update 2>&1)
+    echo "$out"
+    assert_not_contains "$out" "Stashed" "go: preserve must not stash (the dir is copied back)"
+    [ -z "$(git stash list)" ] || fail "go: preserve must not create a stash"
+    assert_contains "$out" "Re-adopting vendor/docs from upstream (local content preserved)" \
+        "go: preserve adoption must be announced"
+    assert_file_exists "vendor/docs/docs/wip.md"
+    assert_contains "$(cat vendor/docs/docs/guide.md)" "edited" "go: preserve must keep the tracked edit"
+    [ -z "$(ls -d .cross/backup-* 2>/dev/null)" ] || fail "go: the temporary backup must be removed"
+    log_success "dirty + p keeps everything in place, no stash needed"
+
+    log_header "027: go — --force on a dirty lost-state dir stashes instead of destroying"
+    setup_cross go
+    disaster_full
+    echo "uncommitted work" > vendor/docs/docs/wip.md
     echo "edited" >> vendor/docs/docs/guide.md
     out=$("$GO_BIN" update --force </dev/null 2>&1)
     rc=$?
     echo "$out"
-    [ "$rc" -ne 0 ] || fail "go: a modified tracked file must block the wipe"
-    assert_contains "$out" "vendor/docs has uncommitted changes"
-    assert_contains "$(cat vendor/docs/docs/guide.md)" "edited" "go: the modified file must survive"
-    log_success "modified file refused, edit intact"
+    [ "$rc" -eq 0 ] || fail "go: --force on a dirty lost-state dir must succeed"
+    assert_not_contains "$out" "Choice [y/p/N]" "go: --force must not prompt"
+    assert_contains "$out" "Stashed uncommitted changes in vendor/docs" \
+        "go: --force must stash uncommitted work, never destroy it"
+    assert_contains "$out" "Re-adopting vendor/docs from upstream (uncommitted changes stashed, existing dir wiped)" \
+        "go: --force must adopt after stashing"
+    [ -f vendor/docs/docs/wip.md ] && fail "go: the wipe must not keep the stale untracked file"
+    assert_contains "$(cat vendor/docs/docs/guide.md)" "guide v1" "go: the dir must be re-created from upstream"
+    [ -n "$(ls_raw_row)" ] || fail "go: --force must register the cross"
+    git stash apply "stash@{0}" >/dev/null 2>&1 || fail "go: the stash must be applicable"
+    assert_file_exists "vendor/docs/docs/wip.md"
+    assert_contains "$(cat vendor/docs/docs/guide.md)" "edited" "go: stash apply must bring the edit back"
+    log_success "--force stashes instead of destroying, work recoverable"
 
     log_header "027: go — update <path> + declined prompt is a skip, not a missing cross"
     setup_cross go

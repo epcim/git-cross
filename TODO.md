@@ -1,3 +1,11 @@
+## Done — `git cross env` / `gxenv` + re-adoption rescue (unreleased)
+
+- [x] `git cross env` prints the crossed dir's upstream context (`GIT_DIR`, `GIT_WORK_TREE`, `CROSS_ACTIVE`) for `eval`/`source`; `--fish`, `--unset`, `--json`, `--gitdir`/`--worktree`/`--local-path`
+- [x] `gxenv` wrapper: nested shell by default (exit unloads), `-i` loads into the current shell, `-u` unloads; no `.envrc`, no chpwd hook
+- [x] repo discovery ignores a loaded `GIT_DIR` under `.cross/worktrees/`; `GIT_PREFIX` is re-based onto `CROSS_ACTIVE` (git-cross stays usable with the env loaded)
+- [x] `update` re-adoption prompt grew `p` (preserve local: backup → re-create → copy back) and a stash path for dirty crossed dirs (`y`/`--force` stash first)
+- [x] test 027 (re-adoption matrix) + test 028 (`env`/`gxenv`, bash + fish)
+
 ## Done — ADR-003 update/resolve
 
 - [x] `update` lands upstream + re-applies the user's version (no overwrite, no refusal loop)

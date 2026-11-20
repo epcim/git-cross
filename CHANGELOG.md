@@ -7,7 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-(nothing yet)
+### Added
+
+- **`git cross env` — an explicit upstream git context for plain `git`.**
+  Run inside a crossed directory (any depth) or name one:
+
+  ```sh
+  eval "$(git cross env)"            # bash/zsh
+  git cross env --fish | source      # fish
+  ```
+
+  It prints `export GIT_DIR='<gitdir>'`, `export GIT_WORK_TREE='<crossed dir>'`
+  and `export CROSS_ACTIVE='<local_path>'` for the cross at `$PWD` (or for the
+  `[path]` argument). Plain `git` in that shell then speaks the cross's
+  **upstream** — `log`, `diff`, `status`, `push` — which is what third-party
+  tools (editor git integrations, `gh`, `lazygit`) need; `git cross <args>` /
+  `gx` / `cr` keep covering the shell. `--fish` prints `set -gx ...`, `--unset`
+  the inverse, `--json` / `--gitdir` / `--worktree` / `--local-path` bare values
+  for scripting. No cross or a missing gitdir is a hard error (exit 1, empty
+  stdout) instead of a half-working environment.
+- **`gxenv` wrapper** (printed by `git cross comp` / `shell-init`, bash+zsh+fish).
+  Plain `gxenv` opens a **nested shell** with that context, so leaving it
+  unloads and nothing leaks into your shell; `gxenv -i` loads into the current
+  shell and `gxenv -u` unloads again. Nothing is written to disk — no `.envrc`,
+  no chpwd/direnv hook. The optional prompt marker is a static fragment:
+  `PS1='${CROSS_ACTIVE:+(cross:$CROSS_ACTIVE) }'"$PS1"`.
+
+### Fixed
+
+- **git-cross keeps working with the upstream context loaded.** Repo discovery
+  now ignores a `GIT_DIR` pointing into `.cross/worktrees/` (previously
+  `git cross ls` inside an `env`-loaded shell said "No crosses configured"
+  because git answered the crossed dir as the toplevel), and `GIT_PREFIX` from
+  the `git cross` git-alias is re-based onto the crossed dir, so the passthrough
+  and `git cross env` stay idempotent in that shell.
+
+### Note
+
+- Keep the context process-scoped (that is what `gxenv` is for). Exporting it
+  from `xcd` would outlive the `cd`: plain git anywhere in the shell would then
+  target the mirror, and `add`/`commit` made there land on the mirror branch —
+  invisible to your repo and overwritten by the next successful `update`.
+### Added
+
+- **`update`: re-adoption can now preserve local content** (`p` at the prompt).
+  When a crossed dir exists but its `.cross` state is lost (whole registry gone,
+  or only its gitdir), the old `Delete '<abs path>' and re-adopt it from
+  upstream? [y/N]:` prompt is replaced by a 3-way choice:
+
+  ```
+  '<abs path>' exists but its .cross state is lost. Re-initialize how?
+    [y] re-initialize from upstream (existing dir wiped)
+    [p] re-initialize but preserve local (existing dir backed up, then copied back)
+  Choice [y/p/N]:
+  ```
+
+  - `y` keeps the previous behavior (wipe + re-create from upstream).
+  - `p` (new) moves the crossed dir aside under `.cross/backup-*/`, re-creates
+    the cross from upstream, copies the backup back over the fresh work tree
+    (local files win; files that are new upstream survive), re-stages it and
+    removes the backup. On failure the backup is KEPT and its path is in the
+    error, so local content is never lost.
+  - `N`/EOF/anything else skips the cross (default, unchanged).
+  `--force` still auto-applies the wipe without prompting; a preserved cross
+  re-registers with DIFF=Modified and the upstream SHA.
+
+- **`update`: a lost cross with uncommitted changes is no longer a hard error.**
+  The old refusal (`<path> has uncommitted changes; commit or stash them first`)
+  fired before the prompt, even with `--force`. Now the prompt is always reached
+  and offers lossless paths:
+
+  ```
+  '<abs path>' exists but its .cross state is lost and it has uncommitted changes. Re-initialize how?
+    [y] re-initialize from upstream (uncommitted changes stashed first)
+    [p] re-initialize but preserve local (existing dir backed up, then copied back)
+  Choice [y/p/N]:
+  ```
+
+  - `y` stashes the dirty work first (`git stash push -u -m "git-cross: changes
+    in <path> before re-adoption" -- <path>`) and only then wipes; restore it with
+    `git stash apply "stash@{0}"`. `-u` is required because a lost-registry dir
+    is usually untracked.
+  - `p` needs no stash: the whole dir goes through the backup/copy-back flow.
+  - `--force` on a dirty dir stashes first as well — it skips the question, never
+    the user's uncommitted work. If the work tree is still dirty after stashing,
+    the update aborts instead of deleting anything.
+  - Declining (`N`/EOF) leaves the dirty dir exactly as it was; no stash is
+    created.
 
 ## [0.5.3] - 2026-11-18
 

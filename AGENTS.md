@@ -14,7 +14,7 @@ Instructions for AI agents working on this codebase.
 Go is a single-file implementation and owns every command. Justfile.cross implements
 the CORE only — `use`, `set`, `del`, `ls`, `cfg`/`init` and the git passthrough
 (`just cross <git-args>` → `_gitcmd`). `update`, `resolve`, `wipe`, `comp`,
-`shell-init`, `cd` and `wt` are Go-only placeholder stubs there: they print
+`shell-init`, `cd`, `wt` and `env` are Go-only placeholder stubs there: they print
 `NOT IMPLEMENTED in Justfile version` to stderr and exit 1 (this is also the test
 skip marker). The reference may be raw to the user — fail early, one stderr line,
 no prompts, no chatty logging. Touch it only for `.cross/metadata.json` schema
@@ -63,15 +63,16 @@ specs/003-gitdir-patches/                       # plan, progress, ADR-001, ADR-0
 |---------|------|---------|
 | `use` | `<name> <url>` | Register a remote in metadata (**primary git remotes untouched**); validates reachability |
 | `set` | `<remote[:branch]:path> [local_path]` | Set a cross directory: bare-clone into `.cross/worktrees/<remote>/<patch>`, sparse filter, materialize the work tree in the repo |
-| `update` | `[path] [--no-resolve] [--force]` | Fetch all crosses, then land upstream in the crossed dir + re-apply your version (ADR-003); unstaged edits refuse, collisions are kept; lost `.cross` state (Go: y/N prompt, default No) / `--force` re-adopts |
+| `update` | `[path] [--no-resolve] [--force]` | Fetch all crosses, then land upstream in the crossed dir + re-apply your version (ADR-003); unstaged edits refuse, collisions are kept; lost `.cross` state (Go: y/p/N prompt — re-init from upstream / re-init but preserve local / skip, default No; a dirty dir adds "uncommitted changes stashed first") / `--force` re-adopts (stash if dirty, then wipe) |
 | `resolve` | `[path] [--continue\|--abort]` | Finish an update conflict: list unmerged paths, gate `--continue`, revert with `--abort` |
 | `del` | `<path>` | Delete a cross: gitdir + crossed dir + Crossfile/metadata entries |
 | `wipe` | `[remote]` | Remove a remote and all its crosses, or sweep unused remotes + orphaned gitdirs. (v0.4 `prune`, 0.5.0 `purge`) |
 | `cfg` | | Configure the repo: Crossfile + `rerere.enabled` + `.cross/` in `.gitignore` (`init` kept as alias) |
 | `ls` | `[--raw] [--no-header]` | Tables (default) or TSV rows of remotes and crosses incl. DIFF + upstream SHA (`list` kept as alias) |
+| `env` | `[path] [--fish] [--unset] [--json] [--gitdir\|--worktree\|--local-path]` | Print evaluable shell code pointing plain `git` at the cross's UPSTREAM (`GIT_DIR` + `GIT_WORK_TREE` + `CROSS_ACTIVE`); path arg or the cross at the CWD |
 | `cd` | `[path]` | Hidden from help: print the crossed dir path; the `xcd` / `gx cd` wrapper does the real `cd` |
 | `wt` | `[path]` | Hidden alias of `cd` (was the git passthrough in <=0.5.0) |
-| `comp` | `[fish\|bash\|zsh\|powershell]` | Completions + `xcd`/`gx`/`cr` wrappers (`completion` kept as alias); optional `git x` alias hint |
+| `comp` | `[fish\|bash\|zsh\|powershell]` | Completions + `xcd`/`gxenv`/`gx`/`cr` wrappers (`completion` kept as alias); optional `git x` alias hint |
 | `shell-init` | `[fish\|bash\|zsh]` | Hidden (compat): wrappers only, no completions |
 | *(any git command)* | `<git-args...>` | Falls through to the git passthrough (upstream context inside a crossed dir; fails early outside) |
 
@@ -91,7 +92,7 @@ specs/003-gitdir-patches/                       # plan, progress, ADR-001, ADR-0
 
 **Just/Fish reference scope (v0.5.1):** of the commands above, the reference implements
 `use`, `set`, `del`, `ls`, `cfg`/`init` and the git passthrough ONLY.
-`update`, `resolve`, `wipe`, `comp`, `shell-init`, `cd` and `wt` are Go-only —
+`update`, `resolve`, `wipe`, `comp`, `shell-init`, `cd`, `wt` and `env` are Go-only —
 in the reference they are stubs printing `NOT IMPLEMENTED in Justfile version`
 (exit 1).
 
@@ -120,7 +121,7 @@ core-command fixes, nothing more.
 
 ### Test Structure
 
-21 tests, all targeting v0.5.0+. There is no exclusion list any more: retired tests were
+23 tests, all targeting v0.5.0+. There is no exclusion list any more: retired tests were
 deleted with their commands (005 replay, 008/011 Rust, 021 compare); the Rust
 implementation itself was deleted in v0.5.1.
 
@@ -135,7 +136,7 @@ Tests 001-004 form a chain (`004` sources `002` which sources `001`, `003` sourc
 and 025 is the v0.5.0 stage-1 gate (creation/checkout for both).
 
 Names match the current command set: `007_ls_health`, `010_cd_wt_passthrough`,
-`015_wipe`, `017_cd_shell_integration`.
+`015_wipe`, `017_cd_shell_integration`, `028_env`.
 
 Run a single test with `SHELL=/bin/bash bash test/NNN_*.sh` (never `run-all.sh` while
 iterating — it shares `testdir`). To run everything quickly, use the grouped
@@ -168,7 +169,7 @@ Procedure for updating a test to v0.5 semantics: `.agents/skills/git-cross-test-
 | `use` (metadata only, primary untouched) | 001, 025 | 009, 025 |
 | `set` (bare gitdir, sparse, no `.git` in crossed dir, primary blob tracking) | 002, 012, 025 | 009, 012, 019, 023, 025 |
 | `update` (land + re-apply, refusal, conflict kept) | — (Go-only; stub) | 009, 018, 019, 026 |
-| `update --force` / re-adoption of lost crosses (y/N prompt + dirty guard) | — (Go-only; stub) | 027 |
+| `update --force` / re-adoption of lost crosses (y/p/N prompt + stash/preserve of dirty dirs) | — (Go-only; stub) | 027 |
 | `resolve` (list, `--continue`, `--abort`) | — (Go-only; stub) | 009, 018, 026 |
 | Go-level update/resolve tests (`go test ./src-go`) | — | 5 integration tests in `src-go/update_resolve_test.go` |
 | `pull -r` in patch ctx (clean + conflicting rebase) | 004 | 004‡, 024 |
@@ -180,6 +181,7 @@ Procedure for updating a test to v0.5 semantics: `.agents/skills/git-cross-test-
 | `wipe` (remote, multi-cross, orphan sweep, root guard) | — (Go-only; stub) | 009, 015 |
 | `cfg` / `init` alias | 024 | 009, 024 |
 | `comp` / hidden `shell-init` | — (Go-only; stub) | 017, 020 |
+| `env` + `gxenv` (upstream context, nested vs in-place, loaded-context discovery) | — (Go-only) | 028 |
 | grouped `--help` + configuration guidance | n/a | 020 |
 | sparse checkout plumbing | 012 | 012 |
 | whole-repo cross (no sparse, no `.git`) | 019‡ | 019 |
@@ -333,11 +335,31 @@ just sub-cases of Go-only commands are guarded by `just_ref_implements` and SKIP
   The mirror is BARE — the diff MUST name the work tree (`--work-tree=<crossed dir>`;
   without it git refuses with "must be run in a work tree"), and a failing diff
   reports `Error`, never a silent `Clean` (v0.5.1 bugfix).
-- **`update` (incl. its re-adoption y/N prompt) is Go-only** (v0.5.1): Go owns the
-  prompt (`Delete '<abs path>' and re-adopt it from upstream? [y/N]:`, default No;
-  `--force` auto-applies the yes — with the uncommitted-changes guard). The Just
-  reference has no `update` at all (stub); the whole update/resolve flow lives in
-  Go. With `wipe` also Go-only, the reference has NO interactive prompts left.
+- **`update` (incl. its re-adoption prompt) is Go-only** (v0.5.1): Go owns the
+  prompt — `'<abs path>' exists but its .cross state is lost. Re-initialize how?`
+  with `[y] re-initialize from upstream (existing dir wiped)`, `[p] re-initialize
+  but preserve local (existing dir backed up, then copied back)` and default No
+  (EOF/anything else skips); `--force` auto-applies the y (wipe). The **preserve**
+  path moves the crossed dir aside under `.cross/backup-*/`, re-creates the cross
+  from upstream (the normal set flow), copies the backup back over the fresh work
+  tree (local wins, files new upstream survive), re-stages it and removes the
+  backup; on failure the backup is kept and its path is in the error.
+- **Dirty lost-state dirs are never destroyed** (v0.5.4): the old hard refusal
+  before the prompt is gone. `crossHasUncommitted` (primary-repo
+  `git status --porcelain -- <P>`) now only decides HOW the prompt is phrased:
+  a dirty dir gets `'<abs path>' exists but its .cross state is lost and it has
+  uncommitted changes. Re-initialize how?` plus `[y] re-initialize from upstream
+  (uncommitted changes stashed first)`. `y` runs `git -C <repo> stash push -u -m
+  "git-cross: changes in <P> before re-adoption" -- <P>` (`-u` is required: a
+  lost-registry dir is usually untracked) BEFORE the wipe, so `git stash apply
+  "stash@{0}"` brings the work back into the freshly adopted cross; the stash
+  entry is the safety net and is deliberately NOT auto-applied. `p` needs no
+  stash (the whole dir is copied back). `--force` on a dirty dir stashes first
+  too — it never destroys uncommitted work, it only skips the question. If the
+  post-stash `git status` is still dirty the update aborts (`... still has
+  uncommitted changes after stashing; refusing to delete them`). The Just
+  reference has no `update` at all (stub); the whole update/resolve flow lives
+  in Go. With `wipe` also Go-only, the reference has NO interactive prompts left.
 - **Stdin on recipe chains**: any stdin-capable command (git `ls-remote`/`clone`/
   `fetch` via ssh, or `jq`/`grep`/`cat` without a file argument) silently drains
   piped input before a later `read` can see it; redirect `</dev/null` where
@@ -367,6 +389,32 @@ just sub-cases of Go-only commands are guarded by `just_ref_implements` and SKIP
   cannot). fish needs `git cross comp fish | source` (fish joins multi-line
   substitutions with spaces). `set` prints the shell-appropriate one-liner.
   powershell gets completions only.
+- **`git cross env` + `gxenv` (upstream git context)**: `env` prints evaluable shell
+  code — `export GIT_DIR='<gitdir>'`, `export GIT_WORK_TREE='<crossed dir>'` and
+  `export CROSS_ACTIVE='<local_path>'` (`--fish` → `set -gx ...`, `--unset` → the
+  inverse, `--json` / `--gitdir` / `--worktree` / `--local-path` → bare values for
+  wrappers). Path arg or the cross at the CWD, same segment-aware matcher; no cross
+  or a missing gitdir is a hard error with empty stdout (the env would be a lie).
+  After `eval`ing it, plain `git` means the cross's UPSTREAM (log/status/diff/push),
+  which is what editor/`gh`/lazygit integrations need — `git cross <args>` already
+  covered the shell (`gx`/`cr`). **Do not put it in `xcd`**: exported vars outlive
+  the cd, and then (a) plain git anywhere in that shell targets the mirror, (b)
+  git-cross loses the primary repo (git answers the crossed dir as the toplevel),
+  (c) `add`/`commit` land on the mirror branch, which the next successful `update`
+  overwrites (`update-ref refs/heads/<b> <THEIRS>`) — invisible work, dangling
+  objects. So the wrapper is **process-scoped**: `gxenv` (no flag) runs a NESTED
+  shell (`GIT_DIR=... GIT_WORK_TREE=... CROSS_ACTIVE=... "$SHELL" -i`), so leaving
+  it unloads; `gxenv -i` loads into the current shell and `gxenv -u` unloads.
+  Prompt marker is a static fragment that only expands while loaded, e.g.
+  `PS1='${CROSS_ACTIVE:+(cross:$CROSS_ACTIVE) }'"$PS1"` — no chpwd/direnv hook, no
+  serialized `.envrc`, no shell state written by the binary.
+- **Loaded-context discovery (why `env` is idempotent)**: `getRepoRoot` ignores a
+  `GIT_DIR` that points into `.cross/worktrees/` (`crossEnvLoaded` → `gitEnvWithoutCross`),
+  so `git cross ...` keeps finding the PRIMARY repo and its registry with the env
+  loaded. `cwdRepoRelative` re-bases git's `GIT_PREFIX`: with the env loaded the
+  `git cross` alias runs from the CROSSED dir, so the caller's location is
+  `CROSS_ACTIVE + "/" + GIT_PREFIX`, not the primary-root-relative prefix.
+  Never leave this to the caller in a test — 028 pins both behaviours.
 - **Interactive picker** (Go-only since v0.5.1; the reference's `_select_patch` was
   removed with `cd`): `selectPatchInteractive` (Go) serves `cd`/`del`-miss. Rows are
   `<local_path padded><TAB><local_path>` with

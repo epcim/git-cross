@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -39,8 +40,47 @@ const (
 	GitdirRoot       = ".cross/worktrees"
 )
 
+// crossEnvLoaded reports whether this shell carries git-cross's own upstream
+// context, i.e. `eval "$(git cross env)"` / the gxenv wrapper loaded GIT_DIR
+// pointing into the .cross/worktrees/ mirror area. Such a GIT_DIR must be
+// IGNORED when git-cross looks for the PRIMARY repo: with it set, git's
+// `--show-toplevel` answers the crossed dir and every git-cross command would
+// lose the registry (which lives in the primary repo).
+func crossEnvLoaded() bool {
+	gd := strings.TrimSpace(os.Getenv("GIT_DIR"))
+	if gd == "" {
+		return false
+	}
+	if !filepath.IsAbs(gd) {
+		if abs, err := filepath.Abs(gd); err == nil {
+			gd = abs
+		}
+	}
+	gd = filepath.ToSlash(filepath.Clean(gd))
+	return strings.Contains(gd, "/"+GitdirRoot+"/") || strings.HasSuffix(gd, "/"+GitdirRoot)
+}
+
+// gitEnvWithoutCross returns the environment minus a loaded cross context, for
+// child git processes that must see the PRIMARY repo.
+func gitEnvWithoutCross() []string {
+	env := make([]string, 0, len(os.Environ()))
+	for _, kv := range os.Environ() {
+		name, _, _ := strings.Cut(kv, "=")
+		switch name {
+		case "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_PREFIX":
+			continue
+		}
+		env = append(env, kv)
+	}
+	return env
+}
+
 func getRepoRoot() (string, error) {
-	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	c := exec.Command("git", "rev-parse", "--show-toplevel")
+	if crossEnvLoaded() {
+		c.Env = gitEnvWithoutCross()
+	}
+	out, err := c.Output()
 	if err != nil {
 		return "", err
 	}
@@ -837,8 +877,18 @@ func findPatchForPath(meta Metadata, rel string) *Patch {
 // invocation). Without this, every passthrough/`git cross <git-args>` run through
 // the alias saw the repo root and failed with "not inside a crossed directory".
 func cwdRepoRelative(root string) (string, error) {
+	active := strings.Trim(filepath.ToSlash(filepath.Clean(os.Getenv("CROSS_ACTIVE"))), "/")
 	if gp := strings.TrimSpace(os.Getenv("GIT_PREFIX")); gp != "" {
-		return strings.Trim(filepath.ToSlash(filepath.Clean(gp)), "/"), nil
+		rel := strings.Trim(filepath.ToSlash(filepath.Clean(gp)), "/")
+		if active != "" && active != "." {
+			// `eval "$(git cross env)"` is loaded: git's toplevel IS the crossed
+			// dir, so GIT_PREFIX is relative to it, not to the primary repo root.
+			if rel == "" || rel == "." {
+				return active, nil
+			}
+			return active + "/" + rel, nil
+		}
+		return rel, nil
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -865,6 +915,35 @@ func findPatchForPathFromCWD(meta Metadata) (*Patch, error) {
 		return nil, err
 	}
 	return findPatchForPath(meta, rel), nil
+}
+
+// patchForEnv resolves the cross `git cross env` describes: an explicit path
+// argument (repo-relative, absolute or a bare local_path), else the cross that
+// contains the caller's working directory. nil means "no cross here".
+func patchForEnv(meta *Metadata, args []string) (*Patch, error) {
+	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+		return findPatchForPathFromCWD(*meta)
+	}
+	relPath, err := resolvePathToRepoRelative(args[0])
+	if err != nil {
+		return nil, err
+	}
+	if p := findPatchForPath(*meta, relPath); p != nil {
+		return p, nil
+	}
+	clean := filepath.ToSlash(filepath.Clean(args[0]))
+	for i := range meta.Patches {
+		if meta.Patches[i].LocalPath == clean {
+			return &meta.Patches[i], nil
+		}
+	}
+	return nil, nil
+}
+
+// shellQuote single-quotes s for POSIX sh and fish (both read '\'' as a
+// literal quote), so paths with spaces or quotes survive `eval`/`source`.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // resolvePathToRepoRelative converts any path (relative, absolute, repo-relative)
@@ -1018,8 +1097,8 @@ func crossHeadShort(root string, p *Patch) string {
 }
 
 // crossHasUncommitted reports whether the crossed dir has staged or unstaged
-// changes. A re-adoption wipe destroys BOTH, so the caller refuses instead of
-// silently losing the user's work (the same contract as the Pass 3 dirty check).
+// changes. A re-adoption wipe destroys BOTH, so the caller stashes them first
+// (or preserves the whole dir) instead of silently losing the user's work.
 func crossHasUncommitted(root, localPath string) bool {
 	out, err := exec.Command("git", "-C", root, "status", "--porcelain", "--", filepath.FromSlash(localPath)).Output()
 	if err != nil {
@@ -1028,33 +1107,88 @@ func crossHasUncommitted(root, localPath string) bool {
 	return strings.TrimSpace(string(out)) != ""
 }
 
-// confirmForceWipe asks before deleting an existing, unregistered crossed dir.
-// The ABSOLUTE path is shown so it is clear what gets deleted; --force
-// auto-applies the "yes" (no prompt). Returns false when the user declines
-// or stdin is closed (default No — the safe side). The dirty check happens
-// BEFORE this, at the call site: a dirty dir is refused without asking.
-func confirmForceWipe(root, localPath string, force bool) (bool, error) {
+// readoptChoice is the user's answer to the re-adoption prompt: skip (default),
+// re-initialize from upstream (wipe the existing dir), stash uncommitted work
+// and then re-initialize from upstream, or re-initialize while preserving the
+// current crossed dir content.
+type readoptChoice int
+
+const (
+	readoptDecline readoptChoice = iota // skip: nothing is touched
+	readoptWipe                         // re-initialize from upstream (dir wiped)
+	readoptPreserve                     // re-initialize but preserve local (backup + copy back)
+	readoptStash                        // stash uncommitted changes, then re-initialize (wipe)
+)
+
+// confirmReadopt asks what to do with an existing crossed dir whose .cross state
+// was lost (the whole registry gone, or only its gitdir). Two ways to
+// re-initialize: from upstream (the existing dir is wiped) or preserving local
+// (the dir is moved aside, re-created from upstream, then the backup is copied
+// back over it). A dirty dir adds a third, lossless way to pick the wipe: the
+// uncommitted changes are stashed first, so `git stash apply` can bring them
+// back into the freshly adopted cross. Anything but an explicit choice skips the
+// cross (default No — the safe side). The ABSOLUTE path is shown so it is clear
+// what gets re-initialized; --force auto-applies the wipe without prompting (it
+// stashes first when the dir is dirty, never destroying uncommitted work).
+func confirmReadopt(root, localPath string, dirty, force bool) (readoptChoice, error) {
 	if localPath == "" || localPath == "." || localPath == ".." ||
 		strings.HasPrefix(localPath, "../") || filepath.IsAbs(filepath.FromSlash(localPath)) {
-		return false, fmt.Errorf("refusing to clear unsafe path %q", localPath)
+		return readoptDecline, fmt.Errorf("refusing to clear unsafe path %q", localPath)
 	}
 	abs := filepath.Join(root, filepath.FromSlash(localPath))
 	if filepath.Clean(abs) == filepath.Clean(root) || abs == string(filepath.Separator) {
-		return false, fmt.Errorf("refusing to clear the repository root")
+		return readoptDecline, fmt.Errorf("refusing to clear the repository root")
 	}
 	if force {
-		return true, nil // --force: adopt without asking
+		if dirty {
+			return readoptStash, nil // --force never destroys uncommitted work
+		}
+		return readoptWipe, nil // --force: adopt (wipe) without asking
 	}
-	fmt.Printf("Delete '%s' and re-adopt it from upstream? [y/N]: ", abs)
-	var confirm string
-	if _, err := fmt.Scanln(&confirm); err != nil {
-		confirm = "" // non-interactive (EOF) or empty input: default No
+	if dirty {
+		fmt.Printf("'%s' exists but its .cross state is lost and it has uncommitted changes. Re-initialize how?\n", abs)
+		fmt.Println("  [y] re-initialize from upstream (uncommitted changes stashed first)")
+	} else {
+		fmt.Printf("'%s' exists but its .cross state is lost. Re-initialize how?\n", abs)
+		fmt.Println("  [y] re-initialize from upstream (existing dir wiped)")
 	}
-	if confirm == "y" || confirm == "Y" {
-		return true, nil
+	fmt.Println("  [p] re-initialize but preserve local (existing dir backed up, then copied back)")
+	fmt.Print("Choice [y/p/N]: ")
+	var answer string
+	if _, err := fmt.Scanln(&answer); err != nil {
+		answer = "" // non-interactive (EOF) or empty input: default No
+	}
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "y":
+		if dirty {
+			return readoptStash, nil
+		}
+		return readoptWipe, nil
+	case "p":
+		return readoptPreserve, nil
 	}
 	logWarn(fmt.Sprintf("Skipped %s (not confirmed; re-run with --force to adopt without asking)", localPath))
-	return false, nil
+	return readoptDecline, nil
+}
+
+// stashCross parks a dirty crossed dir's changes in the primary repo's stash so
+// a re-adoption wipe cannot lose them, and reports the stash entry to restore
+// from. `-u` is required: when the whole registry is gone the crossed dir is
+// usually untracked, and plain `stash push -- <path>` would save nothing.
+func stashCross(root, localPath string) (string, error) {
+	msg := fmt.Sprintf("git-cross: changes in %s before re-adoption", localPath)
+	st := exec.Command("git", "-C", root, "stash", "push", "-u", "-m", msg, "--", filepath.FromSlash(localPath))
+	var stderr bytes.Buffer
+	st.Stderr = &stderr
+	if err := st.Run(); err != nil {
+		return "", fmt.Errorf("stashing uncommitted changes in %s failed: %s", localPath, strings.TrimSpace(stderr.String()))
+	}
+	if crossHasUncommitted(root, localPath) {
+		// Conservative: never delete what the stash did not capture.
+		return "", fmt.Errorf("%s still has uncommitted changes after stashing; refusing to delete them", localPath)
+	}
+	logInfo(fmt.Sprintf("Stashed uncommitted changes in %s (restore with: git stash apply \"stash@{0}\")", localPath))
+	return "stash@{0}", nil
 }
 
 // removeGitdirTree deletes a path ONLY when it lives under .cross/worktrees/.
@@ -1091,12 +1225,155 @@ func forceClearDir(root, localPath string) error {
 	return os.RemoveAll(abs)
 }
 
+// copyTreeOver copies everything under src over dst: files present in src
+// overwrite their dst counterparts, files that exist only in dst survive
+// (union copy). Used to lay a backed-up crossed dir back over a fresh upstream
+// checkout: local content wins, files new upstream stay.
+func copyTreeOver(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, rerr := filepath.Rel(src, path)
+		if rerr != nil {
+			return rerr
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode().Perm())
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, lerr := os.Readlink(path)
+			if lerr != nil {
+				return lerr
+			}
+			if rerr := os.Remove(target); rerr != nil && !os.IsNotExist(rerr) {
+				return rerr
+			}
+			return os.Symlink(link, target)
+		}
+		if !info.Mode().IsRegular() {
+			return nil // sockets/FIFOs/devices have no business in a crossed dir
+		}
+		in, ierr := os.Open(path)
+		if ierr != nil {
+			return ierr
+		}
+		defer in.Close()
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		out, oerr := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm())
+		if oerr != nil {
+			return oerr
+		}
+		if _, cerr := io.Copy(out, in); cerr != nil {
+			out.Close()
+			return cerr
+		}
+		return out.Close()
+	})
+}
+
+// readoptLostCross re-initializes one lost cross end to end: it checks for
+// uncommitted work, asks how to proceed (wipe / stash-then-wipe / preserve),
+// performs the destructive part and then runs adopt to re-create the cross from
+// upstream. adopt runs INSIDE the preserve flow, so the backup copy lands over
+// the fresh work tree. A dirty dir is never deleted: the prompt offers to stash
+// the changes first (--force stashes too), and preserve keeps them in place
+// through backup + copy-back. declined=true means the user skipped the cross.
+func readoptLostCross(root, localPath string, force bool, adopt func() error) (declined bool, err error) {
+	dirty := crossHasUncommitted(root, localPath)
+	choice, cerr := confirmReadopt(root, localPath, dirty, force)
+	if cerr != nil {
+		return false, cerr
+	}
+	switch choice {
+	case readoptDecline:
+		return true, nil
+	case readoptPreserve:
+		if perr := readoptPreserving(root, localPath, adopt); perr != nil {
+			return false, perr
+		}
+		logInfo(fmt.Sprintf("Re-adopting %s from upstream (local content preserved)", localPath))
+		return false, nil
+	case readoptStash:
+		if _, serr := stashCross(root, localPath); serr != nil {
+			return false, serr
+		}
+		if cerr := forceClearDir(root, localPath); cerr != nil {
+			return false, cerr
+		}
+		logInfo(fmt.Sprintf("Re-adopting %s from upstream (uncommitted changes stashed, existing dir wiped)", localPath))
+	default: // readoptWipe
+		if cerr := forceClearDir(root, localPath); cerr != nil {
+			return false, cerr
+		}
+		logInfo(fmt.Sprintf("Re-adopting %s from upstream (existing dir wiped)", localPath))
+	}
+	return false, adopt()
+}
+
+// readoptPreserving re-adopts a lost cross from upstream while preserving the
+// crossed dir's current content: the dir is temporarily moved aside (a backup
+// under .cross/, which is disposable and gitignored), the adopt callback
+// re-creates the cross from upstream (the normal set flow), then the backup is
+// copied back over the fresh work tree — local files win, files that are new
+// upstream survive — the result is staged, and the backup is removed.
+// On failure the backup is KEPT and its path is in the error: local content
+// is never lost.
+func readoptPreserving(root, localPath string, adopt func() error) error {
+	if localPath == "" || localPath == "." || localPath == ".." ||
+		strings.HasPrefix(localPath, "../") || filepath.IsAbs(filepath.FromSlash(localPath)) {
+		return fmt.Errorf("refusing to preserve unsafe path %q", localPath)
+	}
+	localAbs := filepath.Join(root, filepath.FromSlash(localPath))
+	crossDir := filepath.Join(root, filepath.FromSlash(".cross"))
+	if err := os.MkdirAll(crossDir, 0o755); err != nil {
+		return err
+	}
+	backup, err := os.MkdirTemp(crossDir, "backup-")
+	if err != nil {
+		return err
+	}
+	saved := filepath.Join(backup, filepath.Base(localAbs))
+	if err := os.Rename(localAbs, saved); err != nil {
+		os.RemoveAll(backup)
+		return fmt.Errorf("backing up %s failed: %w", localPath, err)
+	}
+	if rel, rerr := filepath.Rel(root, saved); rerr == nil {
+		logInfo(fmt.Sprintf("Backed up %s to %s (temporary)", localPath, filepath.ToSlash(rel)))
+	}
+	// Re-create the cross from upstream while the dir is parked aside.
+	if err := adopt(); err != nil {
+		return fmt.Errorf("re-adoption failed; local content kept at %s: %w", saved, err)
+	}
+	// Copy the backup back over the fresh upstream checkout (local wins).
+	if err := copyTreeOver(saved, localAbs); err != nil {
+		return fmt.Errorf("restoring local content failed; backup kept at %s: %w", saved, err)
+	}
+	// Stage the restored content so the index matches the work tree (set
+	// staged the upstream materialization; the copy-back changed it).
+	add := exec.Command("git", "add", filepath.FromSlash(localPath))
+	add.Dir = root
+	if add.Run() != nil {
+		logWarn(fmt.Sprintf("git add %s failed", localPath))
+	}
+	if err := os.RemoveAll(backup); err != nil {
+		logWarn(fmt.Sprintf("could not remove the temporary backup %s: %v", backup, err))
+	}
+	return nil
+}
+
 // -------------------------------------------------------------- passthrough --
 
 // crossCommandNames are the subcommands (plus hidden aliases) a typo can hit.
 var crossCommandNames = []string{
 	"use", "set", "del", "cfg", "update", "resolve", "ls", "cd", "wt",
-	"comp", "wipe", "list", "completion", "init", "shell-init", "help",
+	"comp", "wipe", "env", "list", "completion", "init", "shell-init", "help",
 }
 
 // knownGitCommands keeps the crossed-dir hint for real git commands typed at
@@ -1207,6 +1484,25 @@ const posixShellInit = `# git-cross shell wrappers (part of: eval "$(git cross c
 xcd() { local p; p="$(git cross cd "$@")" || return; [ -n "$p" ] && cd "$p"; }
 gx() { if [ "$1" = "cd" ]; then shift; xcd "$@"; else git cross "$@"; fi; }   # short alias for git cross (gx cd changes directory)
 cr() { git cross "$@"; }     # short alias for git cross: cr log --oneline
+# gxenv: give plain 'git' the crossed dir's UPSTREAM context for one shell.
+#   gxenv [path]        nested shell (exit unloads; nothing leaks into yours)
+#   gxenv -i [path]     load into THIS shell (remember: gxenv -u before leaving)
+#   gxenv -u            unload from this shell
+# optional prompt marker (add after PS1 is set, e.g. at the end of ~/.bashrc):
+#   PS1='${CROSS_ACTIVE:+(cross:$CROSS_ACTIVE) }'"$PS1"
+gxenv() { case "${1-}" in
+    -u|--unset) eval "$(git cross env --unset)"; return 0 ;;
+    -i|--in-place) local src; src=$(git cross env "${2-}") && eval "$src"; return $? ;;
+    -h|--help) echo 'usage: gxenv [-i|--in-place|-u|--unset] [path]'
+        echo '  (default) nested shell with the crossed dir upstream context'
+        echo '  -i        load into this shell    -u  unload from this shell'; return 0 ;;
+  esac
+  local gd wt lp
+  gd=$(git cross env --gitdir "$@") || return
+  wt=$(git cross env --worktree "$@") || return
+  lp=$(git cross env --local-path "$@") || return
+  GIT_DIR=$gd GIT_WORK_TREE=$wt CROSS_ACTIVE=$lp "${SHELL:-/bin/sh}" -i
+}
 # optional git alias so 'git x add ./file' also works:
 #   git config --global alias.x '!git cross'
 `
@@ -1228,6 +1524,26 @@ function gx --description 'short alias for git cross (gx cd changes directory)'
 end
 function cr --description 'short alias for git cross'
     git cross $argv
+end
+# gxenv: plain 'git' sees the crossed dir's UPSTREAM in a nested shell
+# (exit unloads). 'gxenv -i' loads into this fish, 'gxenv -u' unloads.
+# optional prompt marker: a fish_prompt that shows $CROSS_ACTIVE when set.
+function gxenv --description 'plain git in a crossed dir speaks to its upstream (nested shell)'
+    switch "$argv[1]"
+        case -u --unset
+            git cross env --fish --unset | source
+            return
+        case -i --in-place
+            git cross env --fish $argv[2..-1] | source
+            return
+        case -h --help
+            echo 'usage: gxenv [-i|--in-place|-u|--unset] [path]'
+            return
+    end
+    set -l gd (git cross env --gitdir $argv); or return
+    set -l wt (git cross env --worktree $argv); or return
+    set -l lp (git cross env --local-path $argv); or return
+    GIT_DIR=$gd GIT_WORK_TREE=$wt CROSS_ACTIVE=$lp $SHELL -i
 end
 # optional git alias so 'git x add ./file' also works:
 #   git config --global alias.x '!git cross'
@@ -1302,9 +1618,13 @@ Configuration (git config):
   cross.depth        shallow clone depth used by 'set' (opt-in, e.g. 1)
   cross.filter       partial clone filter used by 'set' (opt-in, e.g. blob:none)
 
-Shell integration (defines xcd, plus the gx/cr short aliases for git cross):
+Shell integration (defines xcd + gxenv, plus the gx/cr short aliases for git cross):
   fish       git cross comp fish | source
-  bash/zsh   eval "$(git cross comp)"`,
+  bash/zsh   eval "$(git cross comp)"
+
+Inside a crossed dir, 'gxenv' opens a nested shell where plain 'git' speaks to
+that cross's UPSTREAM (exit to unload); 'gxenv -i' loads it into the current
+shell and 'gxenv -u' unloads it.`,
 		Args:               cobra.ArbitraryArgs,
 		DisableFlagParsing: true, // native git args (--oneline, -v, ...) belong to the passthrough
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -1620,27 +1940,26 @@ Shell integration (defines xcd, plus the gx/cr short aliases for git cross):
 					}
 				}
 				if patch == nil {
+					adopted := false
 					if _, lerr := os.Stat(filepath.Join(root, localPath)); lerr == nil {
-						// A wipe destroys staged AND unstaged work: refuse a dirty dir
-						// before anything is asked or deleted (--force hits the same guard).
-						if crossHasUncommitted(root, localPath) {
-							return fmt.Errorf("%s has uncommitted changes; commit or stash them first (refusing to delete them)", localPath)
+						// A dirty dir is no longer refused: the prompt offers to stash
+						// (or preserve) uncommitted work before anything is deleted.
+						skip, rerr := readoptLostCross(root, localPath, force, func() error {
+							return setCmd.RunE(cmd, []string{fields[1], localPath})
+						})
+						if rerr != nil {
+							return rerr
 						}
-						ok, cerr := confirmForceWipe(root, localPath, force)
-						if cerr != nil {
-							return cerr
-						}
-						if !ok {
+						if skip {
 							declined++
 							continue
 						}
-						if err := forceClearDir(root, localPath); err != nil {
+						adopted = true
+					}
+					if !adopted {
+						if err := setCmd.RunE(cmd, []string{fields[1], localPath}); err != nil {
 							return err
 						}
-						logInfo(fmt.Sprintf("Re-adopting %s from upstream (existing dir wiped)", localPath))
-					}
-					if err := setCmd.RunE(cmd, []string{fields[1], localPath}); err != nil {
-						return err
 					}
 					meta, err = loadMetadata()
 					if err != nil {
@@ -1662,37 +1981,37 @@ Shell integration (defines xcd, plus the gx/cr short aliases for git cross):
 				}
 				gdAbs := patch.gitdirAbs(root)
 				if _, gerr := os.Stat(gdAbs); os.IsNotExist(gerr) {
+					adopted := false
 					if _, lerr := os.Stat(patch.localAbs(root)); lerr == nil {
-						// Same dirty guard as the unregistered-dir case above.
-						if crossHasUncommitted(root, localPath) {
-							return fmt.Errorf("%s has uncommitted changes; commit or stash them first (refusing to delete them)", localPath)
+						// Same prompt as the unregistered-dir case above (incl. the
+						// stash/preserve handling of uncommitted work).
+						skip, rerr := readoptLostCross(root, localPath, force, func() error {
+							// Drop the stale registration (the Crossfile line stays); set re-adds it.
+							kept := meta.Patches[:0]
+							for _, p := range meta.Patches {
+								if p.LocalPath != localPath {
+									kept = append(kept, p)
+								}
+							}
+							meta.Patches = kept
+							if err := saveMetadata(meta); err != nil {
+								return err
+							}
+							return setCmd.RunE(cmd, []string{fields[1], localPath})
+						})
+						if rerr != nil {
+							return rerr
 						}
-						ok, cerr := confirmForceWipe(root, localPath, force)
-						if cerr != nil {
-							return cerr
-						}
-						if !ok {
+						if skip {
 							declined++
 							continue
 						}
-						if err := forceClearDir(root, localPath); err != nil {
-							return err
-						}
-						// Drop the stale registration (the Crossfile line stays); set re-adds it.
-						kept := meta.Patches[:0]
-						for _, p := range meta.Patches {
-							if p.LocalPath != localPath {
-								kept = append(kept, p)
-							}
-						}
-						meta.Patches = kept
-						if err := saveMetadata(meta); err != nil {
-							return err
-						}
-						logInfo(fmt.Sprintf("Re-adopting %s from upstream (existing dir wiped)", localPath))
+						adopted = true
 					}
-					if err := setCmd.RunE(cmd, []string{fields[1], localPath}); err != nil {
-						return err
+					if !adopted {
+						if err := setCmd.RunE(cmd, []string{fields[1], localPath}); err != nil {
+							return err
+						}
 					}
 					meta, err = loadMetadata()
 					if err != nil {
@@ -2137,6 +2456,110 @@ Shell integration (defines xcd, plus the gx/cr short aliases for git cross):
 		},
 	}
 
+	// env prints the upstream git context of a crossed dir, for `eval`. It is the
+	// explicit, process-scoped alternative to `git cross <git-args>`: plain `git`
+	// commands (aliases, editor/gh integrations, lazygit, ...) speak to upstream.
+	envCmd := &cobra.Command{
+		Use:     "env [path]",
+		Short:   "Print the git environment of a crossed dir's upstream (for eval/source)",
+		GroupID: "overview",
+		Args:    cobra.MaximumNArgs(1),
+		Long: `Print shell code that points git at a crossed directory's UPSTREAM mirror.
+
+  eval "$(git cross env)"          # bash/zsh, run inside the crossed dir
+  git cross env --fish | source    # fish
+
+It defines GIT_DIR (the patch's bare gitdir), GIT_WORK_TREE (the crossed dir)
+and CROSS_ACTIVE (its local_path, handy for a prompt). After that, plain 'git'
+means the cross's upstream: log, diff, status, fetch, push, ...
+
+Keep the context scoped — two variables in an interactive shell are easy to
+forget. The gxenv wrapper (from: git cross comp) runs a NESTED shell by default
+(leaving it unloads), 'gxenv -i' loads into the current shell and 'gxenv -u'
+unloads again. 'git cross ...' keeps working with the context loaded; it is
+plain 'git' that changes meaning. Commits made in this context land in the
+mirror branch, NOT in your repo — commit the crossed files from your repo.
+
+flags: --fish (fish syntax), --unset (print the unload code), --json,
+       --gitdir / --worktree / --local-path (print one bare value).`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fish, _ := cmd.Flags().GetBool("fish")
+			unset, _ := cmd.Flags().GetBool("unset")
+			asJSON, _ := cmd.Flags().GetBool("json")
+			wantGitdir, _ := cmd.Flags().GetBool("gitdir")
+			wantWorktree, _ := cmd.Flags().GetBool("worktree")
+			wantLocalPath, _ := cmd.Flags().GetBool("local-path")
+
+			if unset {
+				if fish {
+					fmt.Println("set -e GIT_DIR GIT_WORK_TREE CROSS_ACTIVE")
+				} else {
+					fmt.Println("unset GIT_DIR GIT_WORK_TREE CROSS_ACTIVE")
+				}
+				return nil
+			}
+
+			meta, err := loadMetadata()
+			if err != nil {
+				return err
+			}
+			patch, err := patchForEnv(&meta, args)
+			if err != nil {
+				return err
+			}
+			if patch == nil {
+				if len(meta.Patches) == 0 {
+					return fmt.Errorf("no crosses configured: run: git cross set <remote>:<path> <local_path>")
+				}
+				return fmt.Errorf("no cross matches the working directory: run this inside a crossed dir (or name one: git cross env <local_path>)")
+			}
+			root, err := getRepoRoot()
+			if err != nil {
+				return err
+			}
+			gdAbs := patch.gitdirAbs(root)
+			if _, serr := os.Stat(gdAbs); os.IsNotExist(serr) {
+				return fmt.Errorf("gitdir missing for %s (%s); run: git cross update %s", patch.LocalPath, patch.Gitdir, patch.LocalPath)
+			}
+			wtAbs := patch.localAbs(root)
+
+			switch {
+			case wantGitdir:
+				fmt.Println(gdAbs)
+			case wantWorktree:
+				fmt.Println(wtAbs)
+			case wantLocalPath:
+				fmt.Println(patch.LocalPath)
+			case asJSON:
+				payload := struct {
+					Remote    string `json:"remote"`
+					Branch    string `json:"branch"`
+					LocalPath string `json:"local_path"`
+					GitDir    string `json:"git_dir"`
+					WorkTree  string `json:"work_tree"`
+				}{patch.Remote, patch.Branch, patch.LocalPath, gdAbs, wtAbs}
+				b, merr := json.MarshalIndent(payload, "", "  ")
+				if merr != nil {
+					return merr
+				}
+				fmt.Println(string(b))
+			case fish:
+				fmt.Printf("set -gx GIT_DIR %s\nset -gx GIT_WORK_TREE %s\nset -gx CROSS_ACTIVE %s\n",
+					shellQuote(gdAbs), shellQuote(wtAbs), shellQuote(patch.LocalPath))
+			default:
+				fmt.Printf("export GIT_DIR=%s\nexport GIT_WORK_TREE=%s\nexport CROSS_ACTIVE=%s\n",
+					shellQuote(gdAbs), shellQuote(wtAbs), shellQuote(patch.LocalPath))
+			}
+			return nil
+		},
+	}
+	envCmd.Flags().Bool("fish", false, "print fish syntax (set -gx ...) instead of POSIX export")
+	envCmd.Flags().Bool("unset", false, "print the code that unloads the context instead")
+	envCmd.Flags().Bool("json", false, "print git_dir/work_tree/local_path as JSON")
+	envCmd.Flags().Bool("gitdir", false, "print only the absolute gitdir")
+	envCmd.Flags().Bool("worktree", false, "print only the absolute work tree")
+	envCmd.Flags().Bool("local-path", false, "print only the local_path")
+
 	cdCmd := &cobra.Command{
 		Use:           "cd [path]",
 		Short:         "Print a crossed directory path (hidden: the xcd/gx-cd wrapper does the real cd)",
@@ -2235,7 +2658,7 @@ For a real directory change use the 'xcd' wrapper (see: git cross comp).`,
 	// Hidden: kept for compatibility. `comp` is the visible entry point.
 	shellInitCmd := &cobra.Command{
 		Use:     "shell-init [fish|bash|zsh]",
-		Short:   "Print shell wrappers for git-cross (xcd, gx, cr)",
+		Short:   "Print shell wrappers for git-cross (xcd, gxenv, gx, cr)",
 		GroupID: "overview",
 		Hidden:  true,
 		Args:    cobra.MaximumNArgs(1),
@@ -2259,7 +2682,7 @@ For a real directory change use the 'xcd' wrapper (see: git cross comp).`,
 	compCmd := &cobra.Command{
 		Use:     "comp [fish|bash|zsh|powershell]",
 		Aliases: []string{"completion"},
-		Short:   "Print shell completions + wrappers (xcd, gx, cr) to evaluate",
+		Short:   "Print shell completions + wrappers (xcd, gxenv, gx, cr) to evaluate",
 		GroupID: "overview",
 		Args:    cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -2382,7 +2805,7 @@ For a real directory change use the 'xcd' wrapper (see: git cross comp).`,
 	lsCmd.Flags().Bool("raw", false, "machine-readable output: tab-separated rows, no borders, no banners")
 	lsCmd.Flags().Bool("no-header", false, "omit header line (applies to table mode and --raw")
 
-	rootCmd.AddCommand(useCmd, setCmd, delCmd, cfgCmd, updateCmd, resolveCmd, lsCmd, cdCmd, wtCmd, compCmd, wipeCmd, shellInitCmd)
+	rootCmd.AddCommand(useCmd, setCmd, delCmd, cfgCmd, updateCmd, resolveCmd, lsCmd, envCmd, cdCmd, wtCmd, compCmd, wipeCmd, shellInitCmd)
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
