@@ -64,7 +64,7 @@ specs/003-gitdir-patches/                       # plan, progress, ADR-001, ADR-0
 | `use` | `<name> <url>` | Register a remote in metadata (**primary git remotes untouched**); validates reachability; re-pointing (new URL) rewrites the Crossfile line + per-patch `remote_url` + gitdir `origin`s |
 | `set` | `<remote[:branch]:path> [local_path]` | Set a cross directory: bare-clone into `.cross/worktrees/<remote>/<patch>`, sparse filter, materialize the work tree in the repo |
 | `update` | `[path] [--no-resolve] [--force]` | Fetch all crosses, then land upstream in the crossed dir + re-apply your version (ADR-003); unstaged edits refuse, collisions are kept; lost `.cross` state (Go: y/p/N prompt — re-init from upstream / re-init but preserve local / skip, default No; a dirty dir adds "uncommitted changes stashed first") / `--force` re-adopts (stash if dirty, then wipe) |
-| `resolve` | `[path] [--continue\|--abort]` | Finish an update conflict: list unmerged paths, gate `--continue`, revert with `--abort` |
+| `resolve` | `[path] [--continue\|--abort]` | No args = informational listing across crosses (exit 0, `No pending conflicts.`); `--continue` gates on unmerged paths, `--abort` reverts; no context + several crosses = clean exit 1 with disambiguation hint |
 | `del` | `<path>` | Delete a cross: gitdir + crossed dir + Crossfile/metadata entries |
 | `wipe` | `[remote]` | Remove a remote and all its crosses, or sweep unused remotes + orphaned gitdirs. (v0.4 `prune`, 0.5.0 `purge`) |
 | `cfg` | | Configure the repo: Crossfile + `rerere.enabled` + `.cross/` in `.gitignore` (`init` kept as alias) |
@@ -356,10 +356,19 @@ just sub-cases of Go-only commands are guarded by `just_ref_implements` and SKIP
   and replays there. 30 local changes cost ONE resolution round (the upstream side is
   what gets squashed). `cherry-pick -n` needs no identity and writes **no**
   `CHERRY_PICK_HEAD` — pending state is `ls-files -u`.
-- **`resolve`**: thin wrapper — list unmerged paths; `--continue` refuses while
-  `ls-files -u` is non-empty, else advances the mirror and tells the user to commit;
-  `--abort` = `git -C <repo> checkout -f HEAD -- <P>`. It never invents merge logic and
-  never commits. (Go-only since v0.5.1; the Just reference has a stub.)
+- **`resolve`**: thin wrapper — with no path outside a cross it is a REPORT:
+  `patchUnmerged` per registered cross → `Crosses with unresolved conflicts:` +
+  per-cross counts + `run: git cross resolve <local_path>`, or
+  `No pending conflicts.`; exit 0 either way (v0.6.1 — it used to print the rows
+  and then fail with `Error: cross not found`, and update's own hint tells users
+  to run it after a clean landing). `--continue` refuses while `ls-files -u` is
+  non-empty, else advances the mirror and tells the user to commit; `--abort` =
+  `git -C <repo> checkout -f HEAD -- <P>`. With several crosses and no context
+  the mutating flags exit 1 via `os.Exit` after printing rows + a
+  `run: git cross resolve --continue <local_path>` hint (no duplicate cobra
+  `Error:` line; `errPatchNotFound` is left to the cd/del path-miss flows). It
+  never invents merge logic and never commits. (Go-only since v0.5.1; the Just
+  reference has a stub.)
 - **`update` is all-patches-at-once**: a conflict does not stop the run; remaining
   patches still land and the summary counts `updated` / `skipped` / `need attention`.
 - **`ls` DIFF** compares the crossed dir against the mirror HEAD through a throwaway

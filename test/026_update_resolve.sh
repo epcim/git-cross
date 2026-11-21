@@ -231,6 +231,57 @@ exercise() {
     assert_contains "$out" "Updated lib" "$who: after re-tracking the cross must land"
     assert_grep "lib/c.yaml" "NAME: EEE" \
         "$who: the recovered cross carries the upstream change"
+
+    # --- resolve with no path is an informational listing (0.6.1) ----------
+    # User-reported: update's own hint says `git cross resolve  # list
+    # leftovers`, but at the repo root with several crosses it printed the
+    # rows and then failed with a bare `Error: cross not found`. No-args
+    # resolve must LIST pending state (exit 0, like git status); only the
+    # mutating --continue/--abort are ambiguous without a context.
+    git add -A && git commit -qm "vendor: healed cross" >/dev/null
+    log_header "026: $who — no-args resolve lists pending state (no cobra error)"
+    out=$(xc resolve 2>&1)
+    rc=$?
+    echo "$out"
+    [ "$rc" -eq 0 ] || fail "$who: no-args resolve must exit 0 (listing)"
+    assert_contains "$out" "No pending conflicts." "$who: clean repo must list no pending conflicts"
+    case "$out" in
+        *"cross not found"*) fail "$who: the listing must not carry a cobra error" ;;
+    esac
+
+    # A real pending conflict: no-args resolve at the root names the cross.
+    echo "NAME: FFF" > lib/c.yaml
+    git add lib && git commit -qm "vendor: FFF" >/dev/null
+    echo "NAME: GGG" > "$up/src/lib/c.yaml"
+    git -C "$up" commit -qam v8
+    xc update >/dev/null 2>&1 || true
+    out=$(xc resolve 2>&1)
+    rc=$?
+    echo "$out"
+    [ "$rc" -eq 0 ] || fail "$who: no-args resolve with pending state must still exit 0"
+    assert_contains "$out" "Crosses with unresolved conflicts:" \
+        "$who: the listing must name the pending section"
+    assert_contains "$out" "lib: " "$who: the conflicted cross must be named"
+    assert_contains "$out" "run: git cross resolve <local_path>" \
+        "$who: the listing must say how to act on it"
+    case "$out" in
+        *"cross not found"*) fail "$who: pending listing must not carry a cobra error" ;;
+    esac
+
+    # Mutating flags without a context stay errors — but clean ones: rows go to
+    # stderr, exit 1, and never the obsolete `Error: cross not found` line
+    # (the crosses WERE found; the request is just ambiguous).
+    out=$(xc resolve --continue 2>&1)
+    rc=$?
+    echo "$out"
+    [ "$rc" -ne 0 ] || fail "$who: ambiguous --continue must fail"
+    assert_contains "$out" "run: git cross resolve --continue <local_path>" \
+        "$who: ambiguous --continue must say how to disambiguate"
+    case "$out" in
+        *"cross not found"*) fail "$who: ambiguous --continue must not say 'cross not found'" ;;
+    esac
+    xc resolve --abort >/dev/null 2>&1 || true
+    assert_grep "lib/c.yaml" "NAME: FFF" "$who: --abort restored the user's version"
 }
 
 # --- Go ---------------------------------------------------------------------

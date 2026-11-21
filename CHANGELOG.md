@@ -31,6 +31,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   points at `git cross update` (which re-adopts); the orphaned-gitdir `set`
   hint now says `rm -rf <gitdir>` + `git cross update` with the Crossfile
   line intact, or `git cross wipe` (orphan sweep).
+- **`git cross resolve` with no path is an informational listing.** After a
+  clean update the suggested `git cross resolve` printed the cross rows and
+  then failed with a bare `Error: cross not found` (user-reported) — the
+  hint `# list leftovers` was a lie. No-args, no-flags `resolve` now lists
+  the pending state across all crosses (`Crosses with unresolved conflicts:`
+  + per-cross counts + how to act, or `No pending conflicts.`) and exits 0,
+  like `git status`. The mutating `--continue`/`--abort` without a context
+  remain errors (ambiguous), but cleanly: rows + `run: git cross resolve
+  --continue <local_path>` on stderr, exit 1, no obsolete cobra line. A path
+  argument that names a cross with conflicts now says `… still has
+  unresolved conflicts` instead of the misleading `cross not found`; a path
+  that matches nothing says `no cross found for '<path>'`.
 - The untracked listing is built with `git ls-files -o --exclude-standard`,
   NOT `git status` (0.6.1 fix #2, user-reported on the 0.6.1 binary):
   status honors `status.showUntrackedFiles=no` and goes silently blind

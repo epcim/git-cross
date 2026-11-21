@@ -36,3 +36,5 @@ opencode.json
 
 # uncommitted backup of the pre-split full Just reference (see AGENTS.md)
 Justfile.cross.full-*
+vendor/
+opencode.requesty-agents.jsonc

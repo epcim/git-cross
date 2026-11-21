@@ -3036,6 +3036,10 @@ shell and 'gxenv -u' unloads it.`,
 		"adopt crossed dirs that exist without .cross state: delete the dir and re-create it from upstream (refused when it has uncommitted changes)")
 	updateCmd.MarkFlagsMutuallyExclusive("resolve", "no-resolve")
 
+	resolveFlagName := "continue"
+	if doAbort {
+		resolveFlagName = "abort"
+	}
 	resolveCmd := &cobra.Command{
 		Use:     "resolve [--continue|--abort] [path]",
 		Short:   "Finish an update conflict: report unmerged paths, or continue/abort",
@@ -3068,12 +3072,64 @@ shell and 'gxenv -u' unloads it.`,
 				}
 			}
 			if patch == nil {
-				if err := printPatchRows("several crosses; pass a path or run this inside a crossed directory. Crosses (local_path <TAB> gitdir):"); err != nil {
-					return err
+				// --continue/--abort MUTATE state (advance the mirror / restore
+				// the dir): with several crosses and no context they are
+				// genuinely ambiguous. Fail cleanly — rows + hint on stderr,
+				// exit 1, no duplicate cobra "Error:" line.
+				if len(args) > 0 || doContinue || doAbort {
+					// A PATH ARG that matches nothing is a user error (keep
+					// erroring); --continue/--abort with several crosses are
+					// genuinely ambiguous. Both go to stderr, exit 1, without
+					// the redundant cobra "Error:" line.
+					w := os.Stdout
+					if len(args) == 0 {
+						w = os.Stderr
+					}
+					hint := "several crosses; pass a path or run this inside a crossed directory. Crosses (local_path <TAB> gitdir):"
+					if len(args) > 0 {
+						hint = fmt.Sprintf("no cross found for '%s'; available crosses (local_path <TAB> gitdir):", args[0])
+					}
+					if err := printPatchRowsTo(w, hint); err != nil {
+						return err
+					}
+					if len(args) == 0 {
+						fmt.Fprintf(os.Stderr, "run: git cross resolve --%s <local_path>\n", resolveFlagName)
+					} else {
+						fmt.Fprintf(os.Stderr, "run: git cross resolve <local_path>\n")
+					}
+					os.Exit(1) // contextual failure: exits directly, no duplicate cobra "Error:" line
 				}
-				return errPatchNotFound
+				// No path, no flags, no cross context: LIST what is left
+				// across ALL crosses — the documented behavior
+				// ("git cross resolve [path]  # list what is left").
+				// Informational like `git status`: exit 0 either way.
+				meta, _ := loadMetadata()
+				pending := 0
+				for i := range meta.Patches {
+					p := &meta.Patches[i]
+					u := patchUnmerged(root, p)
+					if len(u) == 0 {
+						continue
+					}
+					if pending == 0 {
+						fmt.Println("Crosses with unresolved conflicts:")
+					}
+					logInfo(fmt.Sprintf("%s: %d unmerged path(s)", p.LocalPath, len(u)))
+					pending++
+				}
+				if pending == 0 {
+					fmt.Println("No pending conflicts.")
+				} else {
+					fmt.Println("run: git cross resolve <local_path>")
+				}
+				return nil
 			}
 			unmerged := patchUnmerged(root, patch)
+			// No-args list mode (no --continue/--abort, no path arg): showing
+			// the pending state is the point, so an empty or full list is
+			// informational, not an error (exit 0, like the all-crosses list
+			// above). A path arg keeps the stricter contract.
+			listMode := len(args) == 0 && !doContinue && !doAbort
 
 			if doContinue {
 				if len(unmerged) > 0 {
@@ -3105,6 +3161,10 @@ shell and 'gxenv -u' unloads it.`,
 				return nil
 			}
 			if len(unmerged) == 0 {
+				if listMode {
+					fmt.Println("No pending conflicts.")
+					return nil
+				}
 				return fmt.Errorf("nothing to resolve for %s", patch.LocalPath)
 			}
 			logInfo(fmt.Sprintf("%d unmerged path(s) in %s:", len(unmerged), patch.LocalPath))
@@ -3113,7 +3173,13 @@ shell and 'gxenv -u' unloads it.`,
 			}
 			fmt.Println("resolve them, then: git add <paths> && git commit")
 			fmt.Println("or: git cross resolve --abort")
-			return errPatchNotFound
+			if listMode {
+				return nil // informational listing, not an error
+			}
+			// A path arg naming a cross WITH conflicts: non-zero so scripts
+			// notice, but with an honest message — "cross not found" would be
+			// a lie (the cross was found, it just needs resolving).
+			return fmt.Errorf("%s still has unresolved conflicts", patch.LocalPath)
 		},
 	}
 	resolveCmd.Flags().BoolVar(&doContinue, "continue", false, "verify the cross is resolved and let the mirror follow")

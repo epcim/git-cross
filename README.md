@@ -701,10 +701,19 @@ usual (`git add` / `git commit`).
 ### `resolve`
 
 ```bash
-git cross resolve [path]              # list what is left
+git cross resolve                     # list pending conflicts across all crosses
+                                      # (or the one you are standing in); exit 0
+git cross resolve [path]              # same, scoped to one cross
 git cross resolve --continue [path]   # verify resolved, let the mirror follow
 git cross resolve --abort [path]      # crossed dir back to HEAD (upstream stays fetched)
 ```
+
+With no path outside a crossed directory, `resolve` **lists**:
+`Crosses with unresolved conflicts:` plus a count per cross and
+`run: git cross resolve <local_path>`, or `No pending conflicts.` — exit 0
+either way (it is a report, like `git status`). `--continue`/`--abort` change
+state, so with several crosses and no context they are ambiguous: they print
+the rows plus `run: git cross resolve --continue <local_path>` and exit 1.
 
 Resolution is ordinary git in your repo: edit the marked files, `git add` them,
 `git commit`. `resolve` only reports, gates, and cleans up; it never invents merge

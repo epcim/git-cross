@@ -320,10 +320,15 @@ func TestUpdateKeepsConflictAndResolveAbort(t *testing.T) {
 		t.Error("pending state must survive a second update")
 	}
 
-	// resolve (no flags) lists the paths and exits non-zero.
+	// resolve (no flags) lists the paths — an informational listing that
+	// exits 0 (0.6.1: no redundant cobra "Error:" line; the update hint
+	// "git cross resolve  # list leftovers" must be truthful).
 	out, code := run(t, f.root, binPath, "resolve")
-	if code == 0 {
-		t.Errorf("resolve with leftovers should exit non-zero, got:\n%s", out)
+	if code != 0 {
+		t.Errorf("resolve with leftovers should exit 0, got %d:\n%s", code, out)
+	}
+	if strings.Contains(out, "cross not found") {
+		t.Errorf("resolve listing must not carry a cobra error, got:\n%s", out)
 	}
 	if !strings.Contains(out, "lib/c.yaml") {
 		t.Errorf("resolve should list the unmerged path, got:\n%s", out)
