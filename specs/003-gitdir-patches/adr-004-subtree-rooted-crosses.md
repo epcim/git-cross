@@ -122,12 +122,15 @@ graph approximate** (same compromise class as `git subtree split`).
 
 ## Migration
 
-A user-visible one-time layout move; users re-fetch their subdir crosses
-(`del` + `update`, or `wipe <remote>` + `update`). Legacy pre-0.6 gitdirs
-(no `refs/cross/upstream/<b>`) surface through the **existing** re-adoption
-flow on the next `update` (the `y/p/N` prompt, with local-content preserve)
-— no new migration machinery. The primary repo shows the move as delete+add
-(`P/<remote_path>/...` → `P/...`) — inherent, committed once by the user.
+A user-visible one-time layout move. **0.6.1: `git cross update` IS the whole
+migration** — a legacy pre-0.6 subdir gitdir (no `refs/cross/upstream/<b>`
+marker) is detected on the next `update`, the stale registration + gitdir are
+dropped (both disposable `.cross/` state) and the **existing** re-adoption
+flow runs (the `y/p/N` prompt, with local-content preserve / stash-first).
+The primary repo shows the move as delete+add (`P/<remote_path>/...` → `P/...`)
+— inherent, committed once by the user. Manual equivalents (`del` + `update`,
+or `wipe <remote>` + `update`) also work but lose the preserve prompt's
+crossed-dir handling — prefer the automatic heal.
 
 ## Plain-git command audit (subdir-cross context)
 

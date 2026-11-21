@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1]
+
+### Fixed
+
+- **`update` refuses untracked collisions EARLY** (was a raw cherry-pick
+  error). When files the incoming delta would write sit UNTRACKED in the
+  crossed dir (e.g. cross content that was never committed to the primary
+  repo), `update` used to fail mid-flight with git's `untracked working tree
+  files would be overwritten by merge`. It now refuses before any work:
+  `untracked files would be overwritten by the update` + the colliding paths
+  + the remedy (`git add <paths> && git commit`, or remove). Purely local
+  untracked files still never block an update; porcelain-collapsed
+  `?? dir/` entries are matched by prefix.
+- **`update` heals pre-0.6 subdir gitdirs in place.** A v0.5 sparse-layout
+  mirror (no `refs/cross/*` markers) is now treated like lost `.cross` state:
+  warn, drop the stale registration + gitdir (disposable `.cross/` state —
+  a stale mirror would poison a fresh `set` with its sparse config), then the
+  re-adoption prompt (`[p]` preserves local content, `[y]`/`--force` stash
+  dirty dirs first). **One `git cross update` is the whole 0.5→0.6
+  migration.** The previous hint (`git cross del <path> && git cross update`)
+  was wrong: `del` also deletes the crossed dir's content and the Crossfile
+  line, so nothing would have been re-created.
+- Hints corrected accordingly: the passthrough/`pull -r` pre-0.6 refusal now
+  points at `git cross update` (which re-adopts); the orphaned-gitdir `set`
+  hint now says `rm -rf <gitdir>` + `git cross update` with the Crossfile
+  line intact, or `git cross wipe` (orphan sweep).
+- Tests: 026 (untracked early refusal + recovery once tracked), 027 (pre-0.6
+  heal: prompt, preserve, markers restored, follow-up update clean).
+
 ## [0.6.0]
 
 ### Changed — BREAKING: subdirectory crosses are subtree-rooted (ADR-004, D3(c))

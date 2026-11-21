@@ -636,6 +636,12 @@ Two phases, in this order:
    - **unstaged** changes under the crossed path → refuse
      (`'<path>' has modified files; commit them in your repo first`). Only
      unstaged edits can be lost: the apply merges into your index, so staged
+   - **untracked** files the incoming delta would overwrite → refuse early
+     (0.6.1): `untracked files would be overwritten by the update` + the
+     colliding paths, with the `git add`+commit (or remove) remedy — git's
+     own cherry-pick safety surfaced BEFORE any work instead of a raw
+     `would be overwritten by merge` error. Purely local untracked files
+     (paths upstream never touches) never block an update.
      content (e.g. files `set` just added) is safe.
    - **pending conflict** under the crossed path → skip and tell you to run
      `git cross resolve`.
@@ -651,37 +657,39 @@ Two phases, in this order:
 
 **Lost `.cross` state.** When a crossed directory exists but its registration
 is gone — the whole `.cross/` deleted, or only its gitdir — `update` will not
-silently overwrite your files:
+silently overwrite your files. The same flow heals **pre-0.6 subdir gitdirs**
+(0.6.1): a v0.5 sparse-layout mirror has no `refs/cross/*` markers, so the
+next `update` drops the stale registration + gitdir (both disposable
+`.cross/` state) and runs the re-adoption prompt — one `git cross update` is
+the whole 0.5→0.6 migration, and `[p]`/`[y]` preserve or stash your local
+content (see below).
 
-- **Go** (primary) asks: `Delete '/abs/path' and re-adopt it from upstream? [y/N]:`.
-  The default is **No** (empty/EOF input), `y` adopts: the directory is wiped
-  and re-created from upstream (`Re-adopting <path> from upstream (existing dir wiped)`).
-  Declined crosses are skipped untouched and counted in a summary warning
-  (`<n> cross(es) not adopted: not confirmed (use --force to adopt without asking).`).
-  `--force` auto-applies the yes — no prompt.
-- **Just/Fish** (reference) is non-interactive: plain `update` refuses with a
-  hint (`use --force to re-adopt it from upstream`); `update --force` adopts
-  the same way as Go (wipe + re-create from upstream).
+- **Go** (the only `update` implementation since v0.5.1) asks:
+  `'<abs path>' exists but its .cross state is lost. Re-initialize how?`
+  with `[y] re-initialize from upstream (existing dir wiped)` and
+  `[p] re-initialize but preserve local (existing dir backed up, then copied
+  back)`; a dirty dir prompts `[y] … uncommitted changes stashed first`
+  instead. The default is **No** (empty/EOF): the cross is skipped untouched
+  and counted in a summary warning (`<n> cross(es) not adopted: not confirmed
+  (use --force to adopt without asking).`). `--force` auto-applies the `y`.
 
-`--force` also covers the gitdir-only case (registration intact, gitdir lost):
-the stale registration is dropped first and the cross is re-set from upstream.
+Re-adoption deletes a directory, so the wipe is guarded — **uncommitted work
+is never destroyed**:
 
-Re-adoption deletes a directory, so **both** implementations guard the wipe
-before it happens:
-
-- **Uncommitted edits block the wipe.** Before deleting, the crossed dir is
-  checked with `git status --porcelain -- <path>`; anything staged or unstaged
-  (a modified tracked file, a new untracked file) refuses the run:
-  `<path> has uncommitted changes; commit or stash them first (refusing to delete them)`
-  (Go: `Error: …`, exit 1; Just/Fish: `==> ERROR: …`, exit 1). `--force` does
-  **not** override this: a wipe is irreversible and lost `.cross` state leaves
-  cross nothing to replay your edits from, so it refuses instead of guessing.
-  Commit or stash the work, or delete the directory yourself.
-- **Declined vs aborted**: when you decline the prompt, **Go** skips that cross
-  and continues with the summary warning (other crosses still update);
-  **Just/Fish** aborts the whole run with exit 1, so no cross is updated.
-- `--force` on a **healthy** registered cross is a **no-op** — it only appears in
-  the lost-state branches and never wipes a registered cross.
+- `[y]` on a **dirty** dir stashes first (`git stash push -u` scoped to the
+  path; restore with `git stash apply "stash@{0}"` — the entry is kept as
+  the safety net), `[p]` needs no stash (the whole dir is copied back), and
+  `--force` on a dirty dir stashes too — it only skips the question. If a
+  path is still dirty after stashing, the update refuses outright
+  (`still has uncommitted changes after stashing; refusing to delete them`).
+- `[p]` (preserve) backs the dir up under `.cross/backup-*/`, re-creates the
+  cross from upstream, copies your content back over the fresh tree (local
+  wins, files new upstream survive), re-stages and removes the backup; on
+  failure the backup is kept and its path is in the error.
+- **Declined vs aborted**: a declined cross is skipped and the run continues
+  (other crosses still update).
+- `--force` on a **healthy** registered cross is a **no-op** — it only appears
+  in the lost-state branches and never wipes a registered cross.
 - `git cross update <path>` with a declined prompt reports the skip
   (`<n> cross(es) not adopted: …`) and exits 0; the hard error
   `no Crossfile cross found for path: <path>` is reserved for paths genuinely

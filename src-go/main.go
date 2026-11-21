@@ -277,7 +277,60 @@ const (
 	landDirty
 	landPending
 	landConflict
+	landUntracked
 )
+
+// patchUntrackedCollisions lists UNTRACKED files under the crossed dir that the
+// incoming delta would overwrite. Purely local untracked files are a supported
+// workflow (see patchWorktreeDirty) and never appear here: only paths present
+// in the BASE->THEIRS delta collide — the exact set git's cherry-pick would
+// refuse to overwrite, reported here with guidance BEFORE any work begins,
+// instead of a raw "would be overwritten by merge" after the fetch/import.
+// The delta paths are tree-relative (worktree-root-relative for both cross
+// kinds); repo-relative untracked paths under a whole untracked directory
+// (porcelain collapses them to "dir/") are matched by prefix.
+func patchUntrackedCollisions(root string, p *Patch, gdAbs, baseRev, theirsTreeish string) []string {
+	out, err := exec.Command("git", "-C", root, "status", "--porcelain", "-z", "--", p.worktreePath()).Output()
+	if err != nil {
+		return nil
+	}
+	var untracked []string
+	for _, rec := range strings.Split(string(out), "\x00") {
+		if strings.HasPrefix(rec, "?? ") {
+			untracked = append(untracked, strings.TrimPrefix(rec, "?? "))
+		}
+	}
+	if len(untracked) == 0 {
+		return nil
+	}
+	deltaOut, derr := runGitdir(gdAbs, "diff-tree", "--name-only", "--no-commit-id", "-r", baseRev, theirsTreeish).Output()
+	if derr != nil {
+		return nil // cannot prove a collision: let cherry-pick decide (status quo)
+	}
+	delta := map[string]bool{}
+	for _, f := range strings.Split(string(deltaOut), "\n") {
+		if f = strings.TrimSpace(f); f != "" {
+			delta[p.worktreePath()+"/"+f] = true
+		}
+	}
+	var hit []string
+	for _, u := range untracked {
+		if delta[u] {
+			hit = append(hit, u)
+			continue
+		}
+		if strings.HasSuffix(u, "/") { // porcelain collapsed a whole untracked dir
+			for d := range delta {
+				if strings.HasPrefix(d, u) {
+					hit = append(hit, u)
+				break
+				}
+			}
+		}
+	}
+	sort.Strings(hit)
+	return hit
+}
 
 // patchUnmerged reports the unmerged paths git left under the patch path. This is
 // the pending-conflict signal: `cherry-pick -n` does NOT write CHERRY_PICK_HEAD.
@@ -586,7 +639,7 @@ func subtreeGuards(gdAbs, localPath, branch string) (oldMark string, err error) 
 	}
 	markOut, merr := runGitdir(gdAbs, "rev-parse", "-q", "--verify", upstreamRef(branch)).Output()
 	if merr != nil {
-		return "", fmt.Errorf("%s: pre-0.6 subdir gitdir (no synthesis markers); re-create it: git cross del %s && git cross update", localPath, localPath)
+		return "", fmt.Errorf("%s: pre-0.6 subdir gitdir (no synthesis markers); run: git cross update (it re-adopts pre-0.6 subdir gitdirs)", localPath)
 	}
 	// Lineage: the synthesized chain is DISJOINT from the real upstream history
 // by construction. A branch sharing ANY ancestor with origin/<b> was re-pointed
@@ -621,7 +674,7 @@ func crossPullSubtree(root string, p *Patch, rest []string) error {
 	// the two histories and trip the lineage check).
 	synthMark := strings.TrimSpace(string(runGitdirOut(gdAbs, "rev-parse", "-q", "--verify", synthRef(p.Branch))))
 	if synthMark == "" {
-		return fmt.Errorf("%s: pre-0.6 subdir gitdir (no synthesis markers); re-create it: git cross del %s && git cross update", p.LocalPath, p.LocalPath)
+		return fmt.Errorf("%s: pre-0.6 subdir gitdir (no synthesis markers); run: git cross update (it re-adopts pre-0.6 subdir gitdirs)", p.LocalPath)
 	}
 	if fetch := runGitdir(gdAbs, "fetch", "-q", "origin",
 		fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", p.Branch, p.Branch)); fetch.Run() != nil {
@@ -911,6 +964,16 @@ func landUpstream(root string, p *Patch, rev string, resolve bool) landResult {
 	if err := runGitdir(gdAbs, "cat-file", "-e", baseRev+"^{tree}").Run(); err != nil {
 		logError(fmt.Sprintf("%s: the mirror lacks the previous upstream tree (shallow/partial clone?); delete and re-set it", p.LocalPath))
 		return landFailed
+	}
+	// Untracked files the delta would overwrite: git's own safety check,
+	// surfaced as an EARLY refusal with guidance (0.6.1) instead of a raw
+	// "would be overwritten by merge" cherry-pick error after the fetch.
+	if hit := patchUntrackedCollisions(root, p, gdAbs, baseRev, theirsTreeish); len(hit) > 0 {
+		logError(fmt.Sprintf("%s: untracked files would be overwritten by the update; commit or stage them first (git add <paths> && git commit), or remove them:", p.LocalPath))
+		for _, f := range hit {
+			fmt.Println("  " + f)
+		}
+		return landUntracked
 	}
 	// The USER's repo must own every object it will reference: a local fetch from
 	// the mirror copies the needed objects without creating a remote or a lasting
@@ -2350,7 +2413,7 @@ shell and 'gxenv -u' unloads it.`,
 			case "-h", "--help":
 				return cmd.Help()
 			case "--version":
-				fmt.Println("git-cross version 0.6.0")
+				fmt.Println("git-cross version 0.6.1")
 				return nil
 			}
 			return gitPassthrough(args)
@@ -2586,7 +2649,7 @@ shell and 'gxenv -u' unloads it.`,
 				// Orphaned gitdir (e.g. metadata was lost): re-materialize only.
 				if spec.RemotePath != "." && spec.RemotePath != "/" {
 					if _, merr := runGitdir(gdAbs, "rev-parse", "-q", "--verify", upstreamRef(spec.Branch)).Output(); merr != nil {
-						return fmt.Errorf("orphaned pre-0.6 subdir gitdir at %s; re-create the cross: git cross del %s && git cross update", gd, localPath)
+						return fmt.Errorf("orphaned pre-0.6 subdir gitdir at %s; remove it (rm -rf %s) and keep the Crossfile line, then: git cross update — or sweep orphans: git cross wipe", gd, gd)
 					}
 				}
 				logInfo(fmt.Sprintf("Reusing existing gitdir %s", gd))
@@ -2815,7 +2878,53 @@ shell and 'gxenv -u' unloads it.`,
 					}
 					continue
 				}
-				// rerere in the standalone gitdir: ensure + announce when newly enabled.
+				// Pre-0.6 subdir gitdir (0.6.1): it exists but carries no synthesis
+			// markers — a sparse-layout v0.5 mirror. Heal it through the SAME
+			// re-adoption flow as a missing gitdir: drop the stale registration
+			// and the gitdir (both disposable .cross/ state — the stale mirror
+			// would poison a fresh `set` with its sparse config), then let the
+			// prompt decide what happens to the crossed dir's content (wipe /
+			// stash / preserve). One `git cross update` IS the 0.5→0.6 migration.
+			if patch.RemotePath != "." && patch.RemotePath != "/" {
+				if merr := runGitdir(gdAbs, "rev-parse", "-q", "--verify", upstreamRef(patch.Branch)).Run(); merr != nil {
+					logWarn(fmt.Sprintf("%s: pre-0.6 subdir gitdir (no synthesis markers); re-adopting it at the v0.6 layout", localPath))
+					skip, rerr := readoptLostCross(root, localPath, force, func() error {
+						kept := meta.Patches[:0]
+						for _, q := range meta.Patches {
+							if q.LocalPath != localPath {
+								kept = append(kept, q)
+							}
+						}
+						meta.Patches = kept
+						if err := saveMetadata(meta); err != nil {
+							return err
+						}
+						if err := removeGitdirTree(root, patch.Gitdir); err != nil {
+							return err
+						}
+						return setCmd.RunE(cmd, []string{fields[1], localPath})
+					})
+					if rerr != nil {
+						return rerr
+					}
+					if skip {
+						declined++
+						continue
+					}
+					meta, err = loadMetadata()
+					if err != nil {
+						return err
+					}
+					for i := range meta.Patches {
+						if meta.Patches[i].LocalPath == localPath {
+							targets = append(targets, meta.Patches[i])
+							break
+						}
+					}
+					continue
+				}
+			}
+			// rerere in the standalone gitdir: ensure + announce when newly enabled.
 				if gc := runGitdir(gdAbs, "config", "--get", "rerere.enabled"); gc.Run() != nil {
 					if err := runGitdir(gdAbs, "config", "rerere.enabled", "true").Run(); err == nil {
 						logInfo("Enabled rerere in gitdir: conflict resolutions are remembered for later updates.")
@@ -2877,7 +2986,10 @@ shell and 'gxenv -u' unloads it.`,
 				case landConflict:
 					logWarn(fmt.Sprintf("conflict in '%s'; resolve the marked files, then: git add <paths> && git commit", p.LocalPath))
 					conflicted++
-				case landUptodate:
+				case landUntracked:
+				logWarn(fmt.Sprintf("'%s' has untracked files the update would overwrite; commit, stage or remove them first — not updated", p.LocalPath))
+				skipped++
+			case landUptodate:
 					logInfo(fmt.Sprintf("%s is already up to date", p.LocalPath))
 				case landUpdated:
 					logSuccess(fmt.Sprintf("Updated %s", p.LocalPath))

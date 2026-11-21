@@ -311,6 +311,31 @@ if [ -n "$GO_BIN" ]; then
         "go: unsafe path refusal message"
     [ ! -e "$SANDBOX/../outside" ] || fail "go: nothing outside the repo may be touched"
     log_success "unsafe path refused"
+
+    log_header "027: go — pre-0.6 subdir gitdir (no markers) heals via update (0.6.1)"
+    # A v0.5 sparse-layout mirror has no refs/cross/* markers. update must
+    # treat it like lost state: warn, re-adopt through the prompt, rebuild the
+    # gitdir at the v0.6 layout and preserve the crossed dir's local content.
+    setup_cross go
+    echo "local keep" >> vendor/docs/guide.md
+    local gd br
+    gd="$SANDBOX/$(jq -r '.patches[] | select(.local_path == "vendor/docs") | .gitdir' .cross/metadata.json)"
+    br=$(jq -r '.patches[] | select(.local_path == "vendor/docs") | .branch' .cross/metadata.json)
+    git --git-dir="$gd" update-ref -d "refs/cross/upstream/$br"
+    git --git-dir="$gd" update-ref -d "refs/cross/synthesized/$br"
+    [ -z "$(git --git-dir="$gd" for-each-ref refs/cross/)" ] || fail "go: marker deletion failed"
+    out=$(printf 'p\n' | "$GO_BIN" update 2>&1)
+    echo "$out"
+    assert_contains "$out" "pre-0.6 subdir gitdir (no synthesis markers); re-adopting it at the v0.6 layout" \
+        "go: the heal must announce the pre-0.6 re-adoption"
+    assert_contains "$out" "local content preserved" "go: preserve path must be reported"
+    [ -n "$(git --git-dir="$gd" for-each-ref refs/cross/)" ] \
+        || fail "go: the healed gitdir must carry synthesis markers again"
+    assert_grep "vendor/docs/guide.md" "local keep" "go: local content survives the heal"
+    git add vendor/docs && git commit -qm "vendor: healed cross" >/dev/null
+    out=$("$GO_BIN" update </dev/null 2>&1)
+    assert_contains "$out" "already up to date" "go: healed cross updates normally afterwards"
+    log_success "pre-0.6 gitdir healed losslessly by update alone"
 else
     echo "SKIP: Go CLI unavailable"
 fi

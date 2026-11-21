@@ -332,7 +332,13 @@ just sub-cases of Go-only commands are guarded by `just_ref_implements` and SKIP
      Fetching is innocent: refs only, no work tree.
   2. per patch, in order: `git -C <repo> ls-files -u -- <P>` (pending conflict → skip),
      `git -C <repo> diff --name-only -- <P>` (unstaged edits → refuse; staged ones are
-     safe because the apply merges into the index).
+     safe because the apply merges into the index), `patchUntrackedCollisions`
+     (untracked files the BASE→THEIRS delta would overwrite → refuse EARLY with the
+     paths + remedy, 0.6.1; purely local untracked files never block). A subdir
+     gitdir with no `refs/cross/*` markers (pre-0.6 sparse mirror) is healed in
+     pass 1 via the re-adoption prompt: stale registration + gitdir dropped
+     (disposable), then set re-creates the v0.6 cross — one `update` is the
+     whole 0.5→0.6 migration.
   3. import the mirror's objects into the USER's repo (`git -C <repo> fetch <gd> <ref>`,
      FETCH_HEAD only) — **never** `GIT_ALTERNATE_OBJECT_DIRECTORIES`, which makes the
      user's index reference blobs it does not own (`fatal: unable to read tree`).

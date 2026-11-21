@@ -80,6 +80,34 @@ exercise() {
     git checkout -- lib/local.txt 2>/dev/null || true
     git -C "$up" reset -q --hard "$up_before"
 
+    # --- untracked collisions refuse early (0.6.1) -------------------------
+    # A file the delta would write sitting UNTRACKED in the crossed dir used to
+    # surface as a raw "would be overwritten by merge" cherry-pick error; the
+    # gate now refuses it BEFORE any work with guidance. Purely local untracked
+    # files stay allowed (patchWorktreeDirty contract).
+    log_header "026: $who — untracked delta collisions refuse the update early"
+    git rm -q --cached lib/local.txt >/dev/null 2>&1
+    git commit -qm "vendor: untrack local.txt" >/dev/null
+    echo "upstream v5" >> "$up/src/lib/local.txt"
+    git -C "$up" commit -qam v5
+    out=$(xc update 2>&1) || true
+    echo "$out"
+    assert_contains "$out" "untracked files would be overwritten by the update" \
+        "$who: the early refusal must name the problem"
+    assert_contains "$out" "lib/local.txt" \
+        "$who: the colliding untracked file must be listed"
+    assert_contains "$out" "commit or stage them first" \
+        "$who: the refusal must hint at the remedy"
+    assert_contains "$out" "1 cross(es) skipped" "$who: counts as skipped, not failed"
+    [ -z "$(git ls-files -u)" ] || fail "$who: refusal must not leave unmerged paths"
+    assert_grep "lib/local.txt" "keep me" "$who: the untracked file is untouched"
+    # restore: re-track the file so later phases start clean
+    git add lib/local.txt && git commit -qm "vendor: re-track local.txt" >/dev/null
+    git -C "$up" reset -q --hard "$up_before"
+    out=$(xc update 2>&1) || true
+    assert_contains "$out" "already up to date" \
+        "$who: the untracked refusal is gone once the file is tracked (upstream rewound to the landed state)"
+
     # --- conflict is kept (never overwritten) ------------------------------
     log_header "026: $who — a collision is kept as a conflict"
     echo "NAME: BBB" > lib/c.yaml
