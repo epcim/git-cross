@@ -66,7 +66,7 @@ specs/003-gitdir-patches/                       # plan, progress, ADR-001, ADR-0
 | `update` | `[path] [--no-resolve] [--force]` | Fetch all crosses, then land upstream in the crossed dir + re-apply your version (ADR-003); unstaged edits refuse, collisions are kept; lost `.cross` state (Go: y/p/N prompt — re-init from upstream / re-init but preserve local / skip, default No; a dirty dir adds "uncommitted changes stashed first") / `--force` re-adopts (stash if dirty, then wipe) |
 | `resolve` | `[path] [--continue\|--abort]` | No args = informational listing across crosses (exit 0, `No pending conflicts.`); `--continue` gates on unmerged paths, `--abort` reverts; no context + several crosses = clean exit 1 with disambiguation hint |
 | `del` | `<path>` | Delete a cross: gitdir + crossed dir + Crossfile/metadata entries |
-| `wipe` | `[remote]` | Remove a remote and all its crosses, or sweep unused remotes + orphaned gitdirs. (v0.4 `prune`, 0.5.0 `purge`) |
+| `wipe` | `[remote]` | Remove a remote and all its crosses, or sweep: dead entries (worktree+gitdir gone), **undeclared entries** (Crossfile is the source of truth; crossed dirs stay), unused remotes, orphaned gitdirs. (v0.4 `prune`, 0.5.0 `purge`) |
 | `cfg` | | Configure the repo: Crossfile + `rerere.enabled` + `.cross/` in `.gitignore` (`init` kept as alias) |
 | `ls` | `[--raw] [--no-header]` | Tables (default) or TSV rows of remotes and crosses incl. DIFF + upstream SHA (`list` kept as alias) |
 | `env` | `[path] [--fish] [--unset] [--json] [--gitdir\|--worktree\|--local-path]` | Print evaluable shell code pointing plain `git` at the cross's UPSTREAM (`GIT_DIR` + `GIT_WORK_TREE` + `CROSS_ACTIVE`); path arg or the cross at the CWD |

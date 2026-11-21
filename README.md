@@ -798,8 +798,22 @@ git cross wipe [remote]
 
 - `git cross wipe <remote>` removes the remote record, every cross of that
   remote, and the remote's gitdir directory.
-- `git cross wipe` (no argument) offers to remove remotes that no cross uses,
-  then sweeps orphaned gitdirs that metadata does not reference.
+- `git cross wipe` (no argument) is the **state sweep**, and it never touches
+  your files:
+  1. drops metadata entries whose worktree *and* gitdir are both gone;
+  2. drops entries the **Crossfile no longer declares** — the Crossfile is the
+     source of truth, so a hand-deleted `set` line leaves a stale registration
+     (v0.6.1: it used to linger as a `Missing GD` row forever). The crossed
+     dir stays on disk; the message names it:
+     `Dropping <path> from metadata: it is no longer declared in Crossfile` /
+     `Leaving <path> in place (its files are yours; ...)`;
+  3. offers to remove remotes that no *remaining* cross uses (a stale entry
+     no longer keeps its remote alive);
+  4. sweeps orphaned gitdirs that metadata does not reference.
+
+`update` warns once about registrations the Crossfile no longer declares
+(`<n> registered cross(es) no longer declared in Crossfile (...); clean up
+with: git cross wipe`), so the cleanup is discoverable without running wipe.
 
 > v0.4 called this `prune`, 0.5.0 `purge`; now `wipe`. `git cross prune` and
 > `git cross purge` fall through to the git passthrough.

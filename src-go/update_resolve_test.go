@@ -355,9 +355,9 @@ func TestUpdateKeepsConflictAndResolveAbort(t *testing.T) {
 func TestResolveContinueAndRerereReplay(t *testing.T) {
 	f := newFixture(t)
 	f.commitAll("vendor: initial")
-	baseMirror := f.mirrorHead()           // synth tip at upstream v1 (base AAA)
-	baseSynth := f.marker("synthesized")   // refs/cross/synthesized/main at v1
-	baseUp := f.marker("upstream")          // refs/cross/upstream/main at v1-real
+	baseMirror := f.mirrorHead()         // synth tip at upstream v1 (base AAA)
+	baseSynth := f.marker("synthesized") // refs/cross/synthesized/main at v1
+	baseUp := f.marker("upstream")       // refs/cross/upstream/main at v1-real
 
 	f.writeLocal("c.yaml", "NAME: BBB\n")
 	f.commitAll("vendor: local BBB")

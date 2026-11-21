@@ -651,9 +651,9 @@ func subtreeGuards(gdAbs, localPath, branch string) (oldMark string, err error) 
 		return "", fmt.Errorf("%s: pre-0.6 subdir gitdir (no synthesis markers); run: git cross update (it re-adopts pre-0.6 subdir gitdirs)", localPath)
 	}
 	// Lineage: the synthesized chain is DISJOINT from the real upstream history
-// by construction. A branch sharing ANY ancestor with origin/<b> was re-pointed
-// at real history by a raw git command. Backward moves INSIDE the synth
-// chain stay legal (the rerere-replay flow rewinds the mirror on purpose).
+	// by construction. A branch sharing ANY ancestor with origin/<b> was re-pointed
+	// at real history by a raw git command. Backward moves INSIDE the synth
+	// chain stay legal (the rerere-replay flow rewinds the mirror on purpose).
 	if base, berr := runGitdir(gdAbs, "merge-base", "refs/heads/"+branch,
 		"refs/remotes/origin/"+branch).Output(); berr == nil && strings.TrimSpace(string(base)) != "" {
 		return "", fmt.Errorf("%s: the cross branch no longer descends from the synthesized history (a raw git command re-pointed it?); re-adopt: git cross del %s && git cross update", localPath, localPath)
@@ -1064,7 +1064,10 @@ func logWarn(msg string) {
 	color.New(color.Bold, color.FgYellow).Fprint(os.Stderr, "==> WARNING: ")
 	fmt.Fprintln(os.Stderr, msg)
 }
-func logError(msg string) { color.New(color.Bold, color.FgRed).Fprint(os.Stderr, "==> ERROR: "); fmt.Fprintln(os.Stderr, msg) }
+func logError(msg string) {
+	color.New(color.Bold, color.FgRed).Fprint(os.Stderr, "==> ERROR: ")
+	fmt.Fprintln(os.Stderr, msg)
+}
 
 // envList splits a comma-separated environment variable into trimmed items.
 
@@ -1367,6 +1370,50 @@ func crossfileCommands(path string) ([][]string, error) {
 	return commands, nil
 }
 
+// declaredLocalPaths returns the local paths a parsed Crossfile declares,
+// mirroring update's own interpretation (`cross set <spec> [local_path]`, the
+// local path defaulting to the remote path's base). The Crossfile is the
+// source of truth for which crosses exist, so a registry entry it no longer
+// declares is stale state: `wipe` drops it (crossed dirs stay — they are the
+// user's files) and `update` warns about it.
+func declaredLocalPaths(commands [][]string) (map[string]bool, error) {
+	declared := map[string]bool{}
+	for _, fields := range commands {
+		if fields[0] != "set" && fields[0] != "patch" {
+			continue
+		}
+		if len(fields) < 2 || len(fields) > 3 {
+			return nil, fmt.Errorf("invalid set declaration in Crossfile: %s", strings.Join(fields, " "))
+		}
+		spec, err := parsePatchSpec(fields[1])
+		if err != nil {
+			return nil, err
+		}
+		localPath := filepath.Base(spec.RemotePath)
+		if len(fields) == 3 {
+			localPath = fields[2]
+		}
+		declared[filepath.ToSlash(filepath.Clean(localPath))] = true
+	}
+	return declared, nil
+}
+
+// undeclaredPatches lists registered crosses the Crossfile no longer declares.
+func undeclaredPatches(commands [][]string, meta Metadata) []string {
+	declared, err := declaredLocalPaths(commands)
+	if err != nil {
+		return nil
+	}
+	var stale []string
+	for _, p := range meta.Patches {
+		if !declared[filepath.ToSlash(filepath.Clean(p.LocalPath))] {
+			stale = append(stale, p.LocalPath)
+		}
+	}
+	sort.Strings(stale)
+	return stale
+}
+
 // removeFromCrossfile removes cross lines matching a specific local_path
 // using structured field matching (the local_path is the last field).
 // 'patch' is the legacy Crossfile keyword for 'set'.
@@ -1527,7 +1574,7 @@ func patchForEnv(meta *Metadata, args []string) (*Patch, error) {
 	return nil, nil
 }
 
-// shellQuote single-quotes s for POSIX sh and fish (both read '\'' as a
+// shellQuote single-quotes s for POSIX sh and fish (both read '\” as a
 // literal quote), so paths with spaces or quotes survive `eval`/`source`.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
@@ -1701,10 +1748,10 @@ func crossHasUncommitted(root, localPath string) bool {
 type readoptChoice int
 
 const (
-	readoptDecline readoptChoice = iota // skip: nothing is touched
-	readoptWipe                         // re-initialize from upstream (dir wiped)
-	readoptPreserve                     // re-initialize but preserve local (backup + copy back)
-	readoptStash                        // stash uncommitted changes, then re-initialize (wipe)
+	readoptDecline  readoptChoice = iota // skip: nothing is touched
+	readoptWipe                          // re-initialize from upstream (dir wiped)
+	readoptPreserve                      // re-initialize but preserve local (backup + copy back)
+	readoptStash                         // stash uncommitted changes, then re-initialize (wipe)
 )
 
 // confirmReadopt asks what to do with an existing crossed dir whose .cross state
@@ -2476,7 +2523,7 @@ shell and 'gxenv -u' unloads it.`,
 				gdAbs := meta.Patches[i].gitdirAbs(root)
 				if _, serr := os.Stat(gdAbs); serr == nil {
 					if rc := runGitdir(gdAbs, "remote", "set-url", "origin", url); rc.Run() != nil {
-					logWarn(fmt.Sprintf("could not re-point origin in %s", meta.Patches[i].Gitdir))
+						logWarn(fmt.Sprintf("could not re-point origin in %s", meta.Patches[i].Gitdir))
 					}
 				}
 			}
@@ -2747,10 +2794,17 @@ shell and 'gxenv -u' unloads it.`,
 			for _, fields := range commands {
 				if fields[0] == "set" || fields[0] == "patch" {
 					setDecls++
-			}
+				}
 			}
 			if setDecls == 0 && len(meta.Patches) > 0 {
 				return fmt.Errorf("Crossfile has no cross declarations, but %d cross(es) are still registered; the records were lost — restore them (git checkout -- Crossfile, if committed) or re-declare: cross set <remote>[:<branch>]:<path> <local_path>", len(meta.Patches))
+			}
+			// Registry hygiene: entries the Crossfile no longer declares are
+			// stale state (the Crossfile is the source of truth). update only
+			// walks declared crosses, so they would silently linger in `ls`;
+			// name them once and point at the cleanup (crossed dirs stay).
+			if stale := undeclaredPatches(commands, meta); len(stale) > 0 {
+				logWarn(fmt.Sprintf("%d registered cross(es) no longer declared in Crossfile (%s); clean up with: git cross wipe", len(stale), strings.Join(stale, ", ")))
 			}
 			selectedPath := ""
 			declined := 0 // crosses not adopted: declined the y/N wipe prompt
@@ -2888,52 +2942,52 @@ shell and 'gxenv -u' unloads it.`,
 					continue
 				}
 				// Pre-0.6 subdir gitdir (0.6.1): it exists but carries no synthesis
-			// markers — a sparse-layout v0.5 mirror. Heal it through the SAME
-			// re-adoption flow as a missing gitdir: drop the stale registration
-			// and the gitdir (both disposable .cross/ state — the stale mirror
-			// would poison a fresh `set` with its sparse config), then let the
-			// prompt decide what happens to the crossed dir's content (wipe /
-			// stash / preserve). One `git cross update` IS the 0.5→0.6 migration.
-			if patch.RemotePath != "." && patch.RemotePath != "/" {
-				if merr := runGitdir(gdAbs, "rev-parse", "-q", "--verify", upstreamRef(patch.Branch)).Run(); merr != nil {
-					logWarn(fmt.Sprintf("%s: pre-0.6 subdir gitdir (no synthesis markers); re-adopting it at the v0.6 layout", localPath))
-					skip, rerr := readoptLostCross(root, localPath, force, func() error {
-						kept := meta.Patches[:0]
-						for _, q := range meta.Patches {
-							if q.LocalPath != localPath {
-								kept = append(kept, q)
+				// markers — a sparse-layout v0.5 mirror. Heal it through the SAME
+				// re-adoption flow as a missing gitdir: drop the stale registration
+				// and the gitdir (both disposable .cross/ state — the stale mirror
+				// would poison a fresh `set` with its sparse config), then let the
+				// prompt decide what happens to the crossed dir's content (wipe /
+				// stash / preserve). One `git cross update` IS the 0.5→0.6 migration.
+				if patch.RemotePath != "." && patch.RemotePath != "/" {
+					if merr := runGitdir(gdAbs, "rev-parse", "-q", "--verify", upstreamRef(patch.Branch)).Run(); merr != nil {
+						logWarn(fmt.Sprintf("%s: pre-0.6 subdir gitdir (no synthesis markers); re-adopting it at the v0.6 layout", localPath))
+						skip, rerr := readoptLostCross(root, localPath, force, func() error {
+							kept := meta.Patches[:0]
+							for _, q := range meta.Patches {
+								if q.LocalPath != localPath {
+									kept = append(kept, q)
+								}
+							}
+							meta.Patches = kept
+							if err := saveMetadata(meta); err != nil {
+								return err
+							}
+							if err := removeGitdirTree(root, patch.Gitdir); err != nil {
+								return err
+							}
+							return setCmd.RunE(cmd, []string{fields[1], localPath})
+						})
+						if rerr != nil {
+							return rerr
+						}
+						if skip {
+							declined++
+							continue
+						}
+						meta, err = loadMetadata()
+						if err != nil {
+							return err
+						}
+						for i := range meta.Patches {
+							if meta.Patches[i].LocalPath == localPath {
+								targets = append(targets, meta.Patches[i])
+								break
 							}
 						}
-						meta.Patches = kept
-						if err := saveMetadata(meta); err != nil {
-							return err
-						}
-						if err := removeGitdirTree(root, patch.Gitdir); err != nil {
-							return err
-						}
-						return setCmd.RunE(cmd, []string{fields[1], localPath})
-					})
-					if rerr != nil {
-						return rerr
-					}
-					if skip {
-						declined++
 						continue
 					}
-					meta, err = loadMetadata()
-					if err != nil {
-						return err
-					}
-					for i := range meta.Patches {
-						if meta.Patches[i].LocalPath == localPath {
-							targets = append(targets, meta.Patches[i])
-							break
-						}
-					}
-					continue
 				}
-			}
-			// rerere in the standalone gitdir: ensure + announce when newly enabled.
+				// rerere in the standalone gitdir: ensure + announce when newly enabled.
 				if gc := runGitdir(gdAbs, "config", "--get", "rerere.enabled"); gc.Run() != nil {
 					if err := runGitdir(gdAbs, "config", "rerere.enabled", "true").Run(); err == nil {
 						logInfo("Enabled rerere in gitdir: conflict resolutions are remembered for later updates.")
@@ -2947,10 +3001,10 @@ shell and 'gxenv -u' unloads it.`,
 				return fmt.Errorf("no Crossfile cross found for path: %s", selectedPath)
 			}
 			if len(targets) == 0 {
-					logInfo("No crosses to update.")
+				logInfo("No crosses to update.")
 				if declined > 0 {
-						logWarn(fmt.Sprintf("%d cross(es) not adopted: not confirmed (use --force to adopt without asking).", declined))
-					}
+					logWarn(fmt.Sprintf("%d cross(es) not adopted: not confirmed (use --force to adopt without asking).", declined))
+				}
 				return nil
 			}
 
@@ -2996,9 +3050,9 @@ shell and 'gxenv -u' unloads it.`,
 					logWarn(fmt.Sprintf("conflict in '%s'; resolve the marked files, then: git add <paths> && git commit", p.LocalPath))
 					conflicted++
 				case landUntracked:
-				logWarn(fmt.Sprintf("'%s' has untracked files the update would overwrite; commit, stage or remove them first — not updated", p.LocalPath))
-				skipped++
-			case landUptodate:
+					logWarn(fmt.Sprintf("'%s' has untracked files the update would overwrite; commit, stage or remove them first — not updated", p.LocalPath))
+					skipped++
+				case landUptodate:
 					logInfo(fmt.Sprintf("%s is already up to date", p.LocalPath))
 				case landUpdated:
 					logSuccess(fmt.Sprintf("Updated %s", p.LocalPath))
@@ -3185,7 +3239,6 @@ shell and 'gxenv -u' unloads it.`,
 	resolveCmd.Flags().BoolVar(&doContinue, "continue", false, "verify the cross is resolved and let the mirror follow")
 	resolveCmd.Flags().BoolVar(&doAbort, "abort", false, "discard the partial apply (crossed dir back to HEAD)")
 
-
 	// removeSinglePatch removes a cross by local_path: gitdir, Crossfile entry,
 	// metadata entry, and local directory. Used by `del` (wipe never deletes a
 	// crossed dir).
@@ -3326,15 +3379,41 @@ shell and 'gxenv -u' unloads it.`,
 				return nil
 			}
 
-			// Drop dead metadata entries first: a record whose worktree AND gitdir
-			// are both gone has nothing left to recover (the Crossfile line can
-			// re-create it with `update --force`).
+			// Drop dead metadata entries first. Two kinds are dead:
+			//  - worktree AND gitdir both gone: nothing left to recover (the
+			//    Crossfile line can re-create it with `update --force`);
+			//  - no longer declared in the Crossfile: the declaration IS the
+			//    registration, so the entry is stale even when files remain
+			//    on disk (user-reported: hand-edited Crossfile lines left
+			//    "Missing GD" rows that wipe never cleaned, and the stale
+			//    patch kept its remote looking "used").
+			// A Crossfile that cannot be read (missing here is legitimate —
+			// `cfg` may not have run) skips only the undeclared sweep: never
+			// drop registrations on unreadable declarations.
+			declared, declErr := declaredLocalPaths(nil)
+			if cfCommands, cfErr := crossfileCommands(filepath.Join(root, CrossfileRelPath)); cfErr != nil {
+				logWarn(fmt.Sprintf("cannot read Crossfile declarations (%v); skipping the undeclared-entry sweep", cfErr))
+			} else {
+				declared, declErr = declaredLocalPaths(cfCommands)
+				if declErr != nil {
+					logWarn(fmt.Sprintf("cannot interpret Crossfile declarations (%v); skipping the undeclared-entry sweep", declErr))
+				}
+			}
 			livePatches := meta.Patches[:0]
 			for _, p := range meta.Patches {
 				_, werr := os.Stat(p.localAbs(root))
 				_, gerr := os.Stat(p.gitdirAbs(root))
+				_, wkept := os.Stat(filepath.Join(root, filepath.FromSlash(p.worktreePath())))
+				worktreeExists := wkept == nil
 				if os.IsNotExist(werr) && os.IsNotExist(gerr) {
 					logInfo(fmt.Sprintf("Dropping %s from metadata: its worktree and gitdir are both missing", p.LocalPath))
+					continue
+				}
+				if declErr == nil && !declared[filepath.ToSlash(filepath.Clean(p.LocalPath))] {
+					logInfo(fmt.Sprintf("Dropping %s from metadata: it is no longer declared in Crossfile", p.LocalPath))
+					if worktreeExists {
+						logInfo(fmt.Sprintf("Leaving %s in place (its files are yours; remove them yourself if unwanted)", p.worktreePath()))
+					}
 					continue
 				}
 				livePatches = append(livePatches, p)
@@ -3636,11 +3715,11 @@ directory change use the wrappers (git cross comp):
 	// wt is kept as an alias of cd. In <=0.5.0 it was the upstream git passthrough;
 	// that role now lives only on the bare `git cross <git-args>` fall-through.
 	wtCmd := &cobra.Command{
-		Use:          "wt [path]",
-		Short:        "Print a crossed directory path (hidden alias of cd)",
-		GroupID:      "overview",
-		Hidden:       true,
-		Args:         cobra.MaximumNArgs(1),
+		Use:           "wt [path]",
+		Short:         "Print a crossed directory path (hidden alias of cd)",
+		GroupID:       "overview",
+		Hidden:        true,
+		Args:          cobra.MaximumNArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		Long: `Alias of 'cd': prints the crossed directory's absolute path.

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`wipe` now drops registrations the Crossfile no longer declares.** The
+  Crossfile is the source of truth for which crosses exist, but hand-deleting
+  a `set` line left the registry entry behind forever: it showed up as a
+  `Missing GD` row in `ls` and its remote kept looking "used", so the
+  unused-remote sweep never reclaimed it (user-reported: Crossfile decls
+  removed for mxc/mxc2/mxc-library, metadata kept `mxc`). The no-arg sweep now
+  drops such entries —
+  `Dropping <path> from metadata: it is no longer declared in Crossfile` +
+  `Leaving <path> in place (its files are yours; remove them yourself if
+  unwanted)` — and then the entry's remote becomes unused and is offered for
+  removal. A Crossfile that cannot be read skips only this check (never drops
+  registrations on unreadable declarations).
+- **`update` names stale registrations** instead of silently ignoring them:
+  `<n> registered cross(es) no longer declared in Crossfile (...); clean up
+  with: git cross wipe`.
 - **`update` refuses untracked collisions EARLY** (was a raw cherry-pick
   error). When files the incoming delta would write sit UNTRACKED in the
   crossed dir (e.g. cross content that was never committed to the primary

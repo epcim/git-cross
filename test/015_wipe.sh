@@ -270,4 +270,77 @@ else
     log_warn "SKIP (just): wipe is Go-only — NOT IMPLEMENTED in the Just reference (v0.5.1)"
 fi
 
+######
+# Test 7: undeclared registrations are stale metadata (user-reported)
+#
+# The Crossfile is the source of truth: after hand-editing a `set` line out,
+# the registry entry is stale even while the crossed dir (and possibly the
+# gitdir) survive. `wipe` must drop it, leave the files, and then treat its
+# remote as unused.
+######
+log_header "Test 7: wipe drops registrations no longer declared in Crossfile..."
+
+if [ -z "${GO_BIN:-}" ]; then
+    echo "SKIP: Go binary not available, skipping the undeclared-entry test"
+else
+    setup_sandbox
+    cd "$SANDBOX"
+    IMPL=go
+
+    up7=$(create_upstream "upstream7")
+    pushd "$up7" >/dev/null
+    echo "keep" > keep.txt
+    echo "stale" > stale.txt
+    git add -A && git commit -m "init" -q
+    popd >/dev/null
+
+    xc cfg >/dev/null 2>&1 || true
+    xc use up7 "file://$up7" >/dev/null || fail "7: use failed"
+    xc set up7:main:. keep >/dev/null || fail "7: set keep failed"
+    xc set up7:main:. stale >/dev/null || fail "7: set stale failed"
+    git add -A && git commit -qm "vendor: initial" >/dev/null
+
+    # The user's shape: gitdir gone (Missing GD), dir present, line hand-removed.
+    stale_gd=$(jq -r '.patches[] | select(.local_path == "stale") | .gitdir' .cross/metadata.json)
+    rm -rf "$stale_gd"
+    grep -v "stale$" Crossfile > Crossfile.tmp && mv Crossfile.tmp Crossfile
+
+    # update names the stale registration instead of silently ignoring it.
+    upd_out=$(xc update </dev/null 2>&1) || true
+    echo "$upd_out"
+    assert_contains "$upd_out" "no longer declared in Crossfile (stale)" \
+        "7: update must warn about the stale registration"
+    assert_contains "$upd_out" "git cross wipe" "7: the warning must name the cleanup command"
+
+    wipe_out=$(echo n | xc wipe 2>&1) || fail "7: wipe failed"
+    echo "$wipe_out"
+    assert_contains "$wipe_out" "Dropping stale from metadata: it is no longer declared in Crossfile" \
+        "7: wipe must drop the undeclared entry"
+    assert_contains "$wipe_out" "Leaving stale in place" \
+        "7: wipe must leave the user's files in place"
+    [ -f stale/stale.txt ] || fail "7: wipe deleted the crossed dir"
+    [ -f keep/keep.txt ] || fail "7: wipe touched a declared cross"
+    if jq -e '.patches[] | select(.local_path == "stale")' .cross/metadata.json >/dev/null 2>&1; then
+        fail "7: the stale patch entry survived in metadata"
+    fi
+    jq -e '.patches[] | select(.local_path == "keep")' .cross/metadata.json >/dev/null 2>&1 \
+        || fail "7: the declared patch must survive"
+
+    # A remote used ONLY by an undeclared entry becomes unused and is swept.
+    xc use up7b "file://$up7" >/dev/null || fail "7: use up7b failed"
+    xc set up7b:main:. stale2 >/dev/null || fail "7: set stale2 failed"
+    git add -A && git commit -qm "vendor: stale2" >/dev/null
+    grep -v "stale2$" Crossfile > Crossfile.tmp && mv Crossfile.tmp Crossfile
+    wipe_out=$(echo y | xc wipe 2>&1) || fail "7: second wipe failed"
+    echo "$wipe_out"
+    assert_contains "$wipe_out" "Unused remotes: up7b" \
+        "7: the stale entry's remote must become unused"
+    if jq -e '.remotes[] | select(.name == "up7b")' .cross/metadata.json >/dev/null 2>&1; then
+        fail "7: the unused remote survived the sweep"
+    fi
+    [ -f stale2/stale.txt ] || fail "7: the swept remote's crossed dir must stay"
+
+    log_success "Test 7 passed: undeclared registrations dropped, files kept"
+fi
+
 log_success "All wipe tests passed!"
