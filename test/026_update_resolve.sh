@@ -198,6 +198,39 @@ exercise() {
     assert_contains "$out" "Updated lib-all" "$who: re-tracked whole-repo cross must update"
     assert_grep "lib-all/README.md" "upstream v6" \
         "$who: the recovered whole-repo cross carries the upstream change"
+
+    # --- untracked gate is immune to status.showUntrackedFiles=no ---------
+    # `git status` honors status.showUntrackedFiles=no and lists NOTHING —
+    # a status-based gate goes silently blind while git's cherry-pick still
+    # refuses (user-reported on 0.6.1). The gate lists untracked files with
+    # `git ls-files -o --exclude-standard`, which ignores that config.
+    # (c.yaml, not local.txt: its committed content equals the mirror base,
+    # so the recovery after re-tracking lands cleanly instead of conflicting
+    # with the local edit local.txt carries from the earlier sections.)
+    log_header "026: $who — untracked gate survives status.showUntrackedFiles=no"
+    git rm -q --cached lib/c.yaml >/dev/null 2>&1
+    git commit -qm "vendor: untrack c.yaml" >/dev/null
+    git config status.showUntrackedFiles no
+    [ -z "$(git status --porcelain -- lib | grep '^??' || true)" ] \
+        || fail "$who: fixture error: status must show no ?? under the config"
+    echo "NAME: EEE" > "$up/src/lib/c.yaml"
+    git -C "$up" commit -qam v7
+    out=$(xc update 2>&1) || true
+    echo "$out"
+    assert_contains "$out" "untracked files would be overwritten by the update" \
+        "$who: the gate must see untracked files even when status hides them"
+    assert_contains "$out" "lib/c.yaml" \
+        "$who: the ls-files listing names the file directly (no dir collapse)"
+    assert_contains "$out" "1 cross(es) skipped" \
+        "$who: config-blind state must refuse, not raw-error"
+    assert_grep "lib/c.yaml" "NAME: DDD" "$who: the untracked file stays untouched"
+    # restore: re-track, drop the config, land the pending upstream change
+    git config status.showUntrackedFiles normal
+    git add lib/c.yaml && git commit -qm "vendor: re-track c.yaml" >/dev/null
+    out=$(xc update 2>&1) || true
+    assert_contains "$out" "Updated lib" "$who: after re-tracking the cross must land"
+    assert_grep "lib/c.yaml" "NAME: EEE" \
+        "$who: the recovered cross carries the upstream change"
 }
 
 # --- Go ---------------------------------------------------------------------

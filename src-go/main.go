@@ -292,18 +292,30 @@ const (
 // in the BASE->THEIRS delta collide — the exact set git's cherry-pick would
 // refuse to overwrite, reported here with guidance BEFORE any work begins,
 // instead of a raw "would be overwritten by merge" after the fetch/import.
-// The delta paths are tree-relative (worktree-root-relative for both cross
-// kinds); repo-relative untracked paths under a whole untracked directory
-// (porcelain collapses them to "dir/") are matched by prefix.
+// The untracked listing uses `git ls-files -o --exclude-standard`, NOT
+// `git status`: status honors status.showUntrackedFiles=no and goes silently
+// blind (user-reported on 0.6.1), and it collapses whole untracked dirs.
+// ls-files lists repo-relative FILE paths directly — including files shadowed
+// by an uncommitted staged deletion (in HEAD, dropped from the index) — and
+// --exclude-standard skips ignored files, matching git's apply behavior (an
+// ignored file is overwritten without complaint). The delta paths are
+// tree-relative; both sides are prefixed with the canonicalized worktree
+// path (no "./" forms) before comparing.
 func patchUntrackedCollisions(root string, p *Patch, gdAbs, baseRev, theirsTreeish string) []string {
-	out, err := exec.Command("git", "-C", root, "status", "--porcelain", "-z", "--", p.worktreePath()).Output()
+	wt := filepath.ToSlash(filepath.Clean(p.worktreePath()))
+	prefix := wt + "/"
+	if wt == "." || wt == "" || wt == "/" {
+		prefix = ""
+	}
+	out, err := exec.Command("git", "-C", root, "ls-files", "-o", "--exclude-standard", "-z",
+		"--", filepath.FromSlash(wt)).Output()
 	if err != nil {
 		return nil
 	}
 	var untracked []string
-	for _, rec := range strings.Split(string(out), "\x00") {
-		if strings.HasPrefix(rec, "?? ") {
-			untracked = append(untracked, strings.TrimPrefix(rec, "?? "))
+	for _, u := range strings.Split(string(out), "\x00") {
+		if u = strings.TrimSpace(filepath.ToSlash(u)); u != "" {
+			untracked = append(untracked, u)
 		}
 	}
 	if len(untracked) == 0 {
@@ -315,23 +327,14 @@ func patchUntrackedCollisions(root string, p *Patch, gdAbs, baseRev, theirsTreei
 	}
 	delta := map[string]bool{}
 	for _, f := range strings.Split(string(deltaOut), "\n") {
-		if f = strings.TrimSpace(f); f != "" {
-			delta[p.worktreePath()+"/"+f] = true
+		if f = strings.TrimSpace(filepath.ToSlash(f)); f != "" {
+			delta[prefix+f] = true
 		}
 	}
 	var hit []string
 	for _, u := range untracked {
 		if delta[u] {
 			hit = append(hit, u)
-			continue
-		}
-		if strings.HasSuffix(u, "/") { // porcelain collapsed a whole untracked dir
-			for d := range delta {
-				if strings.HasPrefix(d, u) {
-					hit = append(hit, u)
-				break
-				}
-			}
 		}
 	}
 	sort.Strings(hit)

@@ -31,8 +31,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   points at `git cross update` (which re-adopts); the orphaned-gitdir `set`
   hint now says `rm -rf <gitdir>` + `git cross update` with the Crossfile
   line intact, or `git cross wipe` (orphan sweep).
-- Tests: 026 (untracked early refusal + recovery once tracked), 027 (pre-0.6
-  heal: prompt, preserve, markers restored, follow-up update clean).
+- The untracked listing is built with `git ls-files -o --exclude-standard`,
+  NOT `git status` (0.6.1 fix #2, user-reported on the 0.6.1 binary):
+  status honors `status.showUntrackedFiles=no` and goes silently blind
+  (gate sees nothing, raw cherry-pick error remains), and it collapses whole
+  untracked dirs. ls-files lists repo-relative FILE paths directly —
+  including files shadowed by an uncommitted staged deletion — and skips
+  ignored files exactly like git's apply. Both sides of the delta ∩ untracked
+  comparison are canonicalized (no `./` prefixes).
+- Tests: 026 (untracked early refusal + recovery once tracked, the
+  status.showUntrackedFiles=no blind spot, the whole-repo-cross shape), 027
+  (pre-0.6 heal: prompt, preserve, markers restored, follow-up clean).
 
 ### Changed
 
