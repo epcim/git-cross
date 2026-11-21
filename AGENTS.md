@@ -339,8 +339,12 @@ just sub-cases of Go-only commands are guarded by `just_ref_implements` and SKIP
      pass 1 via the re-adoption prompt: stale registration + gitdir dropped
      (disposable), then set re-creates the v0.6 cross — one `update` is the
      whole 0.5→0.6 migration.
-  3. import the mirror's objects into the USER's repo (`git -C <repo> fetch <gd> <ref>`,
-     FETCH_HEAD only) — **never** `GIT_ALTERNATE_OBJECT_DIRECTORIES`, which makes the
+  3. import the mirror's objects into the USER's repo (`git -C <repo> fetch
+     --no-recurse-submodules <gd> <ref>`, FETCH_HEAD only — **never** recurse:
+     `git fetch`'s on-demand default follows submodule pointers recorded in the
+     fetched tree and fails the whole import when a migrated repo still carries
+     a stale `.gitmodules`/`submodule.<name>.url` for a missing commit; a
+     user-reported `just` submodule → crossed dir migration hit exactly this) — **never** `GIT_ALTERNATE_OBJECT_DIRECTORIES`, which makes the
      user's index reference blobs it does not own (`fatal: unable to read tree`).
      Then a local `git fetch <gd> <ref>`, two throwaway-index trees
      (`read-tree --prefix=<P>/ {BASE,THEIRS}` → `commit-tree` = BASE + DELTA), and

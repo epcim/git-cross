@@ -685,7 +685,7 @@ func crossPullSubtree(root string, p *Patch, rest []string) error {
 	if synthMark == "" {
 		return fmt.Errorf("%s: pre-0.6 subdir gitdir (no synthesis markers); run: git cross update (it re-adopts pre-0.6 subdir gitdirs)", p.LocalPath)
 	}
-	if fetch := runGitdir(gdAbs, "fetch", "-q", "origin",
+	if fetch := runGitdir(gdAbs, "fetch", "-q", "--no-recurse-submodules", "origin",
 		fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", p.Branch, p.Branch)); fetch.Run() != nil {
 		return fmt.Errorf("git fetch failed for %s (%s)", p.Remote, p.RemoteURL)
 	}
@@ -783,7 +783,7 @@ func crossPushSubtree(root string, p *Patch, rest []string) error {
 		logInfo(fmt.Sprintf("%s has nothing to push (no local commits on the cross)", p.LocalPath))
 		return nil
 	}
-	if fetch := runGitdir(gdAbs, "fetch", "-q", "origin",
+	if fetch := runGitdir(gdAbs, "fetch", "-q", "--no-recurse-submodules", "origin",
 		fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", p.Branch, p.Branch)); fetch.Run() != nil {
 		return fmt.Errorf("git fetch failed for %s (%s)", p.Remote, p.RemoteURL)
 	}
@@ -992,7 +992,14 @@ func landUpstream(root string, p *Patch, rev string, resolve bool) landResult {
 		"refs/heads/" + p.Branch,
 		"refs/remotes/origin/" + p.Branch,
 	} {
-		fc := exec.Command("git", "-C", root, "fetch", "--no-tags", "--quiet", gdAbs, ref)
+		// --no-recurse-submodules: `git fetch` defaults to on-demand recursion;
+		// when the fetched upstream tree records a submodule pointer that is not
+		// present locally, git tries to fetch it through the user's (possibly
+		// stale, pre-migration) submodule URL, fails, and makes the WHOLE import
+		// fetch exit 1 ("Errors during submodule fetch: <path>") even though the
+		// superproject objects arrived fine. git-cross imports object graphs, not
+		// submodule checkouts — the crossed dir holds plain files.
+		fc := exec.Command("git", "-C", root, "fetch", "--no-tags", "--quiet", "--no-recurse-submodules", gdAbs, ref)
 		fc.Stderr = os.Stderr
 		if err := fc.Run(); err != nil {
 			logError(fmt.Sprintf("%s: cannot import upstream objects from the mirror: %v", p.LocalPath, err))
@@ -1358,7 +1365,7 @@ func crossfileCommands(path string) ([][]string, error) {
 			}
 			localPath = filepath.ToSlash(filepath.Clean(localPath))
 			if prev, dup := crosses[localPath]; dup {
-				return nil, fmt.Errorf("duplicate cross declaration for '%s' in Crossfile: line %d (%s) and line %d (%s) — keep one line (delete and re-set: git cross del %s)", localPath, prev.line, prev.value, lineNumber, fields[1], localPath)
+				return nil, fmt.Errorf("duplicate cross declaration for '%s' in Crossfile: line %d (%s) and line %d (%s) — keep exactly one line — delete the stale one (git cross del %s also deletes the crossed dir)", localPath, prev.line, prev.value, lineNumber, fields[1], localPath)
 			}
 			crosses[localPath] = declaration{lineNumber, fields[1]}
 		}
@@ -3016,7 +3023,7 @@ shell and 'gxenv -u' unloads it.`,
 			for i := range targets {
 				p := &targets[i]
 				gdAbs := p.gitdirAbs(root)
-				if fc := runGitdir(gdAbs, "fetch", "-q", "origin",
+				if fc := runGitdir(gdAbs, "fetch", "-q", "--no-recurse-submodules", "origin",
 					fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", p.Branch, p.Branch)); fc.Run() != nil {
 					logError(fmt.Sprintf("git fetch failed for %s (%s); %s not updated", p.Remote, p.RemoteURL, p.LocalPath))
 					continue

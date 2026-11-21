@@ -292,6 +292,81 @@ else
     echo "SKIP: Go CLI unavailable"
 fi
 
+# --- Go: submodule recursion during the objects import ----------------------
+# User-reported (gitops-infra): a repo MIGRATED from a `just` submodule to a
+# `just` cross still carries `.gitmodules` + `submodule.just.url`. `git fetch`
+# defaults to --recurse-submodules=on-demand, so importing the mirror's objects
+# tried to fetch the recorded submodule commit from that stale URL, failed
+# ("fatal: ... not our ref" / "Errors during submodule fetch: just"), and made
+# the whole import exit 1 — "cannot import upstream objects from the mirror"
+# with the cross skipped while a plain fetch would have transferred everything.
+# The import must never recurse: git-cross moves object graphs, not submodules.
+if [ -n "$GO_BIN" ]; then
+    log_header "026: go — object import never recurses into submodules"
+
+    setup_sandbox
+    cd "$SANDBOX"
+    # The fixture repos are raw `git init`s (create_upstream sets identity per
+    # repo; these are foreign/upstream repos), so give this section an identity.
+    export GIT_AUTHOR_NAME="026 Sub" GIT_AUTHOR_EMAIL="026@example.com"
+    export GIT_COMMITTER_NAME="026 Sub" GIT_COMMITTER_EMAIL="026@example.com"
+    git config fetch.recurseSubmodules true     # the user's global-style setting
+    echo "upstream/" >> .gitignore               # the fixture upstreams live here (harness convention)
+    local_up="$SANDBOX/upstream"
+    mkdir -p "$local_up"
+
+    git init -q -b main "$local_up/sub"
+    ( cd "$local_up/sub"; echo one > f.txt; git add -A; git commit -qm c1 )
+    git init -q -b main "$local_up/other"       # unrelated: the recorded commit is "not our ref"
+    ( cd "$local_up/other"; echo other > f.txt; git add -A; git commit -qm c1 )
+
+    # The superproject upstream: has a submodule at path `just`.
+    git init -q -b main "$local_up/super"
+    ( cd "$local_up/super"
+      git -c protocol.file.allow=always submodule add -q "file://$local_up/sub" just
+      git commit -qm "add gitlink just"
+      echo v1 > top.txt; git add -A; git commit -qm v1 )
+
+    "$GO_BIN" cfg >/dev/null 2>&1 || true
+    "$GO_BIN" use sup "file://$local_up/super" >/dev/null || fail "026-sub: use failed"
+    "$GO_BIN" set sup:main:. keep >/dev/null || fail "026-sub: set failed"
+    git add -A && git commit -qm "vendor: initial" >/dev/null
+
+    # The migration shape: the repo itself had `just` as a submodule. Its
+    # mapping (pointing at an unrelated repo) and its module clone survive.
+    cp "$local_up/super/.gitmodules" .gitmodules
+    git config submodule.just.url "file://$local_up/other"
+    sha=$(git -C "$local_up/super" ls-tree HEAD just | awk '{print $3}')
+    git update-index --add --cacheinfo 160000,$sha,just
+    git commit -qm "gitlink just (pre-migration shape)" >/dev/null
+    git -c protocol.file.allow=always submodule update --init just >/dev/null 2>&1 || true
+    [ -d .git/modules/just ] || fail "026-sub: fixture did not leave a submodule module dir"
+
+    # Upstream advances AND bumps the submodule pointer to a commit that does
+    # not exist locally: exactly the condition that made on-demand recursion fire.
+    ( cd "$local_up/sub"; echo two > f.txt; git commit -qam c2 )
+    ( cd "$local_up/super"
+      git -C just fetch -q origin
+      git -C just checkout -q origin/main
+      git add just
+      echo v2 > top.txt
+      git add top.txt
+      git commit -qm "bump submodule + v2" )
+
+    out=$("$GO_BIN" update 2>&1)
+    rc=$?
+    echo "$out"
+    [ "$rc" -eq 0 ] || fail "026-sub: update must exit 0"
+    assert_contains "$out" "Updated keep" "026-sub: the cross must land despite the stale submodule mapping"
+    case "$out" in
+        *"submodule"*) fail "026-sub: the import must not try to fetch submodules" ;;
+        *"cannot import upstream objects"*) fail "026-sub: the import must not fail on submodules" ;;
+    esac
+    assert_grep "keep/top.txt" "v2" "026-sub: upstream content must have landed"
+else
+    echo "SKIP: Go CLI unavailable"
+fi
+
 # --- Just/Fish --------------------------------------------------------------
 # v0.5.1: update/resolve are Go-only in the Just reference (stubs) — this test
 # is entirely update/resolve-driven, so skip the whole variant when stubbed.

@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`update` no longer recurses into submodules while importing mirror
+  objects.** `git fetch` defaults to `--recurse-submodules=on-demand`: when the
+  upstream commit being imported records a submodule pointer that is missing
+  locally (typical after migrating a submodule to a cross — the old
+  `.gitmodules` / `submodule.<name>.url` and `.git/modules/<name>` survive), git
+  tried to fetch that submodule commit from the stale URL and made the whole
+  import fail:
+  `fatal: ... not our ref <sha>` / `Errors during submodule fetch: <path>` /
+  `cannot import upstream objects from the mirror` — even though the
+  superproject objects had transferred fine (user-reported: a `just` submodule
+  migrated to `just` crossed dir). The objects import now passes
+  `--no-recurse-submodules` (same for every mirror fetch from origin): git-cross
+  moves object graphs, not submodule checkouts.
+- **The duplicate-declaration error no longer suggests `git cross del`** as the
+  fix: `del` also deletes the crossed dir. It now says to delete the stale
+  Crossfile line (`git cross del <path>` is named only as the way to *re-create*
+  the cross).
 - **`wipe` now drops registrations the Crossfile no longer declares.** The
   Crossfile is the source of truth for which crosses exist, but hand-deleting
   a `set` line left the registry entry behind forever: it showed up as a
