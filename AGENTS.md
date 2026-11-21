@@ -181,7 +181,7 @@ Procedure for updating a test to v0.5 semantics: `.agents/skills/git-cross-test-
 | `wipe` (remote, multi-cross, orphan sweep, root guard) | — (Go-only; stub) | 009, 015 |
 | `cfg` / `init` alias | 024 | 009, 024 |
 | `comp` / hidden `shell-init` | — (Go-only; stub) | 017, 020 |
-| `env` + `gxenv` (upstream context, nested vs in-place, loaded-context discovery) | — (Go-only) | 028 |
+| `env` + `gxenv` + `xcd`/`_git_cross_sync` auto-load/unload, prompt marker | — (Go-only) | 028 |
 | grouped `--help` + configuration guidance | n/a | 020 |
 | sparse checkout plumbing | 012 | 012 |
 | whole-repo cross (no sparse, no `.git`) | 019‡ | 019 |
@@ -403,20 +403,39 @@ just sub-cases of Go-only commands are guarded by `just_ref_implements` and SKIP
   git-cross loses the primary repo (git answers the crossed dir as the toplevel),
   (c) `add`/`commit` land on the mirror branch, which the next successful `update`
   overwrites (`update-ref refs/heads/<b> <THEIRS>`) — invisible work, dangling
-  objects. So the wrapper is **process-scoped**: `gxenv` (no flag) runs a NESTED
-  shell (`GIT_DIR=... GIT_WORK_TREE=... CROSS_ACTIVE=... "$SHELL" -i`), so leaving
-  it unloads; `gxenv -i` loads into the current shell and `gxenv -u` unloads.
-  **Prompt marker** (`_gx_mark`/`_gx_prompt_on`/`_gx_prompt_off` in the wrappers) so a
-  modified terminal is obvious — no rc edit, no hook, nothing written by the binary:
-  `gxenv -i` appends `[cross:<remote>] ` to `PS1` (bash/zsh, saved in `_GX_PS1_SAVED`
-  and restored verbatim by `gxenv -u`; a second `-i` re-marks, it never stacks), and
-  in fish it wraps `fish_prompt` (`functions -c fish_prompt __gx_orig_fish_prompt`,
-  marker echoed after it, undone by `-u`). The NESTED shell gets the same marker from
-  the shell's own startup hook: `bash --rcfile <(cat ~/.bashrc; echo 'PS1+=[cross:$CROSS_REMOTE]')`,
-  `ZDOTDIR=<tmp> zsh -i` (temp `.zshrc` = user's + marker; removed after), and
-  `fish -i -C '<fish_prompt wrapper>'`. Unknown shells fall back to an unmarked nested
-  shell. Caveat documented in the wrapper: a theme/`PROMPT_COMMAND` that rewrites PS1
-  wholesale hides the marker.
+  objects. The wrapper therefore **marks the prompt** and never hides the state:
+  `gxenv` loads into the CURRENT shell (default since 0.5.4, `-i` kept as an alias)
+  and `gxenv -u` unloads; `gxenv -s` is the opt-in isolated NESTED shell
+  (`GIT_DIR=… "$SHELL" -i`, unmarked, nothing leaks).
+  **Helpers are named `_git_cross_*`** (never after the `gx`/`xcd` aliases):
+  `_git_cross_{load,unload,sync,hook,prompt_on,prompt_off,zsh_precmd,zsh_chpwd_add,
+  zsh_precmd_add}` (+ fish `_git_cross_*` and `__git_cross_{wrapped,orig_prompt}`).
+  **Prompt marker**: a bare `[cross] ` (no remote, no colon — other tools show
+  branch/context) so a modified terminal is obvious. No rc edit, no shell state
+  written by the binary, and no per-shell startup-file injection (that variant —
+  `bash --rcfile`, temp `ZDOTDIR`, `fish -C` — mangled themed prompts and was
+  dropped in 0.5.4):
+  * bash: append to `PS1`, saved in `_GIT_CROSS_PS1_SAVED`; `-u` restores it verbatim.
+  * zsh: pushes `_git_cross_zsh_precmd` LAST onto the built-in `precmd_functions`
+    (no `add-zsh-hook` dependency — that lives in zsh-common and is missing from
+    stripped installs), because powerlevel10k/starship/oh-my-zsh rebuild `PROMPT`
+    on every prompt: the hook runs AFTER them and appends only if absent; `-u`
+    filters the hook out of the array and strips the marker.
+  * fish: `functions -c fish_prompt __git_cross_orig_prompt` + a wrapper echoing the
+    marker; `-u` copies the original back and erases the helper.
+  Re-running `gxenv` (another cross) calls `_git_cross_prompt_off` first, so marks
+  never stack. The nested `-s` shell is deliberately unmarked. Caveat: a bash
+  `PROMPT_COMMAND` theme that rewrites `PS1` hides the marker (zsh/fish are covered).
+- **`xcd` auto-loads the context; leaving the dir auto-unloads**: `xcd` cds and then
+  `_git_cross_load` (one `git cross env`; `GIT_CROSS_NO_AUTOENV=1` opts out for that
+  call). `_git_cross_sync` unloads when `$PWD` is no longer under
+  `$_GIT_CROSS_ROOT` (the loaded `GIT_WORK_TREE`) — one shell pattern match, no
+  subprocess — and is wired at wrapper-init time: zsh `chpwd_functions`, bash
+  appended `PROMPT_COMMAND` (interactive shells only; string form), fish
+  `--on-variable PWD`. It unloads rather than re-loading on a `cd` into ANOTHER
+  cross (that needs a probe); `xcd`/`gxenv` load there. This is what makes the
+  "xcd ingests the env" UX safe — without the hook, a plain `cd` out leaves plain
+  git pointed at the mirror.
 - **Loaded-context discovery (why `env` is idempotent)**: `getRepoRoot` ignores a
   `GIT_DIR` that points into `.cross/worktrees/` (`crossEnvLoaded` → `gitEnvWithoutCross`),
   so `git cross ...` keeps finding the PRIMARY repo and its registry with the env

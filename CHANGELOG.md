@@ -27,18 +27,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bare values for scripting. No cross or a missing gitdir is a hard error (exit 1, empty
   stdout) instead of a half-working environment.
 - **`gxenv` wrapper** (printed by `git cross comp` / `shell-init`, bash+zsh+fish).
-  Plain `gxenv` opens a **nested shell** with that context, so leaving it
-  unloads and nothing leaks into your shell; `gxenv -i` loads into the current
-  shell and `gxenv -u` unloads again. Nothing is written to disk — no `.envrc`,
-  no chpwd/direnv hook.
-- **The prompt is marked `[cross:<remote>]` while the context is loaded**, so a
-  modified terminal is obvious at a glance — automatically, no rc edit needed:
-  `gxenv -i` appends the marker to `PS1` (bash/zsh) or wraps `fish_prompt`
-  (fish), and `gxenv -u` restores the prompt exactly as it was. The nested shell
-  gets the same marker through the shell's own startup hook (`bash --rcfile`,
-  `zsh` via a temporary `ZDOTDIR`, `fish -C`). `git cross env` also exports
-  `CROSS_REMOTE` (and `--remote`) for hand-rolled prompts. Caveat: a theme or
-  `PROMPT_COMMAND` that rewrites `PS1` wholesale hides the marker.
+  `gxenv` loads the context into the **current** shell (`gxenv -u` unloads,
+  `gxenv -s` gives the opt-in isolated nested shell). Nothing is written to disk
+  — no `.envrc`, no chpwd/direnv hook.
+- **The prompt is marked with a bare `[cross] ` while the context is loaded**, so
+  a modified terminal is obvious at a glance — no rc edit needed: bash appends to
+  `PS1`; zsh appends from a `precmd` hook (registered on the built-in
+  `precmd_functions`, so powerlevel10k/starship/oh-my-zsh cannot wipe it); fish
+  wraps `fish_prompt`. `gxenv -u` removes the marker and restores the prompt
+  exactly. `git cross env` also exports `CROSS_REMOTE` (and `--remote`) for
+  hand-rolled prompts. Caveat: a bash `PROMPT_COMMAND` theme that rebuilds `PS1`
+  wholesale hides the marker.
+- **`xcd` now loads the context and leaving the dir unloads it.** `xcd <path>`
+  cds *and* sets the upstream env (opt out with `GIT_CROSS_NO_AUTOENV=1`), and
+  the env is dropped as soon as `$PWD` leaves the crossed dir — zsh via
+  `chpwd_functions`, fish via `--on-variable PWD`, bash via an appended
+  `PROMPT_COMMAND` (interactive shells). The leave-check is a single shell
+  pattern match, no subprocess. `cd`-ing into a *different* cross only unloads;
+  use `xcd`/`gxenv` to load there.
 
 ### Fixed
 

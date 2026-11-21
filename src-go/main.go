@@ -1481,55 +1481,118 @@ func gitPassthrough(args []string) error {
 // ------------------------------------------------------- shell integration ---
 
 const posixShellInit = `# git-cross shell wrappers (part of: eval "$(git cross comp bash|zsh)")
-xcd() { local p; p="$(git cross cd "$@")" || return; [ -n "$p" ] && cd "$p"; }
+# xcd cds into a cross AND loads its upstream git context (opt out: GIT_CROSS_NO_AUTOENV=1)
+xcd() { local p; p="$(git cross cd "$@")" || return; [ -n "$p" ] || return 0; cd "$p" || return
+    [ -n "${GIT_CROSS_NO_AUTOENV-}" ] || _git_cross_load; }
 gx() { if [ "$1" = "cd" ]; then shift; xcd "$@"; else git cross "$@"; fi; }   # short alias for git cross (gx cd changes directory)
 cr() { git cross "$@"; }     # short alias for git cross: cr log --oneline
-# --- gxenv: give plain 'git' the crossed dir's UPSTREAM context ----------------
-#   gxenv [path]      nested shell (exit unloads; nothing leaks into yours)
-#   gxenv -i [path]   load into THIS shell (remember: gxenv -u before leaving)
-#   gxenv -u          unload from this shell
-# While loaded, PS1 ends with [cross:REMOTE] so the terminal is visibly marked
-# (a PROMPT_COMMAND/theme that rewrites PS1 wholesale will hide the marker).
-_gx_mark() { echo "[cross:${CROSS_REMOTE:-${CROSS_ACTIVE:-cross}}]"; }
-_gx_prompt_off() { if [ -n "${_GX_PS1_SAVED+x}" ]; then PS1="$_GX_PS1_SAVED"; unset _GX_PS1_SAVED; fi; return 0; }
-_gx_prompt_on() { _gx_prompt_off; _GX_PS1_SAVED="${PS1-}"; PS1="${PS1-}$(_gx_mark) "; }
-gxenv() { case "${1-}" in
-    -u|--unset) eval "$(git cross env --unset)"; _gx_prompt_off; return 0 ;;
-    -i|--in-place)
-        local src; src=$(git cross env "${2-}") && eval "$src" && _gx_prompt_on
-        return $? ;;
-    -h|--help) echo 'usage: gxenv [-i|--in-place|-u|--unset] [path]'
-        echo '  (default) nested shell with the crossed dir upstream context'
-        echo '  -i        load into this shell    -u  unload from this shell'; return 0 ;;
-  esac
-  local gd wt lp rm sh
-  gd=$(git cross env --gitdir "$@") || return
-  wt=$(git cross env --worktree "$@") || return
-  lp=$(git cross env --local-path "$@") || return
-  rm=$(git cross env --remote "$@") || return
-  sh=$(basename "${SHELL:-/bin/sh}")
-  case "$sh" in
-    bash)
-        GIT_DIR=$gd GIT_WORK_TREE=$wt CROSS_ACTIVE=$lp CROSS_REMOTE=$rm \
-            bash --rcfile <(cat "$HOME/.bashrc" 2>/dev/null; echo 'PS1="${PS1}[cross:${CROSS_REMOTE}] "') -i ;;
-    zsh)
-        local zd; zd=$(mktemp -d) || return
-        { cat "$HOME/.zshrc" 2>/dev/null; echo 'PS1="${PS1}[cross:${CROSS_REMOTE}] "'; } > "$zd/.zshrc"
-        GIT_DIR=$gd GIT_WORK_TREE=$wt CROSS_ACTIVE=$lp CROSS_REMOTE=$rm ZDOTDIR=$zd zsh -i
-        local rc=$?; rm -rf "$zd"; return $rc ;;
-    *)
-        GIT_DIR=$gd GIT_WORK_TREE=$wt CROSS_ACTIVE=$lp CROSS_REMOTE=$rm "${SHELL:-/bin/sh}" -i ;;
-  esac
+# --- gxenv / sync: plain 'git' speaks the crossed dir's UPSTREAM while loaded ---
+#   gxenv [path]      load into THIS shell (the prompt gains a [cross] marker)
+#   gxenv -u          unload from this shell (marker removed)
+#   gxenv -s [path]   isolated nested shell instead (leave it to unload; unmarked)
+# Leaving the crossed dir unloads automatically (_git_cross_sync): zsh via a chpwd
+# hook, bash via an appended PROMPT_COMMAND (interactive shells only), fish via
+# --on-variable PWD. The check is one shell pattern match — no subprocess.
+_git_cross_prompt_on() {
+    _git_cross_prompt_off   # re-loading (another cross) re-marks; it never stacks
+    if [ -n "${ZSH_VERSION-}" ]; then
+        _git_cross_zsh_precmd_add
+        _git_cross_zsh_precmd
+    else
+        _GIT_CROSS_PS1_SAVED="${PS1-}"
+        PS1="${PS1-}[cross] "
+    fi
+}
+# zsh themes (powerlevel10k/starship/oh-my-zsh) rebuild PROMPT every prompt, so a
+# one-shot append is wiped: this precmd hook runs AFTER them and appends if absent.
+_git_cross_zsh_precmd() {
+    case "${PROMPT-}" in *'[cross] '*) ;; *) PROMPT="${PROMPT-}[cross] " ;; esac
+}
+_git_cross_prompt_off() {
+    if [ -n "${ZSH_VERSION-}" ]; then
+        precmd_functions=(${precmd_functions:#_git_cross_zsh_precmd})
+        case "${PROMPT-}" in *'[cross] ') PROMPT="${PROMPT%\[cross\] }" ;; esac
+    elif [ -n "${_GIT_CROSS_PS1_SAVED+x}" ]; then
+        PS1="$_GIT_CROSS_PS1_SAVED"; unset _GIT_CROSS_PS1_SAVED
+    fi
+    return 0
+}
+_git_cross_unload() {
+    eval "$(git cross env --unset)"
+    _git_cross_prompt_off
+    unset _GIT_CROSS_ROOT
+}
+_git_cross_load() {
+    _git_cross_unload
+    local src
+    src=$(git cross env "${1-}") || return 1
+    eval "$src" || return 1
+    _GIT_CROSS_ROOT="${GIT_WORK_TREE-}"
+    _git_cross_prompt_on
+}
+_git_cross_sync() {
+    [ -n "${_GIT_CROSS_ROOT-}" ] || return 0
+    case "$PWD/" in
+        "${_GIT_CROSS_ROOT%/}/"*) return 0 ;;
+    esac
+    _git_cross_unload
+}
+# zsh hook arrays are built in: no dependence on add-zsh-hook (which lives in
+# zsh-common and is missing from stripped installs). Ours are appended LAST, so
+# prompt decoration runs after the theme's own precmd.
+_git_cross_zsh_chpwd_add() {
+    case " ${chpwd_functions[*]-} " in *" _git_cross_sync "*) ;; *) chpwd_functions+=(_git_cross_sync) ;; esac
+}
+_git_cross_zsh_precmd_add() {
+    case " ${precmd_functions[*]-} " in *" _git_cross_zsh_precmd "*) ;; *) precmd_functions+=(_git_cross_zsh_precmd) ;; esac
+}
+_git_cross_hook() {
+    if [ -n "${ZSH_VERSION-}" ]; then
+        _git_cross_zsh_chpwd_add
+        return 0
+    fi
+    case "${PROMPT_COMMAND-}" in
+        *_git_cross_sync*) ;;
+        *) PROMPT_COMMAND="${PROMPT_COMMAND:+${PROMPT_COMMAND%;}; }_git_cross_sync" ;;
+    esac
+}
+_git_cross_hook
+gxenv() {
+    local subshell=0
+    case "${1-}" in
+        -u|--unset) _git_cross_unload; return 0 ;;
+        -s|--subshell) subshell=1; shift ;;
+        -i|--in-place) shift ;;   # in-place is the default; kept for muscle memory
+        -h|--help) echo 'usage: gxenv [-u|--unset|-s|--subshell|-i|--in-place] [path]'
+            echo '  (default) load the cross upstream context into this shell'
+            echo '  -s        do it in a nested shell instead (leave it to unload)'
+            echo '  -u        unload from this shell'; return 0 ;;
+    esac
+    if [ "$subshell" = 1 ]; then
+        local gd wt lp rm
+        gd=$(git cross env --gitdir "$@") || return
+        wt=$(git cross env --worktree "$@") || return
+        lp=$(git cross env --local-path "$@") || return
+        rm=$(git cross env --remote "$@") || return
+        GIT_DIR=$gd GIT_WORK_TREE=$wt CROSS_ACTIVE=$lp CROSS_REMOTE=$rm "${SHELL:-/bin/sh}" -i
+        return 0
+    fi
+    _git_cross_load "$@"
 }
 # optional git alias so 'git x add ./file' also works:
 #   git config --global alias.x '!git cross'
 `
 
 const fishShellInit = `# git-cross shell wrappers (part of: git cross comp fish | source)
+# xcd cds into a cross AND loads its upstream git context (opt out: set -gx GIT_CROSS_NO_AUTOENV 1)
 function xcd --description 'cd into a git-cross crossed directory'
     set -l p (git cross cd $argv)
     or return
-    test -n "$p"; and cd $p
+    test -n "$p"; or return
+    cd $p; or return
+    if not set -q GIT_CROSS_NO_AUTOENV
+        _git_cross_load
+    end
 end
 function gx --description 'short alias for git cross (gx cd changes directory)'
     if begin; test (count $argv) -ge 1; and test $argv[1] = cd; end
@@ -1543,61 +1606,76 @@ end
 function cr --description 'short alias for git cross'
     git cross $argv
 end
-# --- gxenv: plain 'git' in a crossed dir speaks to its upstream ----------------
-#   gxenv [path]      nested shell (exit unloads; nothing leaks into yours)
-#   gxenv -i [path]   load into THIS fish     gxenv -u  unload from this fish
-# While loaded the prompt is marked with [cross:REMOTE] (fish_prompt wrapper).
-function _gx_mark
-    if set -q CROSS_REMOTE
-        echo -n "[cross:$CROSS_REMOTE]"
-    else
-        echo -n "[cross:$CROSS_ACTIVE]"
-    end
-end
-function _gx_prompt_on
-    if set -q __gx_prompt_wrapped
+# --- gxenv / sync: plain 'git' speaks the crossed dir's UPSTREAM while loaded ---
+#   gxenv [path]      load into THIS fish (the prompt gains a [cross] marker)
+#   gxenv -u          unload from this fish (marker removed)
+#   gxenv -s [path]   isolated nested shell instead (leave it to unload; unmarked)
+# Leaving the crossed dir unloads automatically (--on-variable PWD, a pure string
+# comparison — no subprocess).
+function _git_cross_prompt_on
+    if set -q __git_cross_wrapped
         return 0
     end
-    functions -c fish_prompt __gx_orig_fish_prompt; or return 0
+    functions -c fish_prompt __git_cross_orig_prompt; or return 0
     function fish_prompt
-        __gx_orig_fish_prompt
-        echo -n (_gx_mark)" "
+        __git_cross_orig_prompt
+        echo -n '[cross] '
     end
-    set -g __gx_prompt_wrapped 1
+    set -g __git_cross_wrapped 1
 end
-function _gx_prompt_off
-    if not set -q __gx_prompt_wrapped
+function _git_cross_prompt_off
+    if not set -q __git_cross_wrapped
         return 0
     end
     functions -e fish_prompt
-    functions -c __gx_orig_fish_prompt fish_prompt
-    functions -e __gx_orig_fish_prompt
-    set -e __gx_prompt_wrapped
+    functions -c __git_cross_orig_prompt fish_prompt
+    functions -e __git_cross_orig_prompt
+    set -e __git_cross_wrapped
 end
-function gxenv --description 'plain git in a crossed dir speaks to its upstream (nested shell)'
+function _git_cross_unload
+    git cross env --fish --unset | source
+    _git_cross_prompt_off
+    set -e _GIT_CROSS_ROOT
+end
+function _git_cross_load
+    _git_cross_unload
+    git cross env --fish $argv | source
+    set -q GIT_DIR; or return 1
+    set -g _GIT_CROSS_ROOT $GIT_WORK_TREE
+    _git_cross_prompt_on
+end
+function _git_cross_sync --on-variable PWD
+    if not set -q _GIT_CROSS_ROOT
+        return 0
+    end
+    switch $PWD/
+        case "$_GIT_CROSS_ROOT/*"
+            return 0
+    end
+    _git_cross_unload
+end
+function gxenv --description 'plain git in a crossed dir speaks to its upstream'
     switch "$argv[1]"
         case -u --unset
-            git cross env --fish --unset | source
-            _gx_prompt_off
+            _git_cross_unload
+            return
+        case -s --subshell
+            set -l gd (git cross env --gitdir $argv[2..-1]); or return
+            set -l wt (git cross env --worktree $argv[2..-1]); or return
+            set -l lp (git cross env --local-path $argv[2..-1]); or return
+            set -l rm (git cross env --remote $argv[2..-1]); or return
+            GIT_DIR=$gd GIT_WORK_TREE=$wt CROSS_ACTIVE=$lp CROSS_REMOTE=$rm $SHELL -i
             return
         case -i --in-place
-            git cross env --fish $argv[2..-1] | source; and _gx_prompt_on
-            return
+            set -e argv[1]
         case -h --help
-            echo 'usage: gxenv [-i|--in-place|-u|--unset] [path]'
+            echo 'usage: gxenv [-u|--unset|-s|--subshell|-i|--in-place] [path]'
+            echo '  (default) load the cross upstream context into this fish'
+            echo '  -s        do it in a nested shell instead (leave it to unload)'
+            echo '  -u        unload from this fish'
             return
     end
-    set -l gd (git cross env --gitdir $argv); or return
-    set -l wt (git cross env --worktree $argv); or return
-    set -l lp (git cross env --local-path $argv); or return
-    set -l rm (git cross env --remote $argv); or return
-    set -l mrk (_gx_mark)
-    if test (basename $SHELL) = fish
-        GIT_DIR=$gd GIT_WORK_TREE=$wt CROSS_ACTIVE=$lp CROSS_REMOTE=$rm \
-            fish -i -C "functions -c fish_prompt __gx_orig_fish_prompt; function fish_prompt; __gx_orig_fish_prompt; echo -n '$mrk '; end"
-    else
-        GIT_DIR=$gd GIT_WORK_TREE=$wt CROSS_ACTIVE=$lp CROSS_REMOTE=$rm $SHELL -i
-    end
+    _git_cross_load $argv
 end
 # optional git alias so 'git x add ./file' also works:
 #   git config --global alias.x '!git cross'
