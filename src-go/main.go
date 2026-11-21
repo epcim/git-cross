@@ -562,7 +562,12 @@ func logError(msg string) { color.New(color.Bold, color.FgRed).Fprint(os.Stderr,
 // envList splits a comma-separated environment variable into trimmed items.
 
 // printPatchRows prints one row per patch: local_path <TAB> gitdir.
-func printPatchRows(hint string) error {
+func printPatchRows(hint string) error { return printPatchRowsTo(os.Stdout, hint) }
+
+// printPatchRowsTo is printPatchRows with a chosen stream: the interactive
+// picker's caller reserves stdout for the chosen path, so a fallback listing
+// (fzf missing) must go to stderr instead.
+func printPatchRowsTo(w io.Writer, hint string) error {
 	meta, err := loadMetadata()
 	if err != nil {
 		return err
@@ -582,12 +587,12 @@ func printPatchRows(hint string) error {
 			}
 		}
 		for _, p := range meta.Patches {
-			fmt.Printf("%-*s  %s\n", width, p.LocalPath, p.Gitdir)
+			fmt.Fprintf(w, "%-*s  %s\n", width, p.LocalPath, p.Gitdir)
 		}
 		return nil
 	}
 	for _, p := range meta.Patches {
-		fmt.Printf("%s\t%s\n", p.LocalPath, p.Gitdir)
+		fmt.Fprintf(w, "%s\t%s\n", p.LocalPath, p.Gitdir)
 	}
 	return nil
 }
@@ -1482,8 +1487,22 @@ func gitPassthrough(args []string) error {
 
 const posixShellInit = `# git-cross shell wrappers (part of: eval "$(git cross comp bash|zsh)")
 # xcd cds into a cross AND loads its upstream git context (opt out: GIT_CROSS_NO_AUTOENV=1)
-xcd() { local p; p="$(git cross cd "$@")" || return; [ -n "$p" ] || return 0; cd "$p" || return
-    [ -n "${GIT_CROSS_NO_AUTOENV-}" ] || _git_cross_load; }
+#   xcd            pick a cross with fzf (also when you are already inside one)
+#   xcd <path>     go to that cross
+#   xcd -          ESCAPE: back to the previous dir, context unloaded
+# Plain 'cd' out of the crossed dir unloads too (_git_cross_sync), and Ctrl-D just
+# ends the shell — the context dies with it, nothing to undo.
+xcd() { local p
+    case "${1-}" in
+        "") p="$(git cross cd --pick)" || return ;;
+        -)  p=- ;;
+        *)  p="$(git cross cd "$@")" || return ;;
+    esac
+    [ -n "$p" ] || return 0
+    cd "$p" || return
+    # quiet: "not inside a cross" is the normal case for 'xcd -' (it unloads)
+    if [ -z "${GIT_CROSS_NO_AUTOENV-}" ]; then _git_cross_load 2>/dev/null; fi
+}
 gx() { if [ "$1" = "cd" ]; then shift; xcd "$@"; else git cross "$@"; fi; }   # short alias for git cross (gx cd changes directory)
 cr() { git cross "$@"; }     # short alias for git cross: cr log --oneline
 # --- gxenv / sync: plain 'git' speaks the crossed dir's UPSTREAM while loaded ---
@@ -1585,13 +1604,26 @@ gxenv() {
 
 const fishShellInit = `# git-cross shell wrappers (part of: git cross comp fish | source)
 # xcd cds into a cross AND loads its upstream git context (opt out: set -gx GIT_CROSS_NO_AUTOENV 1)
-function xcd --description 'cd into a git-cross crossed directory'
-    set -l p (git cross cd $argv)
-    or return
+#   xcd            pick a cross with fzf (also when you are already inside one)
+#   xcd <path>     go to that cross
+#   xcd -          ESCAPE: back to the previous dir, context unloaded
+# Plain 'cd' out of the crossed dir unloads too (_git_cross_sync), and Ctrl-D just
+# ends the shell — the context dies with it, nothing to undo.
+function xcd --description 'cd into a crossed dir (no arg: picker; -: back) and load its context'
+    set -l p
+    switch "$argv[1]"
+        case ''
+            set p (git cross cd --pick); or return
+        case '-'
+            set p -
+        case '*'
+            set p (git cross cd $argv); or return
+    end
     test -n "$p"; or return
     cd $p; or return
+    # quiet: "not inside a cross" is the normal case for 'xcd -' (it unloads)
     if not set -q GIT_CROSS_NO_AUTOENV
-        _git_cross_load
+        _git_cross_load 2>/dev/null
     end
 end
 function gx --description 'short alias for git cross (gx cd changes directory)'
@@ -2698,7 +2730,7 @@ flags: --fish (fish syntax), --unset (print the unload code), --json,
 	envCmd.Flags().Bool("remote", false, "print only the remote name")
 
 	cdCmd := &cobra.Command{
-		Use:           "cd [path]",
+		Use:           "cd [--pick] [path]",
 		Short:         "Print a crossed directory path (hidden: the xcd/gx-cd wrapper does the real cd)",
 		GroupID:       "overview",
 		Hidden:        true,
@@ -2712,6 +2744,7 @@ directory change use the wrappers (git cross comp):
   eval "$(git cross comp)"          # bash/zsh; then: xcd [path]  (or: gx cd [path])
   git cross comp fish | source      # fish`,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			pick, _ := cmd.Flags().GetBool("pick")
 			meta, err := loadMetadata()
 			if err != nil {
 				return err
@@ -2744,12 +2777,21 @@ directory change use the wrappers (git cross comp):
 					return errPatchNotFound
 				}
 			} else {
-				if detected, derr := findPatchForPathFromCWD(meta); derr == nil && detected != nil {
-					patch = detected
-				} else {
+				// --pick: always ask (the xcd wrapper uses it for a bare `xcd`,
+				// so being inside a cross does not silently mean "this one").
+				if !pick {
+					if detected, derr := findPatchForPathFromCWD(meta); derr == nil && detected != nil {
+						patch = detected
+					}
+				}
+				if patch == nil {
 					selected, serr := selectPatchInteractive(&meta)
 					if serr != nil {
-						if rerr := printPatchRows("fzf is not installed; cd manually, e.g. `cd <local_path>`. Crossed dirs (local_path <TAB> gitdir):"); rerr != nil {
+						rows := os.Stdout
+						if pick {
+							rows = os.Stderr // stdout is reserved for the chosen path
+						}
+						if rerr := printPatchRowsTo(rows, "fzf is not installed; cd manually, e.g. `cd <local_path>`. Crossed dirs (local_path <TAB> gitdir):"); rerr != nil {
 							return rerr
 						}
 						return errPatchNotFound
@@ -2791,6 +2833,8 @@ directory change use the wrappers (git cross comp):
 For a real directory change use the 'xcd' wrapper (see: git cross comp).`,
 		RunE: cdCmd.RunE,
 	}
+
+	cdCmd.Flags().Bool("pick", false, "always open the interactive cross picker (no CWD auto-detect)")
 
 	// Hidden: kept for compatibility. `comp` is the visible entry point.
 	shellInitCmd := &cobra.Command{

@@ -38,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exactly. `git cross env` also exports `CROSS_REMOTE` (and `--remote`) for
   hand-rolled prompts. Caveat: a bash `PROMPT_COMMAND` theme that rebuilds `PS1`
   wholesale hides the marker.
+- **`xcd -` escapes**, and **bare `xcd` always asks** (`git cross cd --pick`
+  skips the CWD auto-detect, so running it inside a cross no longer silently
+  re-selects that cross). `--pick` keeps stdout for the chosen path: the
+  fzf-missing fallback listing goes to stderr. Ctrl-D needs no handling — it ends
+  the shell, so the context dies with it (use `gxenv -s` if you want a nested
+  shell you can exit).
 - **`xcd` now loads the context and leaving the dir unloads it.** `xcd <path>`
   cds *and* sets the upstream env (opt out with `GIT_CROSS_NO_AUTOENV=1`), and
   the env is dropped as soon as `$PWD` leaves the crossed dir — zsh via

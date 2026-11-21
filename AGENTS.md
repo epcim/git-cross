@@ -426,9 +426,14 @@ just sub-cases of Go-only commands are guarded by `just_ref_implements` and SKIP
   Re-running `gxenv` (another cross) calls `_git_cross_prompt_off` first, so marks
   never stack. The nested `-s` shell is deliberately unmarked. Caveat: a bash
   `PROMPT_COMMAND` theme that rewrites `PS1` hides the marker (zsh/fish are covered).
-- **`xcd` auto-loads the context; leaving the dir auto-unloads**: `xcd` cds and then
-  `_git_cross_load` (one `git cross env`; `GIT_CROSS_NO_AUTOENV=1` opts out for that
-  call). `_git_cross_sync` unloads when `$PWD` is no longer under
+- **`xcd` auto-loads the context; leaving the dir auto-unloads**: bare `xcd` always
+  opens the fzf picker — the wrapper passes `git cross cd --pick`, which skips the
+  CWD auto-detect (so being inside a cross does not silently mean "this one"); in
+  `--pick` mode the fzf-missing fallback listing goes to STDERR because stdout is
+  reserved for the chosen path. `xcd -` is the escape hatch: it cds to `$OLDPWD`
+  and the normal load step then unloads (or switches to the cross there).
+  Otherwise `xcd` cds and then `_git_cross_load` (one `git cross env`, stderr
+  silenced — "not a cross" is the normal case; `GIT_CROSS_NO_AUTOENV=1` opts out). `_git_cross_sync` unloads when `$PWD` is no longer under
   `$_GIT_CROSS_ROOT` (the loaded `GIT_WORK_TREE`) — one shell pattern match, no
   subprocess — and is wired at wrapper-init time: zsh `chpwd_functions`, bash
   appended `PROMPT_COMMAND` (interactive shells only; string form), fish

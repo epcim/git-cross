@@ -288,6 +288,35 @@ assert_contains "$out" "out GIT_DIR=[] PS1=[prompt\$ ]" \
 assert_contains "$out" "optout GIT_DIR=[]" "GIT_CROSS_NO_AUTOENV=1 must opt xcd out"
 log_success "xcd loads, leaving unloads (bash PROMPT_COMMAND), opt-out honored"
 
+log_header "028: xcd - escapes (back + unload); bare xcd asks the picker"
+out=$(cd "$SANDBOX" && bash -c '
+    eval "$("$GO_BIN" comp bash)" || exit 1
+    PS1="prompt\$ "
+    xcd vendor/docs || exit 1
+    echo "in PWD=[$PWD] GIT_DIR=[$GIT_DIR]"
+    xcd - >/dev/null 2>&1
+    echo "back PWD=[$PWD] GIT_DIR=[${GIT_DIR:-}] PS1=[$PS1]"
+')
+echo "$out"
+assert_contains "$out" "in PWD=[$WT_ABS] GIT_DIR=[$GD_ABS]" "xcd <path> cds and loads"
+assert_contains "$out" "back PWD=[$SANDBOX] GIT_DIR=[] PS1=[prompt\$ ]" \
+    "xcd - must go back, unload and drop the marker"
+if ! command -v fzf >/dev/null 2>&1; then
+    out=$(cd vendor/docs && bash -c '
+        eval "$("$GO_BIN" comp bash)" || exit 1
+        xcd 2>/tmp/xcd_pick.err; echo "rc=$?"
+        echo "PWD=[$PWD]"
+    ')
+    echo "$out"
+    assert_contains "$out" "rc=1" "a bare xcd must ask the picker (no CWD auto-detect)"
+    assert_contains "$out" "PWD=[$WT_ABS]" "a failed picker must not change directory"
+    assert_contains "$(cat /tmp/xcd_pick.err)" "fzf is not installed" \
+        "the picker fallback listing goes to stderr (stdout is the chosen path)"
+else
+    echo "SKIP (fzf present): the interactive picker cannot be driven here"
+fi
+log_success "xcd - escape + bare xcd picker"
+
 if command -v zsh >/dev/null 2>&1; then
     log_header "028: zsh — xcd loads and a plain cd out unloads via the chpwd hook"
     out=$(cd "$SANDBOX" && zsh -f -c '
@@ -302,6 +331,9 @@ if command -v zsh >/dev/null 2>&1; then
         cd ..                       # chpwd hook fires: no manual call
         _theme_precmd
         echo "out GIT_DIR=[${GIT_DIR:-}] PROMPT=[$PROMPT] root=[${_GIT_CROSS_ROOT:-}]"
+        xcd vendor/docs || exit 1
+        xcd - >/dev/null 2>&1
+        echo "escape GIT_DIR=[${GIT_DIR:-}] PWD=[$PWD]"
     ' 2>/dev/null)
     echo "$out"
     assert_contains "$out" "before=[theme> ]" "no marker before anything is loaded"
@@ -310,6 +342,8 @@ if command -v zsh >/dev/null 2>&1; then
         "zsh xcd must load and mark the prompt"
     assert_contains "$out" "out GIT_DIR=[] PROMPT=[theme> ] root=[]" \
         "zsh must unload on cd out (chpwd) and drop the marker"
+    assert_contains "$out" "escape GIT_DIR=[]" "zsh xcd - must unload"
+    assert_not_contains "$out" "escape GIT_DIR=[] PWD=[$WT_ABS]" "zsh xcd - must leave the crossed dir"
     log_success "zsh chpwd auto-unload"
 fi
 
@@ -323,11 +357,16 @@ xcd vendor/docs
 echo "in=[\$GIT_DIR][\$_GIT_CROSS_ROOT]"
 cd $SANDBOX
 echo "out=[\$GIT_DIR][\$_GIT_CROSS_ROOT]"
+xcd vendor/docs
+xcd - >/dev/null 2>&1
+echo "escape=[\$PWD][\$GIT_DIR]"
 EOS
     out=$(fish "$SANDBOX/sync_test.fish" 2>&1)
     echo "$out"
     assert_contains "$out" "in=[$GD_ABS][$WT_ABS]" "fish xcd must load the context"
     assert_contains "$out" "out=[][]" "fish must unload when PWD leaves the crossed dir"
+    assert_contains "$out" "][]" "fish xcd - must unload (empty GIT_DIR)"
+    assert_not_contains "$out" "escape=[$WT_ABS]" "fish xcd - must leave the crossed dir"
     log_success "fish PWD auto-unload"
 fi
 
