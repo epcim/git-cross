@@ -34,6 +34,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tests: 026 (untracked early refusal + recovery once tracked), 027 (pre-0.6
   heal: prompt, preserve, markers restored, follow-up update clean).
 
+### Changed
+
+- **Stale-binary self-diagnosis**: when any cross is skipped, `update` prints
+  one extra line with the binary version (`git-cross <version> — raw git
+  errors where a friendly gate should be can mean an older binary; check:
+  git cross --version`). Raw git errors where a friendly refusal/gate should
+  appear are the classic symptom of an outdated binary (the 0.6.1
+  untracked-collision gate exists only in 0.6.1). Clean runs stay silent.
+- 026 now also covers the untracked-collision gate for WHOLE-REPO crosses
+  (`set remote:main:. dir`) — the earlier section covered subdir crosses only.
+
 ## [0.6.0]
 
 ### Changed — BREAKING: subdirectory crosses are subtree-rooted (ADR-004, D3(c))

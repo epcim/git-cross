@@ -160,6 +160,44 @@ exercise() {
     assert_contains "$out" "Updated lib" "$who: --no-resolve should land"
     assert_grep "lib/c.yaml" "NAME: DDD"
     [ -z "$(git ls-files -u)" ] || fail "$who: --no-resolve must not leave unmerged paths"
+
+    # --- whole-repo cross: untracked collisions refuse early (0.6.1) --------
+    # The user-reported failure shape: a WHOLE-REPO cross (remote_path "."),
+    # its content untracked in the repo (git rm --cached), an upstream change
+    # touching the same file. v0.6.0 let this surface as a RAW
+    # "untracked working tree files would be overwritten by merge"
+    # cherry-pick error; the gate must refuse it early here too — the
+    # delta-path handling without a subdir (no prefix to strip) is the variant.
+    log_header "026: $who — whole-repo cross: untracked delta collisions refuse early"
+    xc set up:main:. lib-all >/dev/null 2>&1 || fail "$who: whole-repo set"
+    git add -A && git commit -qm "vendor: lib-all initial" >/dev/null
+    # The upstream change targets the upstream ROOT (README.md) so ONLY the
+    # whole-repo cross sees the delta — the subdir cross `lib` stays quiet.
+    git rm -q --cached lib-all/README.md >/dev/null 2>&1
+    git commit -qm "vendor: untrack whole-repo README" >/dev/null
+    echo "upstream v6" >> "$up/README.md"
+    git -C "$up" commit -qam v6
+    out=$(xc update 2>&1) || true
+    echo "$out"
+    assert_contains "$out" "untracked files would be overwritten by the update" \
+        "$who: whole-repo refusal must name the problem"
+    assert_contains "$out" "lib-all/README.md" \
+        "$who: the colliding whole-repo file must be listed"
+    assert_contains "$out" "commit or stage them first" \
+        "$who: the whole-repo refusal must hint at the remedy"
+    assert_contains "$out" "1 cross(es) skipped" \
+        "$who: whole-repo refusal counts as skipped, not a raw cherry-pick error"
+    assert_contains "$out" "git-cross 0.6.1" \
+        "$who: a skipped cross prints the binary version once (stale-binary self-diagnosis)"
+    [ -z "$(git ls-files -u)" ] || fail "$who: whole-repo refusal must not leave unmerged paths"
+    grep -q "upstream v6" lib-all/README.md && fail "$who: the untracked whole-repo file is untouched"
+    # recovery: re-track the file, then the whole-repo cross lands cleanly
+    git add lib-all/README.md && git commit -qm "vendor: re-track whole-repo README" >/dev/null
+    out=$(xc update 2>&1) || true
+    echo "$out"
+    assert_contains "$out" "Updated lib-all" "$who: re-tracked whole-repo cross must update"
+    assert_grep "lib-all/README.md" "upstream v6" \
+        "$who: the recovered whole-repo cross carries the upstream change"
 }
 
 # --- Go ---------------------------------------------------------------------

@@ -40,6 +40,12 @@ const (
 	GitdirRoot       = ".cross/worktrees"
 )
 
+// crossVersion is the single source of truth for the binary version: shown by
+// `git cross --version` and printed once in the update summary whenever a
+// cross was skipped, so stale-binary situations (raw git errors where a
+// friendly gate should be) are self-diagnosing.
+const crossVersion = "0.6.1"
+
 // crossEnvLoaded reports whether this shell carries git-cross's own upstream
 // context, i.e. `eval "$(git cross env)"` / the gxenv wrapper loaded GIT_DIR
 // pointing into the .cross/worktrees/ mirror area. Such a GIT_DIR must be
@@ -2413,7 +2419,7 @@ shell and 'gxenv -u' unloads it.`,
 			case "-h", "--help":
 				return cmd.Help()
 			case "--version":
-				fmt.Println("git-cross version 0.6.1")
+				fmt.Printf("git-cross version %s\n", crossVersion)
 				return nil
 			}
 			return gitPassthrough(args)
@@ -3010,6 +3016,7 @@ shell and 'gxenv -u' unloads it.`,
 			}
 			if skipped > 0 {
 				logInfo(fmt.Sprintf("%d cross(es) skipped; %d updated.", skipped, updated))
+				logInfo(fmt.Sprintf("git-cross %s — raw git errors where a friendly gate should be can mean an older binary; check: git cross --version", crossVersion))
 			}
 			if declined > 0 {
 				logWarn(fmt.Sprintf("%d cross(es) not adopted: not confirmed (use --force to adopt without asking).", declined))
