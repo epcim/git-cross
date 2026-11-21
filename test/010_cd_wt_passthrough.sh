@@ -12,6 +12,11 @@ source "$(dirname "$0")/common.sh"
 #   git cross <native-git-cmd>   same passthrough. Outside a patch dir it FAILS
 #                  early (no GIT_DIR/GIT_WORK_TREE to configure) — it never falls
 #                  back to plain git on the primary repo (ADR-002).
+#
+# v0.6: subdir crosses are Go-only — the Just reference must REFUSE them
+# ("NOT IMPLEMENTED ... subtree crosses"). The just variant therefore asserts
+# that refusal, then exercises the SAME flow with a whole-repo cross
+# (remote_path '.'); the Go variant keeps the subdir (re-rooted) fixture.
 
 setup_sandbox
 cd "$SANDBOX"
@@ -36,8 +41,32 @@ xc() {
 }
 
 exercise() {
+    # v0.6: the Just reference refuses subtree crosses; the Go CLI owns them.
+    # Pick the fixture per implementation and pin the refusal contract for just.
+    local set_spec tracked_file
+    if [ "$IMPL" = "just" ] && ! just_ref_subdir; then
+        set +e
+        local ref_out
+        ref_out=$(xc set demo:src vendor/shell-src 2>&1)
+        local ref_rc=$?
+        set -e
+        [ "$ref_rc" -ne 0 ] || fail "$IMPL: set with a subdir remote_path must fail (subtree crosses are Go-only)"
+        assert_contains "$ref_out" "subtree crosses" \
+            "$IMPL: set refusal must explain that subtree crosses are Go-only"
+        assert_contains "$ref_out" "git cross set" \
+            "$IMPL: the refusal must point at the Go CLI"
+        log_warn "SKIP (just): subtree crosses are Go-only — exercising a whole-repo cross instead"
+        # whole-repo cross: the upstream root is mirrored as-is
+        set_spec="demo:."
+        tracked_file="src/data.txt"
+    else
+        # subdir cross: v0.6 D3(c) re-roots the subtree at the patch dir
+        set_spec="demo:src"
+        tracked_file="data.txt"
+    fi
+
     xc use demo "$upstream_url" >/dev/null
-    xc set demo:src vendor/shell-src >/dev/null
+    xc set "$set_spec" vendor/shell-src >/dev/null
 
     # ADR-001: metadata records every location explicitly.
     local gd wt
@@ -79,7 +108,10 @@ exercise() {
         [ "$output" = "$expected_local" ] \
             || fail "$IMPL: passthrough --show-toplevel returned '$output', expected the patch dir"
 
-        # ... and upstream data is visible (D3: files live under src/).
+        # ... and upstream data is visible. v0.6 D3(c): a subdir cross's mirror
+        # holds a SYNTHESIZED branch that RE-ROOTS the subtree (tracked file:
+        # data.txt, no src/ prefix); a whole-repo cross mirrors the upstream root
+        # as-is (tracked file: src/data.txt). tracked_file is set above per impl.
         # NB: no `| head -1` here — under `set -o pipefail` the early-closed pipe
         # gives the child SIGPIPE (141) and aborts the script.
         output=$(xc remote -v 2>/dev/null)
@@ -87,7 +119,7 @@ exercise() {
         output=$(xc log --oneline 2>/dev/null)
         assert_contains "$output" "Add shell data" "$IMPL: wt log must show upstream history"
         output=$(xc ls-files 2>/dev/null)
-        assert_contains "$output" "src/data.txt" "$IMPL: wt ls-files must list the nested upstream file"
+        assert_contains "$output" "$tracked_file" "$IMPL: wt ls-files must list the upstream file"
 
         # bare native passthrough reaches the same context
         output=$(xc log --oneline 2>/dev/null)

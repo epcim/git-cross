@@ -5,7 +5,87 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0]
+
+### Changed — BREAKING: subdirectory crosses are subtree-rooted (ADR-004, D3(c))
+
+- **The crossed directory IS the upstream subdirectory.**
+  `git cross set mxc:main:demo/cluster-flux mxc-clusters/cluster-test` now checks
+  out the CONTENT of `demo/cluster-flux` at `mxc-clusters/cluster-test/` —
+  no `demo/` (or any other upstream path prefix) inside the crossed dir.
+  (v0.5 mirrored the upstream root with `remote_path` as a sparse filter —
+  the reported "demo/ root dir" behavior.) Whole-repo crosses (`remote:.`)
+  are **byte-for-byte unchanged**.
+- **How it works (both implementations, same messages):** each subdir gitdir
+  carries a **synthesized subtree branch** (`refs/heads/<b>`, original
+  authorship+dates — deterministic, outside-only commits skipped) plus two
+  markers (`refs/cross/synthesized/<b>`, `refs/cross/upstream/<b>`), and the
+  sparse config is gone — HEAD's tree already is the filter. `update` lands
+  upstream through the same cherry-pick delta, now fed with subtree hashes;
+  the mirror index is refreshed on every advance (also fixes stale-index noise
+  in cross-ctx `git status` after updates).
+- **`git cross pull -r` works inside a subdir cross** (intercepted:
+  fetch → incremental synthesis → same-shape rebase; real conflicts, rerere,
+  `rebase --continue`). Plain `git pull -r` / `git push` in the cross context
+  are **refused by gitdir hooks** with actionable hints (`use: git cross
+  pull -r` / `use: git cross push`) — strictly safer than v0.5, where a plain
+  push silently pushed the mirror branch. The full plain-git audit:
+  ADR-004 (read/blame/commit/rebase -i etc. all work; only the two history-
+  mixing ops are guarded; raw `reset --hard origin/<b>`-style re-points are
+  detected by a lineage check and recovered via re-adoption).
+- **`git cross push` in a subdir cross = the graft**: upstream's tree with
+  ONLY your subdirectory replaced, committed on top of the fetched upstream
+  tip and pushed normally — never touches paths outside the subtree, refuses
+  when upstream also changed it ("pull -r first, then push").
+- **Migration (one-time per subdir cross):** re-create them — `git cross del
+  <path> && git cross update` (or `git cross wipe <remote>` first). The
+  re-adoption prompt preserves local content; your repo records the layout
+  move as delete+add, committed once.
+- **rerere-replay wind-backs** must now roll back three refs:
+  `refs/heads/<b>` + both `refs/cross/*` markers (the up-to-date check reads
+  the upstream marker).
+- File-level `remote_path` (`set remote:main:path/to/file <local>`) is
+  explicitly refused for now (0.6.1 backlog; the primitive is lab-validated).
+- **The Just/Fish reference stays simple**: its `set` refuses subdir crosses
+  with a Go-only hint (whole-repo crosses keep working in the reference);
+  `ls`/`del`/the passthrough still operate on Go-created crosses, and the
+  gitdir hooks guard plain git through the reference's passthrough too.
+- **Zero-limitation alternative while the graft flow is verified in
+  practice**: whole-repo cross at the original path layout + a relative
+  symlink onto the upstream subpath (`set mxc:main:. vendor/mxc-src` +
+  `ln -s ../vendor/mxc-src/demo/cluster-flux mxc-clusters/cluster-test`) —
+  plain `pull -r`/`push` work through the link with no hooks (README:
+  "Full git functionality, no graft").
+
 ## [Unreleased]
+
+### Added
+
+- **Crossfile validation: one declaration per key.** `git cross update` now
+  rejects a Crossfile that declares the same remote **name** twice (`cross use
+  mxc <urlA>` + `cross use mxc <urlB>` — the two URLs silently fought over
+  which upstream a fetch means) and duplicate `set` lines for the same
+  `local_path`. The error names both lines (number, URL/spec) and the remedy.
+  Comments and blank lines stay legal.
+- **`use` re-points a remote instead of duplicating it.** `git cross use mxc
+  <new-url>` on an already-registered remote rewrites the existing Crossfile
+  line (exactly one `use` line per remote name), updates the metadata remote +
+  every cross's `remote_url`, and re-points `origin` in each gitdir of that
+  remote — without this, `update` kept fetching the retired URL. Announced as
+  `Re-pointing remote <name>: <old> -> <new> (metadata, Crossfile and gitdir
+  origins follow)`.
+
+### Fixed
+
+- **A lost Crossfile no longer silences `update`.** When the Crossfile is
+  missing or emptied while crosses are still registered in
+  `.cross/metadata.json`, `update` fails loudly with recovery guidance instead
+  of quietly printing "No crosses to update." — no git-cross command deletes
+  records (`del` removes only its own `set` line), but a `git
+  checkout`/`restore`/`clean` of an uncommitted Crossfile made the loss
+  invisible while every later update silently did nothing. The whole records
+  lifecycle (del -> re-declare -> update, idempotent re-runs, duplicate
+  rejection, re-pointing) is pinned by `test/029_crossfile_records.sh`.
 
 ### Added
 
@@ -30,8 +110,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `gxenv` loads the context into the **current** shell (`gxenv -u` unloads,
   `gxenv -s` gives the opt-in isolated nested shell). Nothing is written to disk
   — no `.envrc`, no chpwd/direnv hook.
-- **The prompt is marked with a bare `[cross] ` while the context is loaded**, so
-  a modified terminal is obvious at a glance — no rc edit needed: bash appends to
+- **The prompt is marked `[cross:<remote>] ` while the context is loaded** (e.g.
+  `[cross:infra] `), so a modified terminal is obvious at a glance — no rc edit
+  needed. The style is a template in `GIT_CROSS_MARKER`: `%r` expands to the
+  remote (falling back to the local path), `%l` to the local path, default
+  `[cross:%r]`; a value without placeholders is used verbatim
+  (`GIT_CROSS_MARKER='[cross]'` restores the plain marker). Mechanically: bash appends to
   `PS1`; zsh appends from a `precmd` hook (registered on the built-in
   `precmd_functions`, so powerlevel10k/starship/oh-my-zsh cannot wipe it); fish
   wraps `fish_prompt`. `gxenv -u` removes the marker and restores the prompt

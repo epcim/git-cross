@@ -105,6 +105,17 @@
 - [ ] **Single file patch capability** - Review and propose implementation (tool and test) to be able to patch even single file. If not easily possible without major refactoring, evaluate new command "patch-file".
   - **Effort:** 4-6 hours (includes research)
 
+- [ ] **Go git-proxy for subdir crosses (recorded fallback — ADR-004)**: intercept every git command in a subdir-cross context and rewrite paths (strip `remote_path/` in, prepend out) instead of synthesis/graft/hooks. Only if today's approach shows limitations: exotic subcommands needing transparent re-rooted paths, guard UX too restrictive, or synthesis cost on huge histories. Cost: proxying ALL git invocations (PATH shim — bypassable by absolute paths), forfeiting `gxenv` env contexts (editors/IDEs/lazygit), translating git's path semantics per subcommand. Not planned unless triggered.
+- [ ] **Shared base clone per remote (one object store, many crosses)** - v0.6-scale design decision. Motivation: N `set`s from one remote today cost N full clones and N identical fetches per `update`. Safe sharing requires the per-cross refs to live where the objects live (alternates are not refcounted: `gc` in the base would prune objects a dependent still needs), i.e. namespaced refs (`refs/cross/<local_path>/<branch>`) inside a per-remote bare base at `.cross/worktrees/<remote>/` + `read-tree -mu HEAD:<rp>` materialization unchanged + `del`/`wipe` refcounting before removing the base + ADR-003 pass-2 fetch dedup (fetch origin once per remote, crosses fetch the base locally). Linked `git worktree add` into the crossed dirs stays disqualified (the no-`.git` rule is what makes the primary track plain blobs — see README "Design Notes"). UX win: `git worktree list` in a cross ctx would list the crosses only if they were true linked worktrees under `.cross/` (cosmetic; not the point).
+  - **Breakage risk:** touches L1–L3 layout decisions, ADR-003, `del`/`wipe`, `ls` DIFF, tests 002/012/014/015/019/023/025/026; per-cross gitdirs remain the fallback.
+  - **Effort:** 2–3 days design + implementation + tests. **Needs user go/no-go.**
+
+- [ ] **Dedicated shallow/partial-clone test** - `cross.depth` / `cross.filter` are only exercised opportunistically (025 sets `cross.depth`); add a test asserting clone size actually shrinks (blobless + depth 1) and that `set`/`update` still materialize and land.
+  - **Effort:** 1–2 hours.
+
+- [ ] **Per-cross tag/SHA pinning** - `set <remote>:<branch>:<path>` pins a branch only; `update` always advances to `origin/<branch>`. Proposal: `set <remote>@<sha-or-tag>:<path>` records the pin; `update` lands exactly that commit (`ls` SHA column already shows it); branch pinning stays the default.
+  - **Effort:** 3–4 hours.
+
 - [ ] **Root overlay patching with `.crossignore`** - Support patching upstream root or upstream subdirectory into local repo root while preserving local-only files and preventing secret leakage upstream.
   - **Problem:** Current patch/sync/push flows are mirror-oriented and unsafe for repo-root usage.
   - **Requirements:** Safe root-target patching, `.crossignore` protection, non-destructive `del`/`purge`, selective and batch-safe operations.

@@ -17,10 +17,12 @@
 #     still found, and GIT_PREFIX from the `git cross` alias is re-based onto
 #     the crossed dir (CROSS_ACTIVE) instead of the repo root.
 #   gxenv (from `git cross comp`) loads the context into the CURRENT shell by
-#     default and marks the prompt with a bare `[cross] ` (bash: PS1; zsh: a
+#     default and marks the prompt with `[cross:<remote>] ` (bash: PS1; zsh: a
 #     precmd hook so themes such as powerlevel10k/starship cannot wipe it; fish:
 #     a fish_prompt wrapper). `gxenv -u` unloads AND removes the marker (the
-#     prompt is restored verbatim). `gxenv -s` runs an isolated NESTED shell
+#     prompt is restored verbatim). The marker text is a template over
+#     GIT_CROSS_MARKER (%r = remote, %l = local_path; default '[cross:%r]').
+#     `gxenv -s` runs an isolated NESTED shell
 #     instead: nothing leaks into the caller and the prompt is left alone.
 #     `gxenv -i` is accepted as an alias of the default.
 #   `xcd` cds AND loads the upstream context; leaving the crossed dir unloads it
@@ -59,7 +61,7 @@ setup_cross() {
 
     "$GO_BIN" use up "$up" >/dev/null 2>&1 || fail "use"
     "$GO_BIN" set up:docs vendor/docs >/dev/null 2>&1 || fail "set"
-    assert_file_exists "vendor/docs/docs/guide.md"
+    assert_file_exists "vendor/docs/guide.md"
     git add -A && git commit -qm "vendor: initial" >/dev/null
 }
 
@@ -77,7 +79,7 @@ assert_contains "$out" "export CROSS_REMOTE='up'" "env must export the remote na
 log_success "env prints GIT_DIR + GIT_WORK_TREE + CROSS_ACTIVE"
 
 log_header "028: env works from any depth inside the cross and from a path arg"
-out=$(cd vendor/docs/docs && "$GO_BIN" env)
+out=$(cd vendor/docs && "$GO_BIN" env)
 assert_contains "$out" "export GIT_DIR='$GD_ABS'" "env must resolve from a subdirectory"
 out=$("$GO_BIN" env vendor/docs)
 assert_contains "$out" "export GIT_WORK_TREE='$WT_ABS'" "env must accept a local_path argument"
@@ -128,21 +130,21 @@ printf '%s\n' "$out" | fish -n 2>/dev/null || true
 log_success "fish syntax + unload lines"
 
 log_header "028: evaluated context makes plain git speak UPSTREAM"
-echo "local edit" >> vendor/docs/docs/guide.md
+echo "local edit" >> vendor/docs/guide.md
 out=$(cd vendor/docs && eval "$("$GO_BIN" env)" && git rev-parse --show-toplevel)
 [ "$out" = "$WT_ABS" ] || fail "git toplevel must be the crossed dir, got: $out"
 out=$(cd vendor/docs && eval "$("$GO_BIN" env)" && git log --oneline -1)
 assert_contains "$out" "docs v2" "plain git log must show the upstream commit"
 out=$(cd vendor/docs && eval "$("$GO_BIN" env)" && git diff --name-only)
 echo "$out"
-[ "$out" = "docs/guide.md" ] || fail "plain git diff must be upstream-relative (docs/guide.md), got: $out"
-git checkout -- vendor/docs/docs/guide.md
+[ "$out" = "guide.md" ] || fail "plain git diff must be upstream-relative (guide.md), got: $out"
+git checkout -- vendor/docs/guide.md
 log_success "plain git inside the loaded context sees upstream"
 
 log_header "028: with the env loaded, git-cross itself keeps working"
 out=$(cd vendor/docs && eval "$("$GO_BIN" env)" && "$GO_BIN" ls --raw --no-header | awk -F'\t' '$3=="vendor/docs"')
 assert_contains "$out" "vendor/docs" "git cross ls must still find the primary repo registry"
-out=$(cd vendor/docs/docs && eval "$("$GO_BIN" env)" && "$GO_BIN" env --local-path)
+out=$(cd vendor/docs && eval "$("$GO_BIN" env)" && "$GO_BIN" env --local-path)
 [ "$out" = "vendor/docs" ] || fail "git cross env must be idempotent with the env loaded, got: $out"
 # The `git cross` git-alias runs from the toplevel (= the crossed dir when the
 # env is loaded) and hands the caller's location over in GIT_PREFIX; it must be
@@ -174,8 +176,9 @@ echo "$out"
 assert_contains "$out" "loaded GIT_DIR=[$GD_ABS] ACTIVE=[vendor/docs] git=" \
     "gxenv must load the context into the current shell"
 assert_contains "$out" "docs v2" "gxenv must make plain git see upstream"
-assert_contains "$out" "marked PS1=[prompt\$ [cross] ]" "gxenv must mark the prompt with a bare [cross]"
-assert_not_contains "$out" "[cross:" "the marker must not carry a remote/colon"
+assert_contains "$out" "marked PS1=[prompt\$ [cross:up] ]" \
+    "gxenv must mark the prompt with the default [cross:<remote>]"
+assert_not_contains "$out" "[cross:]" "the marker must fall back to the local path, never be empty"
 assert_contains "$out" "unloaded GIT_DIR=[] ACTIVE=[] PS1=[prompt\$ ]" \
     "gxenv -u must unload the context and restore the prompt verbatim"
 log_success "gxenv loads in-place, marks the prompt, -u restores it"
@@ -190,7 +193,7 @@ out=$(cd vendor/docs && bash -c '
     echo "restored=[$PS1]"
 ')
 echo "$out"
-assert_contains "$out" "PS1=[prompt\$ [cross] ]" "repeated loads must not stack the marker / -i must alias the default"
+assert_contains "$out" "PS1=[prompt\$ [cross:up] ]" "repeated loads must not stack the marker / -i must alias the default"
 assert_contains "$out" "restored=[prompt\$ ]" "one -u must remove the marker completely"
 log_success "-i alias + idempotent marker"
 
@@ -224,7 +227,7 @@ if command -v zsh >/dev/null 2>&1; then
         echo "hooks=[${precmd_functions[*]}]"
     ' 2>/dev/null)
     echo "$out"
-    assert_contains "$out" "marked=[theme> [cross] ]" \
+    assert_contains "$out" "marked=[theme> [cross:up] ]" \
         "zsh must append the marker AFTER the theme rebuilds the prompt"
     assert_contains "$out" "unloaded=[theme> ] GIT_DIR=[]" "zsh gxenv -u must unload and clear the marker"
     assert_not_contains "$out" "hooks=[theme> " "the zsh precmd hook must be removed on unload"
@@ -245,15 +248,20 @@ echo "marked_prompt:"(fish_prompt)
 gxenv -u
 echo "out=[\$GIT_DIR]"
 echo "restored_prompt:"(fish_prompt)
+set -gx GIT_CROSS_MARKER 'f(%r)'
+gxenv
+echo "custom_prompt:"(fish_prompt)
+gxenv -u
 EOS
     out=$(cd vendor/docs && fish "$SANDBOX/gxenv_test.fish" 2>&1)
     echo "$out"
     assert_contains "$out" "in=[$GD_ABS][vendor/docs]" "fish gxenv must export the context"
     assert_contains "$out" "docs v2" "fish gxenv must let plain git see upstream"
     assert_contains "$out" "out=[]" "fish gxenv -u must unload the context"
-    assert_contains "$out" "marked_prompt:" "[cross] " "fish gxenv must mark fish_prompt"
+    assert_contains "$out" "marked_prompt:" "[cross:up] " "fish gxenv must mark fish_prompt"
     restored=$(printf '%s\n' "$out" | grep -A1 "restored_prompt:" | tail -1)
-    case "$restored" in *"[cross]"*) fail "fish gxenv -u must restore fish_prompt" ;; esac
+    case "$restored" in *"[cross:"*) fail "fish gxenv -u must restore fish_prompt" ;; esac
+    assert_contains "$out" "custom_prompt:" "f(up) " "fish must honour GIT_CROSS_MARKER"
     log_success "fish gxenv / -u with prompt marker"
     cat > "$SANDBOX/gxenv_nested.fish" <<EOS
 source $SANDBOX/init.fish
@@ -281,12 +289,32 @@ out=$(cd "$SANDBOX" && bash -c '
     echo "optout GIT_DIR=[${GIT_DIR:-}]"
 ')
 echo "$out"
-assert_contains "$out" "in GIT_DIR=[$GD_ABS] PS1=[prompt\$ [cross] ]" \
+assert_contains "$out" "in GIT_DIR=[$GD_ABS] PS1=[prompt\$ [cross:up] ]" \
     "xcd must cd AND load the upstream context"
 assert_contains "$out" "out GIT_DIR=[] PS1=[prompt\$ ]" \
     "leaving the crossed dir must unload the context and the marker"
 assert_contains "$out" "optout GIT_DIR=[]" "GIT_CROSS_NO_AUTOENV=1 must opt xcd out"
 log_success "xcd loads, leaving unloads (bash PROMPT_COMMAND), opt-out honored"
+
+log_header "028: GIT_CROSS_MARKER configures the marker (%r / %l)"
+out=$(cd "$SANDBOX" && bash -c '
+    eval "$("$GO_BIN" comp bash)" || exit 1
+    PS1="prompt\$ "
+    GIT_CROSS_MARKER="x" xcd vendor/docs                      # literal
+    echo "literal=[$PS1]"
+    GIT_CROSS_MARKER="(%r@%l)" xcd vendor/docs                # both placeholders
+    echo "template=[$PS1]"
+    GIT_CROSS_MARKER="c(%l)" xcd vendor/docs                  # local path only
+    echo "local=[$PS1]"
+    gxenv -u
+    echo "off=[$PS1]"
+')
+echo "$out"
+assert_contains "$out" "literal=[prompt\$ x ]" "a literal GIT_CROSS_MARKER must be used verbatim"
+assert_contains "$out" "template=[prompt\$ (up@vendor/docs) ]" "%%r and %%l must expand"
+assert_contains "$out" "local=[prompt\$ c(vendor/docs) ]" "%%l must expand to the local_path"
+assert_contains "$out" "off=[prompt\$ ]" "the configured marker must still be removed"
+log_success "GIT_CROSS_MARKER template"
 
 log_header "028: xcd - escapes (back + unload); bare xcd asks the picker"
 out=$(cd "$SANDBOX" && bash -c '
@@ -338,7 +366,7 @@ if command -v zsh >/dev/null 2>&1; then
     echo "$out"
     assert_contains "$out" "before=[theme> ]" "no marker before anything is loaded"
     assert_not_contains "$out" "hooks_before=.*_git_cross" "the precmd hook must only exist while loaded"
-    assert_contains "$out" "in GIT_DIR=[$GD_ABS] PROMPT=[theme> [cross] ]" \
+    assert_contains "$out" "in GIT_DIR=[$GD_ABS] PROMPT=[theme> [cross:up] ]" \
         "zsh xcd must load and mark the prompt"
     assert_contains "$out" "out GIT_DIR=[] PROMPT=[theme> ] root=[]" \
         "zsh must unload on cd out (chpwd) and drop the marker"

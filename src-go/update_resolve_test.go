@@ -139,7 +139,8 @@ func (f *fixture) writeUpstream(name, content string) {
 
 func (f *fixture) writeLocal(name, content string) {
 	f.t.Helper()
-	p := filepath.Join(f.root, "lib", "src", "lib", name)
+	// D3(c): the cross at "lib" holds the CONTENT of src/lib at its root.
+	p := filepath.Join(f.root, "lib", name)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		f.t.Fatal(err)
 	}
@@ -150,7 +151,7 @@ func (f *fixture) writeLocal(name, content string) {
 
 func (f *fixture) readLocal(name string) string {
 	f.t.Helper()
-	b, err := os.ReadFile(filepath.Join(f.root, "lib", "src", "lib", name))
+	b, err := os.ReadFile(filepath.Join(f.root, "lib", name))
 	if err != nil {
 		f.t.Fatalf("read local %s: %v", name, err)
 	}
@@ -192,6 +193,17 @@ func (f *fixture) mirrorOrigin() string {
 	return strings.TrimSpace(git(f.t, f.root, "--git-dir", gd, "rev-parse", "refs/remotes/origin/main"))
 }
 
+// mirrorMatchesOrigin pins the D3(c) mirror state: the (synthesized) branch's
+// TREE must equal the upstream subtree at origin/main:src/lib. The raw hashes
+// are disjoint by construction (synth vs real) and can never be compared.
+func (f *fixture) mirrorMatchesOrigin() bool {
+	f.t.Helper()
+	gd := f.mirror()
+	head := strings.TrimSpace(git(f.t, f.root, "--git-dir", gd, "rev-parse", "refs/heads/main^{tree}"))
+	sub := strings.TrimSpace(git(f.t, f.root, "--git-dir", gd, "rev-parse", "refs/remotes/origin/main:src/lib"))
+	return head != "" && head == sub
+}
+
 func (f *fixture) mirror() string {
 	f.t.Helper()
 	return filepath.Join(f.root, ".cross", "worktrees", "up", "lib")
@@ -225,7 +237,7 @@ func TestUpdateLandsAndReapplies(t *testing.T) {
 	if p := f.unmerged(); len(p) != 0 {
 		t.Errorf("clean landing must not leave unmerged paths: %v", p)
 	}
-	if f.mirrorHead() != f.mirrorOrigin() {
+	if !f.mirrorMatchesOrigin() {
 		t.Error("mirror branch should follow the landed revision")
 	}
 	// A second update is a no-op.
@@ -313,7 +325,7 @@ func TestUpdateKeepsConflictAndResolveAbort(t *testing.T) {
 	if code == 0 {
 		t.Errorf("resolve with leftovers should exit non-zero, got:\n%s", out)
 	}
-	if !strings.Contains(out, "lib/src/lib/c.yaml") {
+	if !strings.Contains(out, "lib/c.yaml") {
 		t.Errorf("resolve should list the unmerged path, got:\n%s", out)
 	}
 
@@ -327,7 +339,7 @@ func TestUpdateKeepsConflictAndResolveAbort(t *testing.T) {
 	if got := f.readLocal("c.yaml"); got != "NAME: BBB\n" {
 		t.Errorf("--abort must restore the user's version, got %q", got)
 	}
-	if f.mirrorHead() == f.mirrorOrigin() {
+	if f.mirrorMatchesOrigin() {
 		t.Error("--abort must not advance the mirror (upstream stays fetched)")
 	}
 }
@@ -338,7 +350,9 @@ func TestUpdateKeepsConflictAndResolveAbort(t *testing.T) {
 func TestResolveContinueAndRerereReplay(t *testing.T) {
 	f := newFixture(t)
 	f.commitAll("vendor: initial")
-	baseMirror := f.mirrorHead() // mirror at upstream v1 (base AAA)
+	baseMirror := f.mirrorHead()           // synth tip at upstream v1 (base AAA)
+	baseSynth := f.marker("synthesized")   // refs/cross/synthesized/main at v1
+	baseUp := f.marker("upstream")          // refs/cross/upstream/main at v1-real
 
 	f.writeLocal("c.yaml", "NAME: BBB\n")
 	f.commitAll("vendor: local BBB")
@@ -360,7 +374,7 @@ func TestResolveContinueAndRerereReplay(t *testing.T) {
 	if !strings.Contains(out, "is clean") {
 		t.Errorf("--continue should confirm cleanliness, got:\n%s", out)
 	}
-	if f.mirrorHead() != f.mirrorOrigin() {
+	if !f.mirrorMatchesOrigin() {
 		t.Error("--continue must let the mirror follow")
 	}
 	f.commitAll("vendor: resolved")
@@ -371,8 +385,13 @@ func TestResolveContinueAndRerereReplay(t *testing.T) {
 	}
 
 	// Recreate the identical preimage: ours=BBB, base=AAA, theirs=CCC.
+	// D3(c): the rewind must roll back ALL THREE gitdir refs (branch + both
+	// markers) — the up-to-date check reads the upstream marker, and a synth-
+	// chain rewind is explicitly legal (unlike re-pointing at real history).
 	git(t, f.root, "reset", "--hard", oursBefore)
 	git(t, f.root, "--git-dir", f.mirror(), "update-ref", "refs/heads/main", baseMirror)
+	git(t, f.root, "--git-dir", f.mirror(), "update-ref", "refs/cross/synthesized/main", baseSynth)
+	git(t, f.root, "--git-dir", f.mirror(), "update-ref", "refs/cross/upstream/main", baseUp)
 
 	out, _ = run(t, f.root, binPath, "update")
 	if strings.Contains(out, "<<<<<<<") {
@@ -406,7 +425,14 @@ func TestUpdateNoResolveLandsUpstream(t *testing.T) {
 	if u := f.unmerged(); len(u) != 0 {
 		t.Errorf("--no-resolve must not leave unmerged paths: %v", u)
 	}
-	if f.mirrorHead() != f.mirrorOrigin() {
+	if !f.mirrorMatchesOrigin() {
 		t.Error("--no-resolve should advance the mirror")
 	}
+}
+
+// marker reads a refs/cross/<kind>/main value from the mirror gitdir.
+func (f *fixture) marker(kind string) string {
+	f.t.Helper()
+	gd := f.mirror()
+	return strings.TrimSpace(git(f.t, f.root, "--git-dir", gd, "rev-parse", "refs/cross/"+kind+"/main"))
 }

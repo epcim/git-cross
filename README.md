@@ -293,9 +293,10 @@ own objects, own refs, own `rerere` — which is exactly what enables:
 
 Disk duplication is the whole trade-off, and it is opt-in mitigable:
 `git config cross.depth 1` / `cross.filter blob:none` shrink each gitdir.
-The **sparse checkout** config inside each gitdir is the filter that decides which
-upstream subtree gets materialized into the work tree (`set demo:docs …`
-checks out only `docs/`, whole-repo crosses get everything).
+Since v0.6 a subdirectory cross's gitdir holds a **synthesized subtree
+branch** (its tree IS the upstream subdirectory, re-rooted) plus two
+`refs/cross/*` markers and pre-rebase/pre-push guard hooks; the sparse
+checkout config of v0.5 is gone (whole-repo crosses never had it).
 
 ## Conflict Resolution Memory (`rerere`)
 
@@ -475,6 +476,20 @@ Register an upstream remote alias in `.cross/metadata.json` (and `Crossfile`).
 The URL is verified as reachable. **Your repository's git remotes are not
 touched** — upstream remotes live in each cross's gitdir.
 
+Re-running `use` with a **new URL re-points** the remote: the existing
+Crossfile line is rewritten (exactly one `use` line per remote name), the
+metadata remote and every cross's `remote_url` are updated, and `origin` in
+each of that remote's gitdirs is re-pointed — so `update` stops fetching the
+retired URL. A Crossfile that declares the same remote name twice (e.g. an old
+and a new URL) is a **validation error** in `git cross update`: a remote name
+maps to exactly one URL.
+
+Prefer a full re-creation over re-pointing? `git cross wipe <remote>` (gitdirs
++ metadata go, **crossed dirs stay**), then `git cross update` — every cross is
+re-adopted from the new URL and the re-adoption prompt offers to preserve local
+content (`p`; uncommitted changes are stashed first, `--force` skips the
+question).
+
 ### `set`
 
 ```bash
@@ -485,10 +500,14 @@ Clone the upstream `.git` content into a standalone bare gitdir at
 `.cross/worktrees/<remote>/<local_dest>/`, sparse-filter `<path>`, and materialize
 the work tree **in place** at `local_dest` (no copy step).
 
-`<path>` mirrors the upstream root: setting `app:src` into `vendor/app` puts the
-files at `vendor/app/src/...` (the crossed directory is a checkout of the upstream
-repo, restricted to that path). Whole-repo crosses (`app:.` or `app:/`) get
-Everything.
+`<path>` is **the subdirectory**: setting `app:src` into `vendor/app` checks
+out the CONTENT of `app`'s `src` at `vendor/app/` directly — no `src/`
+prefix inside the crossed dir (v0.6, ADR-004). The gitdir carries a
+synthesized subtree branch (original upstream authorship, deterministic —
+`git cross log` inside the cross shows only the commits that touched your
+subdirectory), so the cross context (`status`, `diff`, `pull -r`, `push`)
+stays sane against the re-rooted layout. Whole-repo crosses (`app:.` or
+`app:/`) keep the v0.5 behavior: the upstream root, everything included.
 
 Every cross owns its own gitdir, so the same upstream source set into
 several local directories is fully independent:
@@ -510,6 +529,97 @@ Opt in to a smaller clone:
 git config cross.depth 1          # shallow
 git config cross.filter blob:none # partial (blobless)
 ```
+
+### Several subdirectories from one upstream
+
+The standard shape: one `use`, one `set` per subdirectory — declared once in
+the `Crossfile` and driven by `git cross update`:
+
+```bash
+cross use infra https://forgejo.example/infra/infra.git
+cross set infra:main:ipxe      infra/ipxe
+cross set infra:main:proxmox   infra/proxmox
+cross set infra:v2.0:talos     infra/talos     # another branch, same remote
+```
+
+Two crosses may even point at the same upstream path — every cross is fully
+independent (own gitdir, own refs, own `rerere`), so `del infra/talos` never
+touches `infra/ipxe`, and `rm -rf .cross && git cross update` rebuilds
+everything from the `Crossfile`.
+
+What this setup deliberately does **not** do:
+
+- **No shared base clone.** Each cross is a standalone bare gitdir
+  (`.cross/worktrees/<remote>/<local_path>/`); a shared object store + shared
+  refs namespace is the design git-cross rejects — see
+  [Design Notes: Bare Gitdir vs `git worktree`](#design-notes-bare-gitdir-vs-git-worktree).
+  The cost is disk duplication per cross; mitigate with `cross.depth` /
+  `cross.filter` above.
+- **`git cross worktree list` is the passthrough.** It runs `git worktree list`
+  against the cross's bare gitdir and prints that one gitdir as `(bare)` —
+  crosses are not linked worktrees and `worktree list` will not print multiple
+  paths. The crossed directories hold no `.git` at all; that is what lets your
+  repo track their files as plain blobs.
+- **A cross tracks a branch, not a SHA.** `update` lands the tip of
+  `origin/<branch>`; pinning a cross at a tag/commit is not supported (backlog).
+
+**Pull/push contract inside a subdirectory cross (v0.6):** `git cross pull -r`
+works (fetch → synthesis → same-shape rebase; real conflicts, rerere,
+`rebase --continue`) and `git cross push` delivers ONLY your subdirectory to
+upstream via the graft — never anything outside it. Plain `git pull -r` /
+`git push` in the cross context are refused by the gitdir's guard hooks with
+a hint (they would mix the subtree history with the real upstream); read
+commands (`status`/`diff`/`log`/`blame`) and local commits work normally.
+Whole-repo crosses keep the plain passthrough for everything. The full
+plain-git audit lives in ADR-004.
+
+**Implementation note:** the Just/Fish reference implements whole-repo
+crosses only — its `set` refuses subdir crosses with a Go-only hint (the
+reference stays simple by design). The Go CLI owns all subtree machinery;
+the gitdir hooks still guard plain git through the reference's passthrough on
+Go-created crosses.
+
+### Full git functionality, no graft: whole-repo cross + symlink
+
+While the subtree machinery (synthesis, intercepted `pull -r`, graft `push`)
+is being verified in practice, the pattern with **zero limitations** — every
+git command works exactly as in v0.5 — is to cross the whole repo into a
+`vendor/<remote>/<set>/` layout and symlink your local name onto the full
+upstream path inside it:
+
+```bash
+# one whole-repo cross per SET under vendor/<remote>/ (a set can be a branch,
+# a purpose — whatever distinguishes it; independent gitdirs per set)
+git cross set mxc:main:. vendor/mxc/cluster-test
+
+# the local name -> the full upstream path inside the cross (relative link:
+# its depth is counted from the symlink's OWN directory)
+ln -s ../vendor/mxc/cluster-test/demo/cluster-flux mxc-clusters/cluster-test
+```
+
+The layout that gives you:
+
+```
+vendor/mxc/cluster-test/            ← the whole-repo cross (upstream ROOT)
+vendor/mxc/cluster-test/demo/cluster-flux/...   ← the full upstream path
+mxc-clusters/cluster-test -> ../vendor/mxc/cluster-test/demo/cluster-flux
+```
+
+Verified properties: the cross context resolves **through the symlink**
+(`cd mxc-clusters/cluster-test && git cross status` answers the whole-repo
+cross), plain `git pull -r` fast-forwards inside it, `push` works, no guard
+hooks exist, your repo tracks the cross content as plain blobs plus the
+symlink as a symlink blob (commit it, or gitignore the alias) — and the
+link **never goes stale**: `update` refreshes the vendor tree, the symlink
+always points at the live files. Trade-offs: the whole repo is vendored
+(disk + primary tracks everything under `vendor/<remote>/<set>/`), and the
+local name is a link rather than a real directory (some tools dislike
+symlinks).
+
+**Advanced:** a rerere-replay wind-back (reset your repo + roll the mirror back
+to replay a recorded resolution) must now roll back three refs:
+`refs/heads/<branch>`, `refs/cross/synthesized/<branch>` and
+`refs/cross/upstream/<branch>`.
 
 ### `update`
 

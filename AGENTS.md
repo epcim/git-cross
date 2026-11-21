@@ -61,7 +61,7 @@ specs/003-gitdir-patches/                       # plan, progress, ADR-001, ADR-0
 
 | Command | Args | Purpose |
 |---------|------|---------|
-| `use` | `<name> <url>` | Register a remote in metadata (**primary git remotes untouched**); validates reachability |
+| `use` | `<name> <url>` | Register a remote in metadata (**primary git remotes untouched**); validates reachability; re-pointing (new URL) rewrites the Crossfile line + per-patch `remote_url` + gitdir `origin`s |
 | `set` | `<remote[:branch]:path> [local_path]` | Set a cross directory: bare-clone into `.cross/worktrees/<remote>/<patch>`, sparse filter, materialize the work tree in the repo |
 | `update` | `[path] [--no-resolve] [--force]` | Fetch all crosses, then land upstream in the crossed dir + re-apply your version (ADR-003); unstaged edits refuse, collisions are kept; lost `.cross` state (Go: y/p/N prompt — re-init from upstream / re-init but preserve local / skip, default No; a dirty dir adds "uncommitted changes stashed first") / `--force` re-adopts (stash if dirty, then wipe) |
 | `resolve` | `[path] [--continue\|--abort]` | Finish an update conflict: list unmerged paths, gate `--continue`, revert with `--abort` |
@@ -121,7 +121,7 @@ core-command fixes, nothing more.
 
 ### Test Structure
 
-23 tests, all targeting v0.5.0+. There is no exclusion list any more: retired tests were
+25 tests, all targeting v0.5.0+. There is no exclusion list any more: retired tests were
 deleted with their commands (005 replay, 008/011 Rust, 021 compare); the Rust
 implementation itself was deleted in v0.5.1.
 
@@ -136,7 +136,8 @@ Tests 001-004 form a chain (`004` sources `002` which sources `001`, `003` sourc
 and 025 is the v0.5.0 stage-1 gate (creation/checkout for both).
 
 Names match the current command set: `007_ls_health`, `010_cd_wt_passthrough`,
-`015_wipe`, `017_cd_shell_integration`, `028_env`.
+`015_wipe`, `017_cd_shell_integration`, `028_env`, `029_crossfile_records`,
+`030_subtree_crosses`.
 
 Run a single test with `SHELL=/bin/bash bash test/NNN_*.sh` (never `run-all.sh` while
 iterating — it shares `testdir`). To run everything quickly, use the grouped
@@ -166,9 +167,9 @@ Procedure for updating a test to v0.5 semantics: `.agents/skills/git-cross-test-
 
 | Command / behavior | Just/Fish | Go |
 |---------|:---:|:---:|
-| `use` (metadata only, primary untouched) | 001, 025 | 009, 025 |
+| `use` (metadata only, primary untouched; re-pointing rewrites the line + origins) | 001, 025, 029 | 009, 025, 029 |
 | `set` (bare gitdir, sparse, no `.git` in crossed dir, primary blob tracking) | 002, 012, 025 | 009, 012, 019, 023, 025 |
-| `update` (land + re-apply, refusal, conflict kept) | — (Go-only; stub) | 009, 018, 019, 026 |
+| `update` (land + re-apply, refusal, conflict kept) | — (Go-only; stub) | 009, 018, 019, 026, 029 |
 | `update --force` / re-adoption of lost crosses (y/p/N prompt + stash/preserve of dirty dirs) | — (Go-only; stub) | 027 |
 | `resolve` (list, `--continue`, `--abort`) | — (Go-only; stub) | 009, 018, 026 |
 | Go-level update/resolve tests (`go test ./src-go`) | — | 5 integration tests in `src-go/update_resolve_test.go` |
@@ -177,13 +178,15 @@ Procedure for updating a test to v0.5 semantics: `.agents/skills/git-cross-test-
 | git passthrough (`git cross <git-args>`): upstream ctx inside, fail-early outside | 003, 010, 016, 025 | 009, 010, 016, 025 |
 | `cd` (path printing, CWD auto-detect) | — (Go-only; stub) | 017, 023 |
 | `ls` table / `--raw` / `--no-header` (`list` alias) | 019‡ | 009, 014 |
-| `del` (gitdir + crossed dir + entries) | 014, 023 | 009, 014, 023 |
+| `del` (gitdir + crossed dir + entries) | 014, 023, 029 | 009, 014, 023, 029 |
+| Crossfile validation: duplicate `use`/`set` declarations, lost-records guard (Go-only) | — | 029 |
 | `wipe` (remote, multi-cross, orphan sweep, root guard) | — (Go-only; stub) | 009, 015 |
 | `cfg` / `init` alias | 024 | 009, 024 |
 | `comp` / hidden `shell-init` | — (Go-only; stub) | 017, 020 |
 | `env` + `gxenv` + `xcd`/`_git_cross_sync` auto-load/unload, prompt marker | — (Go-only) | 028 |
 | grouped `--help` + configuration guidance | n/a | 020 |
-| sparse checkout plumbing | 012 | 012 |
+| sparse → subtree synthesis plumbing (markers, hooks, no sparse config) | 012 | 012 |
+| subtree crosses: re-rooted layout, synthesis, update, intercepted pull -r, graft push, hook guards, lineage, whole-repo control | 030 (Go) | 030 (Go; core parts) |
 | whole-repo cross (no sparse, no `.git`) | 019‡ | 019 |
 | `local_path` normalization / per-patch gitdirs | 023 | 023 |
 | `rerere` (repo + gitdir config, resolution reuse) | — (update flow is Go-only; set/cfg parts still run) | 024 |
@@ -282,19 +285,39 @@ just sub-cases of Go-only commands are guarded by `just_ref_implements` and SKIP
 - **Work tree materialization**: `git --git-dir=<gd> --work-tree=<patch> read-tree -mu HEAD`.
   The crossed dir must exist first. `core.worktree` is never used (relative resolves from
   the invocation CWD; absolute breaks portability) — the pair comes from the environment.
-- **Sparse filter**: the gitdir is BARE, and `git sparse-checkout` refuses to run there,
-  so the plumbing is written directly: `config core.sparseCheckout true` plus
-  `info/sparse-checkout` containing `<remote_path>/` (trailing slash required).
-  Whole-repo patches (`remote_path = "."`) get no sparse config and no sparse-checkout file.
-- **D3 nesting**: the work tree mirrors the upstream ROOT; `remote_path` is only a sparse
-  filter. `patch demo:main:docs vendor/docs` → `vendor/docs/docs/guide.md`.
+- **Subtree synthesis (v0.6, ADR-004/D3(c)) — GO-ONLY**: for `remote_path != "."`
+  the gitdir's branch is a SYNTHESIZED subtree history — one `commit-tree` per
+  upstream commit that CHANGES the subtree (outside-only commits skipped), with
+  the original message, authorship and raw dates pinned (deterministic: re-runs
+  yield identical hashes). Markers: `refs/cross/synthesized/<b>` (last
+  pure-upstream synth tip = rebase base) and `refs/cross/upstream/<b>` (the
+  real upstream commit it maps to; drives the up-to-date check + incremental
+  walks). `set` installs `hooks/pre-rebase` (allows only rebases targeting
+  `refs/cross/*`) and `hooks/pre-push` (allows only pushes marked
+  `CROSS_PUSH_GRAFT=1`) plus a gitdir-local commit identity. No sparse config
+  exists any more — HEAD's tree already IS the subtree. Whole-repo crosses
+  (`remote_path = "."`) keep the v0.5 machinery exactly (no refs/cross, no
+  hooks) — and the JUST REFERENCE refuses subdir crosses outright
+  ("NOT IMPLEMENTED ... subtree crosses — Go-only"; probe: `just_ref_subdir` in
+  test/common.sh), keeping the reference simple per the no-extensions rule.
+  The gitdir hooks still guard plain git through the reference's passthrough on
+  Go-created crosses.
+- **D3(c) layout**: the crossed dir IS the upstream subdirectory —
+  `set demo:main:docs vendor/docs` materializes `vendor/docs/guide.md` (no `docs/`
+  prefix inside). The old v0.5 D3(a) nesting (`vendor/docs/docs/guide.md`) is gone.
 - **No `.git` file in the crossed dir** — that is what lets the primary repo track the
   patched files as normal blobs (not a gitlink/submodule).
 - **Upstream ops**: `GIT_DIR`/`GIT_WORK_TREE` are exported by the passthrough (the bare
   `git cross <git-args>` fall-through; `_gitcmd` in the reference — one of its core
   pieces). Plain `git` inside a crossed dir targets the primary repo.
 - **Passthrough contract (ADR-002)**: requires a patch context; outside one it exits 1
-  with a hint. It never falls back to plain git on the primary repo.
+  with a hint. It never falls back to plain git on the primary repo. In subdir
+  crosses (v0.6) `pull`/`push` are INTERCEPTED (fetch → synthesis → same-shape
+  rebase / graft); exotic pull args are refused with a hint. The gitdir hooks
+  guard the plain-`git` forms; raw re-points are caught by the lineage check
+  (a non-empty `merge-base heads origin/<b>` = corruption — backward moves
+  inside the synth chain stay legal for rerere-replay wind-backs, which must
+  roll back heads + both markers).
 - **Crossed-dir recognition is path-segment aware**: a CWD/path matches a cross only on
   an exact `local_path` or a `<local_path>/...` prefix (longest match wins). A sibling
   directory that merely shares a name prefix (`infra/ipxex` next to `infra/ipxe`) is
@@ -317,7 +340,12 @@ just sub-cases of Go-only commands are guarded by `just_ref_implements` and SKIP
      (`read-tree --prefix=<P>/ {BASE,THEIRS}` → `commit-tree` = BASE + DELTA), and
      `git -C <repo> cherry-pick -n DELTA`: land upstream + re-apply the user's work in
      one 3-way apply. `--no-resolve` adds `-X theirs` (upstream wins, no markers).
-     On success only, `git --git-dir=<gd> update-ref refs/heads/<b> <THEIRS>`.
+     Subdir crosses (v0.6): BASE = the synthesized HEAD (its tree IS the subtree),
+     THEIRS = `<fetched>:<remote_path>` (a missing path = the empty tree = wholesale
+     deletion). On success, `advanceMirror` moves the branch to the new SYNTHESIZED
+     tip + both markers and refreshes the mirror index (`read-tree HEAD`, index-only
+     — the work tree is the user's dir, already updated by the delta; whole-repo
+     crosses get the same refresh, fixing v0.5 stale-index status noise).
   A collision leaves markers + unmerged paths **in the user's repo**; `rerere` records
   and replays there. 30 local changes cost ONE resolution round (the upstream side is
   what gets squashed). `cherry-pick -n` needs no identity and writes **no**
@@ -329,12 +357,14 @@ just sub-cases of Go-only commands are guarded by `just_ref_implements` and SKIP
 - **`update` is all-patches-at-once**: a conflict does not stop the run; remaining
   patches still land and the summary counts `updated` / `skipped` / `need attention`.
 - **`ls` DIFF** compares the crossed dir against the mirror HEAD through a throwaway
-  index and `git diff --quiet HEAD -- <remote_path>` (**not** `diff-index`, which does
-  not refresh the stat cache and reports everything modified). Only the mapped subtree
-  is compared, because the mirror index is sparse and written once at `set` time.
+  index and `git diff --quiet HEAD` (**not** `diff-index`, which does not refresh the
+  stat cache and reports everything modified). For subdir crosses HEAD's tree already
+  IS the subtree, so NO pathspec is passed; whole-repo crosses pass `-- .`.
   The mirror is BARE — the diff MUST name the work tree (`--work-tree=<crossed dir>`;
   without it git refuses with "must be run in a work tree"), and a failing diff
-  reports `Error`, never a silent `Clean` (v0.5.1 bugfix).
+  reports `Error`, never a silent `Clean` (v0.5.1 bugfix). The mirror branch for
+  subdir crosses is SYNTHESIZED — compare TREES (`refs/heads/<b>^{tree}` vs
+  `refs/remotes/origin/<b>:<rp>`), never raw commit hashes (disjoint by construction).
 - **`update` (incl. its re-adoption prompt) is Go-only** (v0.5.1): Go owns the
   prompt — `'<abs path>' exists but its .cross state is lost. Re-initialize how?`
   with `[y] re-initialize from upstream (existing dir wiped)`, `[p] re-initialize
@@ -410,8 +440,12 @@ just sub-cases of Go-only commands are guarded by `just_ref_implements` and SKIP
   **Helpers are named `_git_cross_*`** (never after the `gx`/`xcd` aliases):
   `_git_cross_{load,unload,sync,hook,prompt_on,prompt_off,zsh_precmd,zsh_chpwd_add,
   zsh_precmd_add}` (+ fish `_git_cross_*` and `__git_cross_{wrapped,orig_prompt}`).
-  **Prompt marker**: a bare `[cross] ` (no remote, no colon — other tools show
-  branch/context) so a modified terminal is obvious. No rc edit, no shell state
+  **Prompt marker**: defaults to `[cross:<remote>] ` (e.g. `[cross:infra] `) so a
+  modified terminal is obvious. Style is a template in `GIT_CROSS_MARKER`
+  (`%r` = remote, falling back to the local path; `%l` = local path; default
+  `[cross:%r]`; a marker with no placeholder is used verbatim). Expansion uses
+  pattern variables (`${m//$p_remote/...}`, not a literal `%r`) because zsh does
+  not match a literal `%` in a parameter-expansion pattern. No rc edit, no shell state
   written by the binary, and no per-shell startup-file injection (that variant —
   `bash --rcfile`, temp `ZDOTDIR`, `fish -C` — mangled themed prompts and was
   dropped in 0.5.4):
@@ -461,7 +495,12 @@ just sub-cases of Go-only commands are guarded by `just_ref_implements` and SKIP
   `LOCAL_PATH` stays field 3. No banners, no borders, deterministic order.
 - **Crossfile format**: `cross use <name> <url>` and `cross set <remote>:<branch>:<path> <local>`.
   `update` is STRICT: any other command line is an error (which is why the repo's own
-  Crossfile must not contain retired commands). `del` deletes Crossfile lines by
+  Crossfile must not contain retired commands), and ONE declaration per key — a
+  duplicate `use` for the same remote name or a duplicate `set` for the same
+  local_path is a validation error (`crossfileCommands`). `use` re-pointing keeps
+  the Crossfile at one `use` line per remote (`updateCrossfileUseLine`); a missing or
+  emptied Crossfile with crosses still registered is a loud error, not a silent
+  "No crosses to update.". `del` deletes Crossfile lines by
   structured field matching (last field == local_path).
 - **Retired in 0.5.0**: `.crossignore` filtering, the `.git`-mirror diff, rsync,
   `push`/`sync`/`replay`/`exec`, linked worktrees, primary-repo remotes.

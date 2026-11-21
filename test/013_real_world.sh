@@ -26,21 +26,21 @@ fi
 "$GO_BIN" set runtipi:apps/adguard vendor/adguard
 
 # v2 D3 nesting: the patch dir mirrors the upstream ROOT, so the sparse subtree
-# apps/adguard/ is materialized at vendor/adguard/apps/adguard/.
-assert_dir_exists "vendor/adguard/apps/adguard"
-assert_file_exists "vendor/adguard/apps/adguard/config.json"
-assert_file_exists "vendor/adguard/apps/adguard/docker-compose.yml"
+# v0.6 subtree-rooted: apps/adguard's CONTENT is materialized at vendor/adguard/.
+assert_dir_exists "vendor/adguard"
+assert_file_exists "vendor/adguard/config.json"
+assert_file_exists "vendor/adguard/docker-compose.yml"
 
-# Sparse filter: files outside apps/adguard must not be materialized.
+# Subtree filter: files outside apps/adguard must not be materialized.
 gd=$(jq -r '.patches[] | select(.local_path == "vendor/adguard") | .gitdir' .cross/metadata.json)
 wt=$(jq -r '.patches[] | select(.local_path == "vendor/adguard") | .worktree' .cross/metadata.json)
 if [ -z "$gd" ] || [ "$gd" = "null" ]; then
     fail "metadata is missing 'gitdir' for vendor/adguard"
 fi
-grep -qx "apps/adguard/" "$gd/info/sparse-checkout" \
-    || fail "info/sparse-checkout must contain 'apps/adguard/' (trailing slash)"
+[ -n "$(git --git-dir="$gd" for-each-ref refs/cross/synthesized/)" ] \
+    || fail "refs/cross synthesis markers missing"
 if [ -f "$wt/README.md" ]; then
-    fail "README.md found in the patch dir! Sparse checkout failed."
+    fail "README.md found in the patch dir! Subtree checkout failed."
 fi
 
 # The work tree is the patch dir: no .git pointer, plain files in the repo.

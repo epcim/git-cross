@@ -54,23 +54,44 @@ exercise() {
         has_cd=0
         log_warn "SKIP (just): cd is Go-only — NOT IMPLEMENTED in the Just reference (v0.5.1)"
     fi
+    # v0.6: subdir crosses (remote_path != '.') are Go-only — the reference's
+    # `set` refuses them. The whole-repo './sub' case stays covered for both;
+    # sub2 falls back to a whole-repo cross for just (with the upstream layout),
+    # and the subdir-only sections (two local dirs from up:main:pkg, the stale
+    # vendor/b worktree probe) are skipped there after pinning the refusal.
+    local has_subdir=1
+    local sub2_spec="up:main:pkg" sub2_pkgfile="pkg.txt"
+    if [ "${IMPL:-}" = "just" ] && ! just_ref_subdir; then
+        has_subdir=0
+        set +e
+        ref_out=$(xc set "up:main:pkg" vendor/a 2>&1)
+        ref_rc=$?
+        set -e
+        [ "$ref_rc" -ne 0 ] || fail "$who: set with a subdir remote_path must fail (subtree crosses are Go-only)"
+        assert_contains "$ref_out" "subtree crosses" \
+            "$who: set refusal must explain that subtree crosses are Go-only"
+        log_warn "SKIP (just): subtree crosses are Go-only — subdir sections skipped"
+        sub2_spec="up:main:."
+        sub2_pkgfile="pkg/pkg.txt"
+    fi
 
     log_header "023: patch with './' prefixed local paths ($who)"
     xc set "up:main:." ./sub >/dev/null
-    xc set "up:main:pkg" ./sub2 >/dev/null
+    xc set "$sub2_spec" ./sub2 >/dev/null
     assert_dir_exists "sub"
     assert_dir_exists "sub2"
     assert_metadata_normalized
     log_success "$who: metadata stores local_path without './'"
 
     log_header "023: one upstream source patched into two local dirs ($who)"
+    if [ "$has_subdir" = 1 ]; then
     xc set "up:main:pkg" vendor/a >/dev/null
     xc set "up:main:pkg" vendor/b >/dev/null
     assert_dir_exists "vendor/a"
     assert_dir_exists "vendor/b"
     # D3 nesting: remote_path pkg/ lands at <patch>/pkg/
-    [ -f vendor/a/pkg/pkg.txt ] || fail "$who: vendor/a was not materialized (expected vendor/a/pkg/pkg.txt)"
-    [ -f vendor/b/pkg/pkg.txt ] || fail "$who: vendor/b was not materialized (expected vendor/b/pkg/pkg.txt)"
+    [ -f vendor/a/pkg.txt ] || fail "$who: vendor/a was not materialized (expected vendor/a/pkg.txt)"
+    [ -f vendor/b/pkg.txt ] || fail "$who: vendor/b was not materialized (expected vendor/b/pkg.txt)"
 
     gd_a=$(jq -r '.patches[] | select(.local_path == "vendor/a") | .gitdir' .cross/metadata.json)
     gd_b=$(jq -r '.patches[] | select(.local_path == "vendor/b") | .gitdir' .cross/metadata.json)
@@ -88,10 +109,13 @@ exercise() {
     [ ! -d vendor/a ] || fail "$who: remove vendor/a left the local directory behind"
     [ ! -d "$gd_a" ] || fail "$who: remove vendor/a left its gitdir behind"
     [ -d "$gd_b" ] || fail "$who: removing vendor/a deleted vendor/b's gitdir"
-    [ -f vendor/b/pkg/pkg.txt ] || fail "$who: vendor/b content disappeared"
+    [ -f vendor/b/pkg.txt ] || fail "$who: vendor/b content disappeared"
     [ "$(jq -r '.patches[] | select(.local_path == "vendor/b") | .gitdir' .cross/metadata.json)" = "$gd_b" ] \
         || fail "$who: vendor/b lost its gitdir entry"
     log_success "$who: independent gitdirs survive removing one local dir"
+    else
+        log_warn "SKIP (just): two-local-dirs subdir fixture is Go-only"
+    fi
 
     nofzf_path=$(make_path_without_fzf "$SANDBOX/no-fzf-bin-$who")
     sub_abs=$(cd sub && pwd -P)
@@ -134,7 +158,7 @@ exercise() {
         out=$(xc cd 2>/dev/null) || fail "$who: cd inside a './sub2' patch should resolve"
         [ "$out" = "$sub2_abs" ] || fail "$who: cd inside ./sub2 should print $sub2_abs, got: $out"
     fi
-    echo "local sub2 change" >> pkg/pkg.txt
+    echo "local sub2 change" >> "$sub2_pkgfile"
     out=$(xc diff 2>&1) || true
     assert_contains "$out" "local sub2 change"
     expected=$(pwd -P)
@@ -166,6 +190,9 @@ exercise() {
     fi
     log_success "$who: normalized './' arguments resolve"
 
+    if [ "$has_subdir" = 0 ]; then
+        log_warn "SKIP (just): stale-worktree probe needs the vendor/b subdir cross (Go-only)"
+    else
     log_header "023: stale v0.4 worktree (inside .cross/) self-heals ($who)"
     # Regression (reported on a pre-0.5 repo): old metadata kept worktree inside
     # .cross/worktrees/<name>_<hash>, so cd printed the hidden gitdir/old worktree
@@ -181,6 +208,7 @@ exercise() {
         assert_not_contains "$out" ".cross/worktrees" "$who: cd must never print a hidden .cross path"
     fi
     log_success "$who: stale worktree ignored; cd prints the crossed dir"
+    fi
 }
 
 fixture() {

@@ -332,8 +332,13 @@ func patchDiffersFromUpstream(root string, p *Patch) (bool, error) {
 	// The mirror is a BARE clone: without --work-tree git refuses the diff
 	// ("fatal: this operation must be run in a work tree", exit 128) — a failure
 	// that used to be swallowed as "Clean" (v0.5.1 bugfix).
-	check := exec.Command("git", "--git-dir="+gdAbs, "--work-tree="+p.localAbs(root),
-		"diff", "--quiet", "HEAD", "--", pathspec)
+	// D3(c): a subdir cross's HEAD tree already IS the upstream subtree — no
+	// pathspec (and no sparse caveat); whole-repo crosses keep the pathspec.
+	args := []string{"diff", "--quiet", "HEAD"}
+	if pathspec == "." {
+		args = append(args, "--", ".")
+	}
+	check := exec.Command("git", append([]string{"--git-dir=" + gdAbs, "--work-tree=" + p.localAbs(root)}, args...)...)
 	check.Env = env
 	check.Dir = p.localAbs(root)
 	if err := check.Run(); err == nil {
@@ -407,16 +412,426 @@ func upstreamDeltaCommit(root string, p *Patch, baseRev, theirsRev string) (stri
 // an already-applied delta.
 func advanceMirror(root string, p *Patch, rev string) {
 	gdAbs := p.gitdirAbs(root)
-	if err := runGitdir(gdAbs, "update-ref", "refs/heads/"+p.Branch, rev).Run(); err != nil {
+	if p.RemotePath != "." && p.RemotePath != "/" {
+		// D3(c) (ADR-004): advance to the SYNTHESIZED subtree tip — never the
+		// real upstream commit (the two histories are disjoint) — and move the
+		// markers. Index refresh below also fixes the v0.5.x stale-index wart
+		// where cross-ctx `git status` showed noise after every update.
+		// The synthesis builds on the SYNTHESIZED marker (not on the branch:
+		// user commits must never end up inside the upstream chain).
+		tip, err := synthesizeSubtree(gdAbs, p.RemotePath,
+			"refs/remotes/origin/"+p.Branch+" ^"+upstreamRef(p.Branch), synthRef(p.Branch))
+		if err != nil {
+			logWarn(fmt.Sprintf("could not re-synthesize %s: %v", p.LocalPath, err))
+			return
+		}
+		if tip != "" {
+			if err := runGitdir(gdAbs, "update-ref", "refs/heads/"+p.Branch, tip).Run(); err != nil {
+				logWarn(fmt.Sprintf("could not advance the subtree branch for %s: %v", p.LocalPath, err))
+				return
+			}
+			_ = runGitdir(gdAbs, "update-ref", synthRef(p.Branch), tip).Run()
+		}
+		_ = runGitdir(gdAbs, "update-ref", upstreamRef(p.Branch), rev).Run()
+	} else if err := runGitdir(gdAbs, "update-ref", "refs/heads/"+p.Branch, rev).Run(); err != nil {
 		logWarn(fmt.Sprintf("could not advance the mirror ref for %s: %v", p.LocalPath, err))
 		return
 	}
+	// Refresh the mirror index (index only, no -u: the work tree is the user's
+	// dir, already updated by the landed delta).
+	_ = runGitdir(gdAbs, "read-tree", "HEAD").Run()
+}
 
+// ------------------------------------------------------- subtree (ADR-004) ---
+
+const emptyTree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
+func synthRef(branch string) string    { return "refs/cross/synthesized/" + branch }
+func upstreamRef(branch string) string { return "refs/cross/upstream/" + branch }
+
+// synthesizeSubtree builds (or extends) the re-rooted history of remotePath:
+// one synthesized commit per source commit that CHANGES the subtree
+// (outside-only commits are skipped), each carrying the subtree tree of the
+// source commit, the ORIGINAL message, and the original author+committer
+// identity and raw dates — so re-runs are deterministic (identical hashes;
+// lab-proven, mirrors `git subtree split` semantics). baseTip is the
+// synthesized commit to build on ("" for a full walk); walkRange is a
+// rev-list range ("<rev>" or "<rev> ^<rev>"). Returns "" when nothing changed.
+func synthesizeSubtree(gdAbs, remotePath, walkRange, baseTip string) (string, error) {
+	list := exec.Command("git", append([]string{"--git-dir", gdAbs, "rev-list", "--reverse", "--topo-order"}, strings.Fields(walkRange)...)...)
+	out, err := list.Output()
+	if err != nil {
+		return "", fmt.Errorf("rev-list %s: %w", walkRange, err)
+	}
+	last := baseTip
+	lastT := ""
+	if last != "" {
+		if o, terr := runGitdir(gdAbs, "rev-parse", last+"^{tree}").Output(); terr == nil {
+			lastT = strings.TrimSpace(string(o))
+		} else {
+			return "", fmt.Errorf("cannot resolve the synthesis base %s", last)
+		}
+	}
+	newTip := ""
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		rev := strings.TrimSpace(line)
+		if rev == "" {
+			continue
+		}
+		T := emptyTree
+		if o, terr := runGitdir(gdAbs, "rev-parse", "-q", "--verify", rev+":"+remotePath).Output(); terr == nil {
+			T = strings.TrimSpace(string(o))
+		}
+		if T == lastT {
+			continue // outside-only change: not part of the subtree history
+		}
+		// Pin identity+authorship from the source commit (deterministic synthesis).
+		id, ierr := runGitdir(gdAbs, "show", "-s", "--format=%an%x00%ae%x00%aD%x00%cn%x00%ce%x00%cD", rev).Output()
+		if ierr != nil {
+			return "", fmt.Errorf("cannot read the identity of %s: %w", rev, ierr)
+		}
+		parts := strings.Split(strings.TrimSpace(string(id)), "\x00")
+		if len(parts) != 6 {
+			return "", fmt.Errorf("unexpected identity format for %s", rev)
+		}
+		msg, merr := runGitdir(gdAbs, "show", "-s", "--format=%B", rev).Output()
+		if merr != nil {
+			return "", fmt.Errorf("cannot read the message of %s: %w", rev, merr)
+		}
+		ct := exec.Command("git", "--git-dir", gdAbs, "commit-tree", T, "-F", "-")
+		if last != "" {
+			ct.Args = append(ct.Args, "-p", last)
+		}
+		ct.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME="+parts[0], "GIT_AUTHOR_EMAIL="+parts[1], "GIT_AUTHOR_DATE="+parts[2],
+			"GIT_COMMITTER_NAME="+parts[3], "GIT_COMMITTER_EMAIL="+parts[4], "GIT_COMMITTER_DATE="+parts[5])
+		ct.Stdin = bytes.NewReader(msg)
+		co, cerr := ct.Output()
+		if cerr != nil {
+			return "", fmt.Errorf("commit-tree for %s: %w", rev, cerr)
+		}
+		last = strings.TrimSpace(string(co))
+		lastT = T
+		newTip = last
+	}
+	return newTip, nil
+}
+
+// writeCrossGuards installs the hooks that keep plain git from mixing the two
+// histories a subdirectory cross carries (ADR-004 command audit). Only
+// git-cross's own rebases (target under refs/cross/) are allowed through.
+func writeCrossGuards(gdAbs string) error {
+	hooks := filepath.Join(gdAbs, "hooks")
+	if err := os.MkdirAll(hooks, 0o755); err != nil {
+		return err
+	}
+	preRebase := `#!/bin/sh
+# git-cross (ADR-004): subdirectory cross — only git-cross's own rebases
+# (targets under refs/cross/) may run; a plain pull -r / rebase would rebase
+# the subtree history onto the REAL upstream history (tree-shape mismatch).
+case "$1" in
+  refs/cross/*) exit 0 ;;
+  *)
+    echo "git-cross: this is a subdirectory cross." >&2
+    echo "git-cross: plain git pull/rebase would rebase its subtree history onto the real upstream." >&2
+    echo "git-cross: use: git cross pull -r" >&2
+    exit 1 ;;
+esac
+`
+	prePush := `#!/bin/sh
+# git-cross (ADR-004): subdirectory cross — a plain push would overwrite the
+# upstream branch with the subtree history. git-cross's own graft push is
+# marked via the environment and allowed through.
+if [ "$CROSS_PUSH_GRAFT" = "1" ]; then exit 0; fi
+echo "git-cross: this is a subdirectory cross." >&2
+echo "git-cross: a plain push would overwrite the upstream with the subtree history." >&2
+echo "git-cross: use: git cross push" >&2
+exit 1
+`
+	for name, body := range map[string]string{"pre-rebase": preRebase, "pre-push": prePush} {
+		if err := os.WriteFile(filepath.Join(hooks, name), []byte(body), 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureGitdirIdentity gives the bare gitdir a commit identity so plain
+// cross-ctx commits/rebases work (a bare clone has none).
+func ensureGitdirIdentity(gdAbs string) {
+	if c := runGitdir(gdAbs, "config", "--get", "user.email"); c.Run() == nil {
+		return
+	}
+	_ = runGitdir(gdAbs, "config", "user.name", "git-cross").Run()
+	_ = runGitdir(gdAbs, "config", "user.email", "git-cross@localhost").Run()
+}
+
+// subtreeGuards runs the legacy-gitdir + lineage checks shared by update,
+// pull and push for subdirectory crosses, and lazily re-attaches HEAD to the
+// cross branch (a rebase/merge finished under a bare GIT_DIR + external work
+// tree always ends detached — git never moves the branch; the user's manual
+// `git rebase --continue` after a conflicted pull needs this catch-up).
+func subtreeGuards(gdAbs, localPath, branch string) (oldMark string, err error) {
+	// Defense-in-depth: a stray `core.worktree`/`core.bare=false` in the gitdir
+	// (e.g. written by an ad-hoc raw git invocation) silently breaks portability
+	// (absolute path) and flips git's work-tree rules. git-cross always passes
+	// the work tree explicitly — restore the pristine bare config.
+	if w, werr := runGitdir(gdAbs, "config", "--get", "core.worktree").Output(); werr == nil && strings.TrimSpace(string(w)) != "" {
+		_ = runGitdir(gdAbs, "config", "--unset", "core.worktree").Run()
+		_ = runGitdir(gdAbs, "config", "core.bare", "true").Run()
+	}
+	if err := runGitdir(gdAbs, "symbolic-ref", "--quiet", "HEAD").Run(); err != nil {
+		_ = runGitdir(gdAbs, "update-ref", "refs/heads/"+branch, "HEAD").Run()
+		_ = runGitdir(gdAbs, "symbolic-ref", "HEAD", "refs/heads/"+branch).Run()
+	}
+	markOut, merr := runGitdir(gdAbs, "rev-parse", "-q", "--verify", upstreamRef(branch)).Output()
+	if merr != nil {
+		return "", fmt.Errorf("%s: pre-0.6 subdir gitdir (no synthesis markers); re-create it: git cross del %s && git cross update", localPath, localPath)
+	}
+	// Lineage: the synthesized chain is DISJOINT from the real upstream history
+// by construction. A branch sharing ANY ancestor with origin/<b> was re-pointed
+// at real history by a raw git command. Backward moves INSIDE the synth
+// chain stay legal (the rerere-replay flow rewinds the mirror on purpose).
+	if base, berr := runGitdir(gdAbs, "merge-base", "refs/heads/"+branch,
+		"refs/remotes/origin/"+branch).Output(); berr == nil && strings.TrimSpace(string(base)) != "" {
+		return "", fmt.Errorf("%s: the cross branch no longer descends from the synthesized history (a raw git command re-pointed it?); re-adopt: git cross del %s && git cross update", localPath, localPath)
+	}
+	return strings.TrimSpace(string(markOut)), nil
+}
+
+// crossPullSubtree intercepts `git cross pull` for a subdirectory cross:
+// fetch -> incremental synthesis -> same-shape rebase (ADR-004). Plain-args
+// forms beyond [-r|--rebase] are refused (they could target the real history).
+func crossPullSubtree(root string, p *Patch, rest []string) error {
+	rebase := false
+	for _, a := range rest {
+		switch a {
+		case "-r", "--rebase":
+			rebase = true
+		default:
+			return fmt.Errorf("git cross pull for a subdirectory cross supports only [-r|--rebase] (got: %q); the plain passthrough is guarded because it would rebase the subtree history onto the real upstream", strings.Join(rest, " "))
+		}
+	}
+	gdAbs := p.gitdirAbs(root)
+	if _, err := subtreeGuards(gdAbs, p.LocalPath, p.Branch); err != nil {
+		return err
+	}
+	// The synthesis base is the SYNTHESIZED marker (the upstream marker guards
+	// the return of subtreeGuards is a REAL commit — building on it would mix
+	// the two histories and trip the lineage check).
+	synthMark := strings.TrimSpace(string(runGitdirOut(gdAbs, "rev-parse", "-q", "--verify", synthRef(p.Branch))))
+	if synthMark == "" {
+		return fmt.Errorf("%s: pre-0.6 subdir gitdir (no synthesis markers); re-create it: git cross del %s && git cross update", p.LocalPath, p.LocalPath)
+	}
+	if fetch := runGitdir(gdAbs, "fetch", "-q", "origin",
+		fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", p.Branch, p.Branch)); fetch.Run() != nil {
+		return fmt.Errorf("git fetch failed for %s (%s)", p.Remote, p.RemoteURL)
+	}
+	revOut, err := runGitdir(gdAbs, "rev-parse", "refs/remotes/origin/"+p.Branch).Output()
+	if err != nil {
+		return err
+	}
+	rev := strings.TrimSpace(string(revOut))
+	tip, err := synthesizeSubtree(gdAbs, p.RemotePath,
+		"refs/remotes/origin/"+p.Branch+" ^"+upstreamRef(p.Branch), synthMark)
+	if err != nil {
+		return err
+	}
+	if tip == "" {
+		logInfo(fmt.Sprintf("%s is already up to date", p.LocalPath))
+		return nil
+	}
+	// Already integrated (e.g. the user just finished a conflicted pull with
+	// `git rebase --continue`): just move the markers, no rebase needed.
+	if runGitdir(gdAbs, "merge-base", "--is-ancestor", tip, "refs/heads/"+p.Branch).Run() == nil {
+		_ = runGitdir(gdAbs, "update-ref", upstreamRef(p.Branch), rev).Run()
+		_ = runGitdir(gdAbs, "update-ref", synthRef(p.Branch), tip).Run()
+		logInfo(fmt.Sprintf("%s is already up to date", p.LocalPath))
+		return nil
+	}
+	// The rebase/merge runs in the gitdir with the crossed dir as the work
+	// tree — the pre-rebase hook allows it (target under refs/cross/).
+	// Markers move ONLY on success (a failed/conflicted pull must not leave
+	// them ahead of the branch — the next run would walk nothing).
+	heads := strings.TrimSpace(string(runGitdirOut(gdAbs, "rev-parse", "refs/heads/"+p.Branch)))
+	if heads == synthMark && rebase {
+		// No local commits: a no-op `rebase --onto` would leave the branch
+		// behind — fast-forward it and materialize the new content instead.
+		if err := runGitdir(gdAbs, "update-ref", "refs/heads/"+p.Branch, tip).Run(); err != nil {
+			return fmt.Errorf("cannot advance the subtree branch for %s: %w", p.LocalPath, err)
+		}
+		_ = runGitdir(gdAbs, "symbolic-ref", "HEAD", "refs/heads/"+p.Branch).Run()
+		mt := exec.Command("git", "--git-dir", gdAbs, "--work-tree", p.localAbs(root), "read-tree", "-mu", "HEAD")
+		if out, merr := mt.CombinedOutput(); merr != nil {
+			return fmt.Errorf("cannot update the crossed dir (uncommitted local edits? commit or stash them first): %s", strings.TrimSpace(string(out)))
+		}
+	} else {
+		var c *exec.Cmd
+		if rebase {
+			// The upstream arg is the marker BY NAME (refs/cross/…) — the pre-rebase
+			// hook's allow-rule matches the ref name, not a raw SHA.
+			c = exec.Command("git", "--git-dir", gdAbs, "--work-tree", p.localAbs(root),
+				"rebase", "--onto", tip, synthRef(p.Branch), "refs/heads/"+p.Branch)
+		} else {
+			c = exec.Command("git", "--git-dir", gdAbs, "--work-tree", p.localAbs(root),
+				"merge", tip)
+		}
+		c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if err := c.Run(); err != nil {
+			if ee, ok := err.(*exec.ExitError); ok {
+				// A conflict: git's own markers/instructions are already on screen;
+				// rerere records the resolution in the gitdir.
+				os.Exit(ee.ExitCode())
+			}
+			return err
+		}
+		// The rebase/merge finished DETACHED (bare GIT_DIR quirk): move the
+		// result onto the branch, re-attach HEAD, refresh the index.
+		_ = runGitdir(gdAbs, "update-ref", "refs/heads/"+p.Branch, "HEAD").Run()
+		_ = runGitdir(gdAbs, "symbolic-ref", "HEAD", "refs/heads/"+p.Branch).Run()
+		_ = runGitdir(gdAbs, "read-tree", "HEAD").Run()
+	}
+	_ = runGitdir(gdAbs, "update-ref", upstreamRef(p.Branch), rev).Run()
+	_ = runGitdir(gdAbs, "update-ref", synthRef(p.Branch), tip).Run()
+	logSuccess(fmt.Sprintf("Pulled %s (subtree re-rooted, %s)", p.LocalPath, p.RemotePath))
+	return nil
+}
+
+// crossPushSubtree intercepts `git cross push` for a subdirectory cross and
+// performs the graft (ADR-004): upstream's tree with ONLY remotePath
+// replaced by the local subtree, committed on top of the fetched upstream
+// tip, then a normal push. Refuses when upstream also changed remotePath
+// since the last update (pull first, then push).
+func crossPushSubtree(root string, p *Patch, rest []string) error {
+	for _, a := range rest {
+		if a != "origin" {
+			return fmt.Errorf("git cross push for a subdirectory cross takes no extra arguments (got: %q) — it grafts the subtree onto upstream %s and pushes", a, p.Remote)
+		}
+	}
+	gdAbs := p.gitdirAbs(root)
+	if _, err := subtreeGuards(gdAbs, p.LocalPath, p.Branch); err != nil {
+		return err
+	}
+	markT := strings.TrimSpace(string(runGitdirOut(gdAbs, "rev-parse", synthRef(p.Branch)+"^{tree}")))
+	headT := strings.TrimSpace(string(runGitdirOut(gdAbs, "rev-parse", "refs/heads/"+p.Branch+"^{tree}")))
+	if markT == "" || headT == "" {
+		return fmt.Errorf("%s: cannot resolve the cross trees", p.LocalPath)
+	}
+	if markT == headT {
+		logInfo(fmt.Sprintf("%s has nothing to push (no local commits on the cross)", p.LocalPath))
+		return nil
+	}
+	if fetch := runGitdir(gdAbs, "fetch", "-q", "origin",
+		fmt.Sprintf("+refs/heads/%s:refs/remotes/origin/%s", p.Branch, p.Branch)); fetch.Run() != nil {
+		return fmt.Errorf("git fetch failed for %s (%s)", p.Remote, p.RemoteURL)
+	}
+	U := strings.TrimSpace(string(runGitdirOut(gdAbs, "rev-parse", "refs/remotes/origin/"+p.Branch)))
+	if U == "" {
+		return fmt.Errorf("%s: cannot resolve the upstream tip", p.LocalPath)
+	}
+	// The upstream's current subtree state:
+	upT := emptyTree
+	if o, terr := runGitdir(gdAbs, "rev-parse", "-q", "--verify", U+":"+p.RemotePath).Output(); terr == nil {
+		upT = strings.TrimSpace(string(o))
+	}
+	if upT == headT {
+		// Already pushed (or identical): nothing to graft.
+		logInfo(fmt.Sprintf("%s has nothing to push (upstream %s:%s already has this content)", p.LocalPath, p.Remote, p.RemotePath))
+		return nil
+	}
+	// Safety: if upstream also changed remotePath since the last marker, a
+	// wholesale graft would silently discard those upstream changes.
+	if upT != markT {
+		return fmt.Errorf("%s: upstream also changed %s since your last update — run: git cross pull -r first (then push)", p.LocalPath, p.RemotePath)
+	}
+	// The graft runs in a throwaway index inside the gitdir (all objects live
+	// there: the upstream tree and the local subtree).
+	idx, err := os.CreateTemp("", "cross-graft-")
+	if err != nil {
+		return err
+	}
+	idxPath := idx.Name()
+	idx.Close()
+	os.Remove(idxPath)
+	defer os.Remove(idxPath)
+	env := append(os.Environ(), "GIT_INDEX_FILE="+idxPath)
+	// The graft commands name the work tree explicitly: read-tree --prefix and
+	// update-index refuse to run without one, and the gitdir must stay portable
+	// (no core.worktree config — the pair comes from the invocation, per ADR-001).
+	run := func(args ...string) (string, error) {
+		c := exec.Command("git", append([]string{"--git-dir", gdAbs, "--work-tree", p.localAbs(root)}, args...)...)
+		c.Env = env
+		out, rerr := c.Output()
+		return strings.TrimSpace(string(out)), rerr
+	}
+	// The graft (git 2.53 read-tree refuses "-m --prefix" — "Which one?"):
+	// seed the temp index with the upstream tree, REMOVE the remote_path
+	// entries via update-index --index-info, then place the local subtree at
+	// the prefix. An empty local subtree = the path vanishes upstream.
+	if _, err := run("read-tree", U+"^{tree}"); err != nil {
+		return fmt.Errorf("graft: read-tree upstream: %w", err)
+	}
+	ls := exec.Command("git", "--git-dir", gdAbs, "ls-tree", "-r", "--name-only", U+"^{tree}", "--", p.RemotePath+"/")
+	ls.Env = env
+	lsOut, lerr := ls.Output()
+	if lerr != nil {
+		return fmt.Errorf("graft: ls-tree: %w", lerr)
+	}
+	var info bytes.Buffer
+	for _, pth := range strings.Split(string(lsOut), "\n") {
+		if pth = strings.TrimSpace(pth); pth != "" {
+			fmt.Fprintf(&info, "0 %s\t%s\n", strings.Repeat("0", 40), pth)
+		}
+	}
+	if info.Len() > 0 {
+		ui := exec.Command("git", "--git-dir", gdAbs, "--work-tree", p.localAbs(root), "update-index", "--index-info")
+		ui.Env = env
+		ui.Stdin = &info
+		if out, uerr := ui.CombinedOutput(); uerr != nil {
+			return fmt.Errorf("graft: update-index removals: %s", strings.TrimSpace(string(out)))
+		}
+	}
+	if _, err := run("read-tree", "--prefix="+p.RemotePath+"/", headT); err != nil {
+		return fmt.Errorf("graft: read-tree --prefix: %w", err)
+	}
+	G, err := run("write-tree")
+	if err != nil || G == "" {
+		return fmt.Errorf("graft: write-tree: %w", err)
+	}
+	ct := exec.Command("git", "-c", "user.name=git-cross", "-c", "user.email=git-cross@localhost",
+		"--git-dir", gdAbs, "commit-tree", G, "-p", U,
+		"-m", fmt.Sprintf("git-cross: %s -> %s:%s", p.LocalPath, p.Remote, p.RemotePath))
+	co, cerr := ct.Output()
+	if cerr != nil {
+		return fmt.Errorf("graft: commit-tree: %w", cerr)
+	}
+	C := strings.TrimSpace(string(co))
+	push := exec.Command("git", "--git-dir", gdAbs, "push", "origin",
+		C+":refs/heads/"+p.Branch)
+	push.Env = append(os.Environ(), "CROSS_PUSH_GRAFT=1") // the pre-push hook lets the graft through
+	push.Stdin, push.Stdout, push.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := push.Run(); err != nil {
+		if ee, ok := err.(*exec.ExitError); ok {
+			os.Exit(ee.ExitCode())
+		}
+		return err
+	}
+	logSuccess(fmt.Sprintf("Pushed %s (grafted onto %s:%s; nothing outside %s touched)", p.LocalPath, p.Remote, p.RemotePath, p.RemotePath))
+	return nil
+}
+
+// runGitdirOut runs a gitdir command and returns its stdout (empty on error).
+func runGitdirOut(gdAbs string, args ...string) []byte {
+	out, err := runGitdir(gdAbs, args...).Output()
+	if err != nil {
+		return nil
+	}
+	return out
 }
 
 // applyUpstreamDelta runs the land+re-apply step for one patch (ADR-003).
-func applyUpstreamDelta(root string, p *Patch, baseRev, theirsRev string, resolve bool) landResult {
-	delta, err := upstreamDeltaCommit(root, p, baseRev, theirsRev)
+func applyUpstreamDelta(root string, p *Patch, baseRev, theirsTreeish, theirsRev string, resolve bool) landResult {
+	delta, err := upstreamDeltaCommit(root, p, baseRev, theirsTreeish)
 	if err != nil {
 		logError(fmt.Sprintf("%s: %v", p.LocalPath, err))
 		return landFailed
@@ -464,16 +879,36 @@ func landUpstream(root string, p *Patch, rev string, resolve bool) landResult {
 	if dirty {
 		return landDirty
 	}
-	baseOut, err := runGitdir(p.gitdirAbs(root), "rev-parse", "HEAD").Output()
+	gdAbs := p.gitdirAbs(root)
+	baseOut, err := runGitdir(gdAbs, "rev-parse", "HEAD").Output()
 	if err != nil {
 		logError(fmt.Sprintf("%s: cannot resolve the mirror HEAD: %v", p.LocalPath, err))
 		return landFailed
 	}
 	baseRev := strings.TrimSpace(string(baseOut))
-	if baseRev == rev {
+	theirsTreeish := rev
+	if p.RemotePath != "." && p.RemotePath != "/" {
+		// D3(c) (ADR-004): the mirror branch is SYNTHESIZED — its hashes are
+		// disjoint from the real upstream, so the up-to-date check uses the
+		// marker, and the delta's "theirs" side is the upstream SUBTREE.
+		if _, gerr := subtreeGuards(gdAbs, p.LocalPath, p.Branch); gerr != nil {
+			logError(gerr.Error())
+			return landFailed
+		}
+		markOut, _ := runGitdir(gdAbs, "rev-parse", "-q", "--verify", upstreamRef(p.Branch)).Output()
+		if strings.TrimSpace(string(markOut)) == rev {
+			return landUptodate
+		}
+		// A vanished upstream path = the empty subtree = wholesale deletion.
+		if to, terr := runGitdir(gdAbs, "rev-parse", "-q", "--verify", rev+":"+p.RemotePath).Output(); terr == nil {
+			theirsTreeish = strings.TrimSpace(string(to))
+		} else {
+			theirsTreeish = emptyTree
+		}
+	} else if baseRev == rev {
 		return landUptodate
 	}
-	if err := runGitdir(p.gitdirAbs(root), "cat-file", "-e", baseRev+"^{tree}").Run(); err != nil {
+	if err := runGitdir(gdAbs, "cat-file", "-e", baseRev+"^{tree}").Run(); err != nil {
 		logError(fmt.Sprintf("%s: the mirror lacks the previous upstream tree (shallow/partial clone?); delete and re-set it", p.LocalPath))
 		return landFailed
 	}
@@ -485,14 +920,14 @@ func landUpstream(root string, p *Patch, rev string, resolve bool) landResult {
 		"refs/heads/" + p.Branch,
 		"refs/remotes/origin/" + p.Branch,
 	} {
-		fc := exec.Command("git", "-C", root, "fetch", "--no-tags", "--quiet", p.gitdirAbs(root), ref)
+		fc := exec.Command("git", "-C", root, "fetch", "--no-tags", "--quiet", gdAbs, ref)
 		fc.Stderr = os.Stderr
 		if err := fc.Run(); err != nil {
 			logError(fmt.Sprintf("%s: cannot import upstream objects from the mirror: %v", p.LocalPath, err))
 			return landFailed
 		}
 	}
-	res := applyUpstreamDelta(root, p, baseRev, rev, resolve)
+	res := applyUpstreamDelta(root, p, baseRev, theirsTreeish, rev, resolve)
 	if res == landUpdated {
 		advanceMirror(root, p, rev)
 	}
@@ -754,12 +1189,67 @@ func updateCrossfile(line string) error {
 	return err
 }
 
+// updateCrossfileUseLine keeps exactly ONE `use` declaration per remote name:
+// re-pointing a remote (git cross use <name> <new-url>) rewrites its existing
+// line in place instead of appending a second one — a duplicate `use` line
+// would make the Crossfile ambiguous (see the crossfileCommands validation).
+func updateCrossfileUseLine(name, url string) error {
+	path, err := getCrossfilePath()
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return updateCrossfile("use " + name + " " + url) // not declared yet: append (creates the file)
+		}
+		return err
+	}
+	newLine := "cross use " + name + " " + url
+	replaced := false
+	var out []string
+	for _, l := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(l)
+		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			fields := strings.Fields(trimmed)
+			if len(fields) >= 2 && (fields[0] == "git" || fields[0] == "just") && fields[1] == "cross" {
+				fields = fields[2:]
+			} else if len(fields) > 0 && fields[0] == "cross" {
+				fields = fields[1:]
+			}
+			if len(fields) >= 2 && fields[0] == "use" && fields[1] == name {
+				if !replaced {
+					out = append(out, newLine)
+					replaced = true
+				}
+				continue // drop any further duplicate declarations of this remote
+			}
+		}
+		out = append(out, l)
+	}
+	if !replaced {
+		return updateCrossfile("use " + name + " " + url) // not declared yet: append
+	}
+	return os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644)
+}
+
 func crossfileCommands(path string) ([][]string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
+
+	// One declaration per key: a remote NAME (use) and a local_path (set).
+	// Duplicates are ambiguous — two URLs for one remote name, two sources
+	// for one crossed dir — and used to resolve silently (first/last line
+	// wins). They are a validation error: the Crossfile is the source of truth.
+	type declaration struct {
+		line  int
+		value string
+	}
+	remotes := make(map[string]declaration)
+	crosses := make(map[string]declaration)
 
 	var commands [][]string
 	scanner := bufio.NewScanner(file)
@@ -776,6 +1266,26 @@ func crossfileCommands(path string) ([][]string, error) {
 		}
 		if len(fields) == 0 || (fields[0] != "use" && fields[0] != "set" && fields[0] != "patch") {
 			return nil, fmt.Errorf("unsupported Crossfile command on line %d (update accepts only use and set declarations; 'patch' is the legacy keyword)", lineNumber)
+		}
+		if fields[0] == "use" && len(fields) == 3 {
+			if prev, dup := remotes[fields[1]]; dup {
+				return nil, fmt.Errorf("duplicate remote declaration '%s' in Crossfile: line %d (%s) and line %d (%s) — a remote name maps to exactly one URL; remove the stale line, or re-point with: git cross use %s <url>", fields[1], prev.line, prev.value, lineNumber, fields[2], fields[1])
+			}
+			remotes[fields[1]] = declaration{lineNumber, fields[2]}
+		}
+		if (fields[0] == "set" || fields[0] == "patch") && len(fields) >= 2 && len(fields) <= 3 {
+			localPath := ""
+			if len(fields) == 3 {
+				localPath = fields[2]
+			} else {
+				spec := strings.Split(fields[1], ":")
+				localPath = filepath.Base(spec[len(spec)-1])
+			}
+			localPath = filepath.ToSlash(filepath.Clean(localPath))
+			if prev, dup := crosses[localPath]; dup {
+				return nil, fmt.Errorf("duplicate cross declaration for '%s' in Crossfile: line %d (%s) and line %d (%s) — keep one line (delete and re-set: git cross del %s)", localPath, prev.line, prev.value, lineNumber, fields[1], localPath)
+			}
+			crosses[localPath] = declaration{lineNumber, fields[1]}
 		}
 		commands = append(commands, fields)
 	}
@@ -1471,6 +1981,16 @@ func gitPassthrough(args []string) error {
 		os.Exit(1) // contextual failure: exits directly, no duplicate cobra "Error:" line
 	}
 	root, _ = getRepoRoot() // already resolved above (debug block); refresh in case getRepoRoot failed
+	// D3(c) (ADR-004): subdirectory crosses intercept pull/push — the plain
+	// passthrough forms would mix the synthesized and real histories.
+	if patch != nil && len(args) > 0 && patch.RemotePath != "." && patch.RemotePath != "/" {
+		switch args[0] {
+		case "pull":
+			return crossPullSubtree(root, patch, args[1:])
+		case "push":
+			return crossPushSubtree(root, patch, args[1:])
+		}
+	}
 	c := runPatchGit(root, patch, args...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := c.Run(); err != nil {
@@ -1512,25 +2032,41 @@ cr() { git cross "$@"; }     # short alias for git cross: cr log --oneline
 # Leaving the crossed dir unloads automatically (_git_cross_sync): zsh via a chpwd
 # hook, bash via an appended PROMPT_COMMAND (interactive shells only), fish via
 # --on-variable PWD. The check is one shell pattern match — no subprocess.
+# GIT_CROSS_MARKER: style of the prompt marker (export it to taste).
+#   %r = remote name (falls back to the local path), %l = local path
+#   default: GIT_CROSS_MARKER='[cross:%r]'   ->   "[cross:infra] "
+_git_cross_mark() {
+    local m="${GIT_CROSS_MARKER-[cross:%r]}" p_remote=%r p_local=%l
+    # patterns via variables: a literal % in a zsh pattern is not matched
+    m=${m//$p_remote/${CROSS_REMOTE:-${CROSS_ACTIVE-}}}
+    m=${m//$p_local/${CROSS_ACTIVE-}}
+    _GIT_CROSS_MARK="$m "
+}
 _git_cross_prompt_on() {
     _git_cross_prompt_off   # re-loading (another cross) re-marks; it never stacks
+    _git_cross_mark
     if [ -n "${ZSH_VERSION-}" ]; then
         _git_cross_zsh_precmd_add
         _git_cross_zsh_precmd
     else
         _GIT_CROSS_PS1_SAVED="${PS1-}"
-        PS1="${PS1-}[cross] "
+        PS1="${PS1-}${_GIT_CROSS_MARK}"
     fi
 }
 # zsh themes (powerlevel10k/starship/oh-my-zsh) rebuild PROMPT every prompt, so a
 # one-shot append is wiped: this precmd hook runs AFTER them and appends if absent.
 _git_cross_zsh_precmd() {
-    case "${PROMPT-}" in *'[cross] '*) ;; *) PROMPT="${PROMPT-}[cross] " ;; esac
+    case "${PROMPT-}" in
+        *"${_GIT_CROSS_MARK-}") ;;
+        *) PROMPT="${PROMPT-}${_GIT_CROSS_MARK-}" ;;
+    esac
 }
 _git_cross_prompt_off() {
     if [ -n "${ZSH_VERSION-}" ]; then
         precmd_functions=(${precmd_functions:#_git_cross_zsh_precmd})
-        case "${PROMPT-}" in *'[cross] ') PROMPT="${PROMPT%\[cross\] }" ;; esac
+        case "${PROMPT-}" in
+            *"${_GIT_CROSS_MARK-}") PROMPT="${PROMPT%"${_GIT_CROSS_MARK-}"}" ;;
+        esac
     elif [ -n "${_GIT_CROSS_PS1_SAVED+x}" ]; then
         PS1="$_GIT_CROSS_PS1_SAVED"; unset _GIT_CROSS_PS1_SAVED
     fi
@@ -1539,7 +2075,7 @@ _git_cross_prompt_off() {
 _git_cross_unload() {
     eval "$(git cross env --unset)"
     _git_cross_prompt_off
-    unset _GIT_CROSS_ROOT
+    unset _GIT_CROSS_ROOT _GIT_CROSS_MARK
 }
 _git_cross_load() {
     _git_cross_unload
@@ -1644,14 +2180,29 @@ end
 #   gxenv -s [path]   isolated nested shell instead (leave it to unload; unmarked)
 # Leaving the crossed dir unloads automatically (--on-variable PWD, a pure string
 # comparison — no subprocess).
+# GIT_CROSS_MARKER: style of the prompt marker (set -gx to taste).
+#   %r = remote name (falls back to the local path), %l = local path
+#   default: [cross:%r]   ->   "[cross:infra] "
+function _git_cross_mark
+    set -l m '[cross:%r]'
+    if set -q GIT_CROSS_MARKER
+        set m $GIT_CROSS_MARKER
+    end
+    set -l remote $CROSS_ACTIVE
+    if set -q CROSS_REMOTE
+        set remote $CROSS_REMOTE
+    end
+    set -g _GIT_CROSS_MARK (string replace -a '%r' $remote -- $m | string replace -a '%l' $CROSS_ACTIVE)" "
+end
 function _git_cross_prompt_on
     if set -q __git_cross_wrapped
         return 0
     end
+    _git_cross_mark
     functions -c fish_prompt __git_cross_orig_prompt; or return 0
     function fish_prompt
         __git_cross_orig_prompt
-        echo -n '[cross] '
+        echo -n $_GIT_CROSS_MARK
     end
     set -g __git_cross_wrapped 1
 end
@@ -1667,7 +2218,7 @@ end
 function _git_cross_unload
     git cross env --fish --unset | source
     _git_cross_prompt_off
-    set -e _GIT_CROSS_ROOT
+    set -e _GIT_CROSS_ROOT _GIT_CROSS_MARK
 end
 function _git_cross_load
     _git_cross_unload
@@ -1799,7 +2350,7 @@ shell and 'gxenv -u' unloads it.`,
 			case "-h", "--help":
 				return cmd.Help()
 			case "--version":
-				fmt.Println("git-cross version 0.5.3")
+				fmt.Println("git-cross version 0.6.0")
 				return nil
 			}
 			return gitPassthrough(args)
@@ -1827,6 +2378,10 @@ shell and 'gxenv -u' unloads it.`,
 	})
 
 	// useRemote registers/validates a remote in metadata (no primary git remotes).
+	// Re-pointing (same name, new URL) follows the URL everywhere it is
+	// recorded — the Crossfile line, the metadata remote AND the per-patch
+	// remote_url, plus every gitdir's origin — so later updates cannot keep
+	// fetching the retired URL.
 	useRemote := func(name, url string) error {
 		if out, err := exec.Command("git", "ls-remote", "--heads", url).CombinedOutput(); err != nil {
 			return fmt.Errorf("cannot reach remote %s: %s: %w", url, strings.TrimSpace(string(out)), err)
@@ -1835,11 +2390,30 @@ shell and 'gxenv -u' unloads it.`,
 		if err != nil {
 			return err
 		}
+		if oldURL := remoteURL(meta, name); oldURL != "" && oldURL != url {
+			logInfo(fmt.Sprintf("Re-pointing remote %s: %s -> %s (metadata, Crossfile and gitdir origins follow)", name, oldURL, url))
+			root, rerr := getRepoRoot()
+			if rerr != nil {
+				return rerr
+			}
+			for i := range meta.Patches {
+				if meta.Patches[i].Remote != name {
+					continue
+				}
+				meta.Patches[i].RemoteURL = url
+				gdAbs := meta.Patches[i].gitdirAbs(root)
+				if _, serr := os.Stat(gdAbs); serr == nil {
+					if rc := runGitdir(gdAbs, "remote", "set-url", "origin", url); rc.Run() != nil {
+					logWarn(fmt.Sprintf("could not re-point origin in %s", meta.Patches[i].Gitdir))
+					}
+				}
+			}
+		}
 		upsertRemote(&meta, name, url)
 		if err := saveMetadata(meta); err != nil {
 			return err
 		}
-		return updateCrossfile(fmt.Sprintf("use %s %s", name, url))
+		return updateCrossfileUseLine(name, url)
 	}
 
 	useCmd := &cobra.Command{
@@ -1961,17 +2535,42 @@ shell and 'gxenv -u' unloads it.`,
 					logWarn("could not enable rerere in gitdir")
 				}
 
-				if spec.RemotePath != "." {
-					// Sparse filter: trailing "/" matches the directory reliably in --no-cone mode.
-					if gc := runGitdir(gdAbs, "config", "core.sparseCheckout", "true"); gc.Run() != nil {
-						return fmt.Errorf("sparse config failed for %s", gd)
+				if spec.RemotePath != "." && spec.RemotePath != "/" {
+					// D3(c) (ADR-004): re-root the cross at the upstream subtree. The
+					// gitdir's branch becomes a synthesized subtree history (original
+					// authorship and dates — deterministic; outside-only commits
+					// skipped), so the crossed dir holds the subtree's CONTENT at
+					// its root and the cross context (status/diff/log/pull -r)
+					// stays sane. No sparse config: HEAD's tree already IS the filter.
+					if tOut, terr := runGitdir(gdAbs, "cat-file", "-t",
+						"refs/heads/"+spec.Branch+":"+spec.RemotePath).Output(); terr == nil {
+						switch strings.TrimSpace(string(tOut)) {
+						case "blob":
+							os.RemoveAll(gdAbs)
+							return fmt.Errorf("file-level remote_path (%s) is not supported yet — patch its parent directory (planned: 0.6.1)", spec.RemotePath)
+						}
+					} else {
+						os.RemoveAll(gdAbs)
+						return fmt.Errorf("remote path %s does not exist in %s:%s", spec.RemotePath, spec.Remote, spec.Branch)
 					}
-					if err := os.MkdirAll(filepath.Join(gdAbs, "info"), 0o755); err != nil {
-						return err
+					realTip := strings.TrimSpace(string(runGitdirOut(gdAbs, "rev-parse", "refs/heads/"+spec.Branch)))
+					tip, serr := synthesizeSubtree(gdAbs, spec.RemotePath, "refs/heads/"+spec.Branch, "")
+					if serr != nil {
+						return serr
 					}
-					if err := os.WriteFile(filepath.Join(gdAbs, "info", "sparse-checkout"), []byte(spec.RemotePath+"/\n"), 0o644); err != nil {
-						return err
+					if tip == "" {
+						return fmt.Errorf("remote path %s produced no history in %s:%s", spec.RemotePath, spec.Remote, spec.Branch)
 					}
+					if uerr := runGitdir(gdAbs, "update-ref", "refs/heads/"+spec.Branch, tip).Run(); uerr != nil {
+						return fmt.Errorf("could not install the subtree history for %s: %w", gd, uerr)
+					}
+					_ = runGitdir(gdAbs, "update-ref", synthRef(spec.Branch), tip).Run()
+					_ = runGitdir(gdAbs, "update-ref", upstreamRef(spec.Branch), realTip).Run()
+					if herr := writeCrossGuards(gdAbs); herr != nil {
+						return herr
+					}
+					ensureGitdirIdentity(gdAbs)
+					logInfo(fmt.Sprintf("Subtree cross: %s holds the content of %s:%s (re-rooted; synthesized history)", localPath, spec.Remote, spec.RemotePath))
 				}
 
 				if err := os.MkdirAll(localAbs, 0o755); err != nil {
@@ -1985,6 +2584,11 @@ shell and 'gxenv -u' unloads it.`,
 				}
 			} else if _, lerr := os.Stat(localAbs); os.IsNotExist(lerr) {
 				// Orphaned gitdir (e.g. metadata was lost): re-materialize only.
+				if spec.RemotePath != "." && spec.RemotePath != "/" {
+					if _, merr := runGitdir(gdAbs, "rev-parse", "-q", "--verify", upstreamRef(spec.Branch)).Output(); merr != nil {
+						return fmt.Errorf("orphaned pre-0.6 subdir gitdir at %s; re-create the cross: git cross del %s && git cross update", gd, localPath)
+					}
+				}
 				logInfo(fmt.Sprintf("Reusing existing gitdir %s", gd))
 				if err := os.MkdirAll(localAbs, 0o755); err != nil {
 					return err
@@ -2046,9 +2650,35 @@ shell and 'gxenv -u' unloads it.`,
 			if err != nil {
 				return err
 			}
+			meta, err := loadMetadata()
+			if err != nil {
+				return err
+			}
+			// The Crossfile is the source of truth for update. A missing or
+			// emptied Crossfile while crosses are still registered means the
+			// records were lost (hand edit, git revert of an uncommitted
+			// Crossfile, ...) — refuse to run silently: every later update
+			// would quietly degrade to "No crosses to update." while the
+			// registered crosses rot. No git-cross command deletes records;
+			// this guard makes the loss loud and recoverable.
+			if _, serr := os.Stat(crossfile); serr != nil {
+				if len(meta.Patches) > 0 {
+					return fmt.Errorf("Crossfile is missing, but %d cross(es) are still registered; restore the records (git checkout -- Crossfile, if committed) or re-declare them: cross use <name> <url> + cross set <remote>[:<branch>]:<path> <local_path>", len(meta.Patches))
+				}
+				return fmt.Errorf("Crossfile not found — configure the repo first: git cross cfg")
+			}
 			commands, err := crossfileCommands(crossfile)
 			if err != nil {
 				return err
+			}
+			setDecls := 0
+			for _, fields := range commands {
+				if fields[0] == "set" || fields[0] == "patch" {
+					setDecls++
+			}
+			}
+			if setDecls == 0 && len(meta.Patches) > 0 {
+				return fmt.Errorf("Crossfile has no cross declarations, but %d cross(es) are still registered; the records were lost — restore them (git checkout -- Crossfile, if committed) or re-declare: cross set <remote>[:<branch>]:<path> <local_path>", len(meta.Patches))
 			}
 			selectedPath := ""
 			declined := 0 // crosses not adopted: declined the y/N wipe prompt
@@ -2057,10 +2687,6 @@ shell and 'gxenv -u' unloads it.`,
 				if err != nil {
 					return err
 				}
-			}
-			meta, err := loadMetadata()
-			if err != nil {
-				return err
 			}
 			// Pass 1: interpret the Crossfile, creating missing gitdirs/patches.
 			// Nothing touches an existing work tree here.

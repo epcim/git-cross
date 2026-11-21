@@ -43,7 +43,7 @@ exercise() {
     [ -d "$gd" ] || fail "$who: mirror not created"
 
     # --- clean landing -----------------------------------------------------
-    echo "user edit" >> lib/src/lib/local.txt
+    echo "user edit" >> lib/local.txt
     git add lib && git commit -qm "vendor: local edit" >/dev/null
     echo "new upstream" > "$up/src/lib/new.txt"
     git -C "$up" add -A && git -C "$up" commit -qm v2
@@ -52,10 +52,11 @@ exercise() {
     out=$(xc update 2>&1) || true
     echo "$out"
     assert_contains "$out" "Updated lib" "$who: clean update should land"
-    assert_grep "lib/src/lib/new.txt" "new upstream"
-    assert_grep "lib/src/lib/local.txt" "user edit"
+    assert_grep "lib/new.txt" "new upstream"
+    assert_grep "lib/local.txt" "user edit"
     [ -z "$(git ls-files -u)" ] || fail "$who: clean landing must not leave unmerged paths"
-    [ "$(git --git-dir="$gd" rev-parse HEAD)" = "$(git --git-dir="$gd" rev-parse refs/remotes/origin/main)" ] \
+    # v0.6: mirror HEAD is a synthesized subtree branch — compare TREES, not commits
+    [ "$(git --git-dir="$gd" rev-parse 'refs/heads/main^{tree}')" = "$(git --git-dir="$gd" rev-parse refs/remotes/origin/main:src/lib)" ] \
         || fail "$who: mirror should follow the landed revision"
     git add lib && git commit -qm "vendor: upstream sync" >/dev/null
     out=$(xc update 2>&1) || true
@@ -65,23 +66,23 @@ exercise() {
     log_header "026: $who — unstaged local edits refuse the update"
     local up_before
     up_before=$(git -C "$up" rev-parse HEAD)
-    echo "local only" >> lib/src/lib/local.txt          # unstaged on purpose
+    echo "local only" >> lib/local.txt          # unstaged on purpose
     echo "upstream v2" >> "$up/src/lib/local.txt"
     git -C "$up" commit -qam v3
     out=$(xc update 2>&1) || true
     echo "$out"
     assert_contains "$out" "has modified files; commit them in your repo first" \
         "$who: update must ask for a commit"
-    assert_grep "lib/src/lib/local.txt" "local only"
+    assert_grep "lib/local.txt" "local only"
     assert_contains "$(git --git-dir="$gd" show 'refs/remotes/origin/main:src/lib/local.txt')" "upstream v2" \
         "$who: fetch must still have happened"
     # Undo both sides so the file is identical again for the next phase.
-    git checkout -- lib/src/lib/local.txt 2>/dev/null || true
+    git checkout -- lib/local.txt 2>/dev/null || true
     git -C "$up" reset -q --hard "$up_before"
 
     # --- conflict is kept (never overwritten) ------------------------------
     log_header "026: $who — a collision is kept as a conflict"
-    echo "NAME: BBB" > lib/src/lib/c.yaml
+    echo "NAME: BBB" > lib/c.yaml
     git add lib && git commit -qm "vendor: BBB" >/dev/null
     echo "NAME: CCC" > "$up/src/lib/c.yaml"
     git -C "$up" commit -qam v4
@@ -91,7 +92,7 @@ exercise() {
     assert_contains "$out" "conflict in 'lib'" "$who: update must keep the conflict"
     assert_contains "$out" "git cross resolve" "$who: output should point at resolve"
     [ -n "$(git ls-files -u)" ] || fail "$who: conflict must surface as unmerged paths"
-    assert_grep "lib/src/lib/c.yaml" "<<<<<<<"
+    assert_grep "lib/c.yaml" "<<<<<<<"
 
     out=$(xc update 2>&1) || true
     assert_contains "$out" "pending conflict" "$who: a pending conflict must not be reset over"
@@ -101,20 +102,20 @@ exercise() {
     log_header "026: $who — resolve --abort restores the user's version"
     out=$(xc resolve --abort 2>&1) || fail "$who: resolve --abort"
     [ -z "$(git ls-files -u)" ] || fail "$who: --abort must clear unmerged paths"
-    assert_grep "lib/src/lib/c.yaml" "NAME: BBB"
-    [ "$(git --git-dir="$gd" rev-parse HEAD)" != "$(git --git-dir="$gd" rev-parse refs/remotes/origin/main)" ] \
+    assert_grep "lib/c.yaml" "NAME: BBB"
+    [ "$(git --git-dir="$gd" rev-parse 'refs/heads/main^{tree}')" != "$(git --git-dir="$gd" rev-parse refs/remotes/origin/main:src/lib)" ] \
         || fail "$who: --abort must not advance the mirror"
 
     # --- resolve --continue ------------------------------------------------
     log_header "026: $who — resolve --continue finishes it and lets the mirror follow"
     out=$(xc update 2>&1) || true
     assert_contains "$out" "conflict in 'lib'" "$who: conflict should reappear"
-    printf 'NAME: BBB\nNAME: CCC\n' > lib/src/lib/c.yaml
-    git add lib/src/lib/c.yaml
+    printf 'NAME: BBB\nNAME: CCC\n' > lib/c.yaml
+    git add lib/c.yaml
     out=$(xc resolve --continue 2>&1) || fail "$who: resolve --continue"
     echo "$out"
     assert_contains "$out" "is clean" "$who: --continue should confirm cleanliness"
-    [ "$(git --git-dir="$gd" rev-parse HEAD)" = "$(git --git-dir="$gd" rev-parse refs/remotes/origin/main)" ] \
+    [ "$(git --git-dir="$gd" rev-parse 'refs/heads/main^{tree}')" = "$(git --git-dir="$gd" rev-parse refs/remotes/origin/main:src/lib)" ] \
         || fail "$who: --continue must let the mirror follow"
     git commit -qm "vendor: resolved" >/dev/null
 
@@ -129,7 +130,7 @@ exercise() {
     out=$(xc update --no-resolve 2>&1) || true
     echo "$out"
     assert_contains "$out" "Updated lib" "$who: --no-resolve should land"
-    assert_grep "lib/src/lib/c.yaml" "NAME: DDD"
+    assert_grep "lib/c.yaml" "NAME: DDD"
     [ -z "$(git ls-files -u)" ] || fail "$who: --no-resolve must not leave unmerged paths"
 }
 

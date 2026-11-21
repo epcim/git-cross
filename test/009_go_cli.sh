@@ -78,8 +78,8 @@ fi
 
 log_header "Testing Go 'patch' command without branch..."
 "$GO_BIN" set demo:src vendor/go-src
-# D3 nesting: patch dir mirrors the upstream ROOT -> <local>/src/logic.go
-if [ ! -f "vendor/go-src/src/logic.go" ]; then
+# v0.6 D3(c) subtree-rooted: the patch dir mirrors the remote SUBTREE root -> <local>/logic.go
+if [ ! -f "vendor/go-src/logic.go" ]; then
     fail "Go 'patch' failed to vendor src/logic.go"
 fi
 [ -e vendor/go-src/.git ] && fail "patch dir must not contain a .git file"
@@ -90,7 +90,7 @@ assert_grep ".cross/metadata.json" '"gitdir": ".cross/worktrees/demo/vendor_go-s
 
 log_header "Testing Go 'patch' command with explicit branch..."
 "$GO_BIN" set demo:main:src vendor/go-src-branch
-if [ ! -f "vendor/go-src-branch/src/logic.go" ]; then
+if [ ! -f "vendor/go-src-branch/logic.go" ]; then
     fail "Go 'patch' with explicit branch failed"
 fi
 
@@ -102,7 +102,7 @@ pushd "$upstream_path" >/dev/null
     git commit -m "Add nested file" >/dev/null
 popd >/dev/null
 "$GO_BIN" set demo:main:/nested/dir vendor/nested-dir
-if [ ! -f "vendor/nested-dir/nested/dir/file.txt" ]; then
+if [ ! -f "vendor/nested-dir/file.txt" ]; then
     fail "Go 'patch' failed to vendor nested dir"
 fi
 
@@ -218,12 +218,12 @@ git commit -m "Update go logic"
 popd >/dev/null
 
 "$GO_BIN" update vendor/go-src
-if ! grep -q "Updated go logic" "vendor/go-src/src/logic.go"; then
+if ! grep -q "Updated go logic" "vendor/go-src/logic.go"; then
     fail "Go 'update' failed to pull updates"
 fi
 
 log_header "Testing Go update refuses an UNCOMMITTED patch dir (git-like ask-first)..."
-echo "local-only edit" >> vendor/go-src/src/logic.go
+echo "local-only edit" >> vendor/go-src/logic.go
 pushd "$upstream_path" >/dev/null
 echo "upstream update after local edit" >> src/logic.go
 git add src/logic.go
@@ -231,7 +231,7 @@ git commit -m "Update logic again" -q
 popd >/dev/null
 update_output=$("$GO_BIN" update vendor/go-src 2>&1)
 echo "$update_output"
-if ! grep -q "local-only edit" vendor/go-src/src/logic.go; then
+if ! grep -q "local-only edit" vendor/go-src/logic.go; then
     fail "Go update overwrote the uncommitted local edit"
 fi
 if ! echo "$update_output" | grep -q "has modified files; commit them in your repo first"; then
@@ -269,7 +269,7 @@ fi
 if [ -z "$(git ls-files -u | awk '{print $4}' | sort -u)" ]; then
     fail "a conflict must leave unmerged paths in the user repo"
 fi
-if ! grep -q "<<<<<<<" vendor/go-src/src/logic.go; then
+if ! grep -q "<<<<<<<" vendor/go-src/logic.go; then
     fail "conflict markers should be present in the patch dir"
 fi
 # abort restores the user's version and keeps the fetch
@@ -277,19 +277,21 @@ abort_out=$("$GO_BIN" resolve --abort vendor/go-src 2>&1); echo "$abort_out"
 if [ -n "$(git ls-files -u)" ]; then
     fail "resolve --abort should clear unmerged paths"
 fi
-if ! grep -q "local-only edit" vendor/go-src/src/logic.go; then
+if ! grep -q "local-only edit" vendor/go-src/logic.go; then
     fail "resolve --abort should restore the user's version"
 fi
 # re-run update, resolve, continue
 "$GO_BIN" update vendor/go-src >/dev/null 2>&1 || true
-printf 'resolved logic\n' > vendor/go-src/src/logic.go
-git add vendor/go-src/src/logic.go
+printf 'resolved logic\n' > vendor/go-src/logic.go
+git add vendor/go-src/logic.go
 cont_out=$("$GO_BIN" resolve --continue vendor/go-src 2>&1); echo "$cont_out"
 if ! echo "$cont_out" | grep -q "is clean"; then
     fail "resolve --continue should confirm the patch is clean"
 fi
-if [ "$(git --git-dir="$gd" rev-parse HEAD)" != "$(git --git-dir="$gd" rev-parse refs/remotes/origin/main)" ]; then
-    fail "resolve --continue should let the mirror follow the landed upstream"
+# v0.6: mirror refs/heads/<branch> is a SYNTHESIZED subtree branch — its commit
+# hash NEVER equals raw origin/main. Compare TREES instead.
+if [ "$(git --git-dir="$gd" rev-parse 'refs/heads/main^{tree}')" != "$(git --git-dir="$gd" rev-parse 'refs/remotes/origin/main:src')" ]; then
+    fail "resolve --continue should let the mirror's synthesized tree follow the landed upstream"
 fi
 git commit -qm "vendor: resolved"
 
@@ -300,7 +302,8 @@ pushd vendor/go-src >/dev/null
     if ! echo "$o" | grep -q "## main"; then
         fail "git cross status inside a patch must run in the upstream context"
     fi
-    if ! echo "$o" | grep -q "src/logic.go"; then
+    # v0.6: the synthesized branch re-roots the subtree, so the tracked file is logic.go
+    if ! echo "$o" | grep -q "logic.go"; then
         fail "upstream status should report the locally modified tracked file"
     fi
     diff_output=$("$GO_BIN" diff 2>&1 || true)
@@ -377,7 +380,7 @@ cross set demo:main:src vendor/update-src
 CROSSEOF
 
 "$GO_BIN" update
-if [ ! -f "vendor/update-src/src/logic.go" ]; then
+if [ ! -f "vendor/update-src/logic.go" ]; then
     fail "Go 'update' failed to create a missing patch from Crossfile"
 fi
 # assert_grep resolves against $SANDBOX, and we are inside update-test/
@@ -398,7 +401,7 @@ git commit -m "Add extras" -q
 popd >/dev/null
 
 "$GO_BIN" set demo:extras vendor/extras
-if [ ! -f "vendor/extras/extras/extra.txt" ]; then
+if [ ! -f "vendor/extras/extra.txt" ]; then
     fail "Go 'patch' for extras failed"
 fi
 
@@ -429,14 +432,14 @@ popd >/dev/null
 "$GO_BIN" use purge-remote "file://$purge_upstream"
 "$GO_BIN" set purge-remote:lib vendor/purge-lib
 
-if [ ! -f "vendor/purge-lib/lib/purge.txt" ]; then
+if [ ! -f "vendor/purge-lib/purge.txt" ]; then
     fail "Purge setup: patch not created"
 fi
 
 "$GO_BIN" wipe purge-remote
 # v0.5.1 contract: wipe owns metadata + gitdirs ONLY — the crossed dirs are
 # the user's tracked files and stay (remove them with: git cross del <path>).
-if [ ! -d "vendor/purge-lib" ] || [ ! -f "vendor/purge-lib/lib/purge.txt" ]; then
+if [ ! -d "vendor/purge-lib" ] || [ ! -f "vendor/purge-lib/purge.txt" ]; then
     fail "Go 'wipe' must leave crossed dirs and their files in place"
 fi
 if [ -d ".cross/worktrees/purge-remote" ]; then

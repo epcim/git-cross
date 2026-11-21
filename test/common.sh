@@ -267,3 +267,18 @@ just_ref_implements() {
     esac
     return 0
 }
+
+# v0.6 (ADR-004): subtree crosses (remote_path != '.') are Go-ONLY in the
+# Just/Fish reference — its `set` refuses them ("NOT IMPLEMENTED ... subtree
+# crosses") to keep the reference simple. Probe once and skip just-side
+# sub-cases that need a subdir cross; Go owns the full coverage (test/030).
+#   if just_ref_subdir; then ...sub-case... else echo "SKIP (just): subtree crosses are Go-only"; fi
+just_ref_subdir() {
+    command -v just >/dev/null 2>&1 || return 1
+    local _jrs_out
+    _jrs_out=$(just cross set x:y z </dev/null 2>&1)
+    case "$_jrs_out" in
+        *"subtree crosses"*) return 1 ;;
+    esac
+    return 0
+}

@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -euo pipefail
 
 # Source 002 to setup environment and run 'patch' tests
@@ -6,16 +6,6 @@ set -euo pipefail
 CLEANUP=false source test/002_patch.sh
 
 echo "## Testing 'remove' command..."
-
-# 1. Test removal in Shell/Just implementation
-# '002' created vendor/lib
-echo "## Testing removal in Shell/Just..."
-just cross del vendor/lib
-
-if [ -d "vendor/lib" ]; then fail "vendor/lib still exists after remove"; fi
-if grep -q "vendor/lib" Crossfile; then fail "Crossfile still contains patch entry"; fi
-if grep -q "vendor/lib" .cross/metadata.json; then fail "Metadata still contains patch entry"; fi
-if git worktree list | grep -q "vendor/lib"; then fail "Worktree still exists"; fi
 
 # Build Go binary (reuse existing or build fresh)
 GO_BIN="$REPO_ROOT/src-go/git-cross-go"
@@ -36,10 +26,22 @@ if [ ! -f "$GO_BIN" ]; then
     fi
 fi
 
+# 1. Test removal in Shell/Just implementation
+# '002' created vendor/lib (Go-created; the reference refuses subdir crosses)
+# 'del' is a CORE command, shape-agnostic — it must remove a Go-created cross.
+echo "## Testing removal in Shell/Just..."
+just cross del vendor/lib
+
+if [ -d "vendor/lib" ]; then fail "vendor/lib still exists after remove"; fi
+if grep -q "vendor/lib" Crossfile; then fail "Crossfile still contains patch entry"; fi
+if grep -q "vendor/lib" .cross/metadata.json; then fail "Metadata still contains patch entry"; fi
+if git worktree list | grep -q "vendor/lib"; then fail "Worktree still exists"; fi
+
 # 2. Test removal in Go implementation
 if [ -n "$GO_BIN" ] && [ -f "$GO_BIN" ]; then
     echo "## Testing removal in Go..."
-    just cross set repo1:src/lib vendor/app-go
+    # subdir crosses are Go-only (v0.6): create with the Go binary
+    "$GO_BIN" set repo1:src/lib vendor/app-go
     "$GO_BIN" del vendor/app-go
 
     if [ -d "vendor/app-go" ]; then fail "vendor/app-go still exists after remove"; fi
@@ -52,7 +54,7 @@ fi
 # 4. Test list command (Go) - need active patch for remotes to show
 if [ -n "$GO_BIN" ] && [ -f "$GO_BIN" ]; then
     echo "## Testing 'list' command (Go)..."
-    just cross set repo1:src/lib vendor/list-test
+    "$GO_BIN" set repo1:src/lib vendor/list-test
     list_output=$("$GO_BIN" list)
     echo "$list_output"
     if ! echo "$list_output" | grep -q "Configured Remotes"; then fail "Go list missing Remotes section"; fi
@@ -80,12 +82,14 @@ if [ -n "$GO_BIN" ] && [ -f "$GO_BIN" ]; then
     if ! printf '%s\n' "$noheader_output" | cut -f3 | grep -qx "vendor/list-test"; then
         fail "Go list --raw --no-header should still print patch rows"
     fi
-    just cross del vendor/list-test
+    "$GO_BIN" del vendor/list-test
 
-    # 4b. Test list --raw for the Just/Fish implementation when fish is available
+    # 4b. Test list --raw for the Just/Fish implementation when fish is available.
+    # 'ls' is a CORE command, shape-agnostic: it must list a Go-created subdir cross.
+    # (v0.6: the reference REFUSES to CREATE subdir crosses, but can list/delete them.)
     if command -v fish >/dev/null 2>&1 && command -v jq >/dev/null 2>&1; then
         echo "## Testing 'list raw=1' (Just/Fish)..."
-        just cross set repo1:src/lib vendor/list-test
+        "$GO_BIN" set repo1:src/lib vendor/list-test
         raw_output=$(just cross ls raw=1)
         echo "$raw_output"
         if echo "$raw_output" | grep -q "==>"; then fail "Just list raw=1 must not print banners"; fi
@@ -107,7 +111,7 @@ if [ -n "$GO_BIN" ] && [ -f "$GO_BIN" ]; then
 
     # 5. Test Crossfile deduplication (Go)
     echo "## Testing Crossfile deduplication (Go)..."
-    just cross set repo1:src/lib vendor/dedup-test
+    "$GO_BIN" set repo1:src/lib vendor/dedup-test
     count_before=$(grep -c "vendor/dedup-test" Crossfile)
     # Try to add again with Go
     "$GO_BIN" set repo1:main:src/lib vendor/dedup-test

@@ -5,7 +5,7 @@ architecture** only. There is no exclusion list: retired tests were deleted with
 their commands.
 
 ```bash
-# everything (21 tests)
+# everything (24 test files + go test ./src-go)
 SHELL=/bin/bash bash test/run-all.sh        # or: just cross-test
 
 # one test
@@ -65,6 +65,9 @@ through both implementations, so a divergence fails there.
 | `025_gitdir_patch.sh` | stage-1 gate: creation/checkout for both implementations |
 | `026_update_resolve.sh` | update/resolve lifecycle (land, refusal, conflict, abort, continue, `--no-resolve`) — Go (the just variant skips: Go-only) |
 | `027_update_force.sh` | `update --force` / y-N re-adoption of lost crosses (Go prompt matrix; the just variant skips: Go-only) |
+| `028_env.sh` | `git cross env` + `gxenv`/`xcd` auto-load/unload + prompt marker (Go-only) |
+| `029_crossfile_records.sh` | Crossfile records lifecycle: del keeps the `use` record, re-declare+update re-adopts without loss/duplication, duplicate `use`/`set` declarations rejected, `use` re-pointing (one line, origins follow) — Go + just core parts |
+| `030_subtree_crosses.sh` | v0.6 subtree crosses: re-rooted layout, deterministic synthesis, update A/M/D, intercepted `pull -r` (conflict + continue + heal), hook guards, graft push, lineage check, whole-repo control (Go) |
 
 Retired (deleted, not skipped): `005_replay`, `008_rust_cli`, `011_rust_push`,
 `021_fzf_diff_compare` — `replay`/`push` are gone, `compare` was removed in

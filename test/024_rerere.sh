@@ -64,8 +64,8 @@ exercise() {
 
     # ------------------------------------------------- functional rerere ---
     log_header "024: a recorded conflict resolution is reused ($who)"
-    local file="$PATCH/docs/a.md"
-    [ -f "$file" ] || fail "$who: expected the nested patch file at $file"
+    local file="$PATCH/a.md"
+    [ -f "$file" ] || fail "$who: expected the patch file at $file"
 
     pushd "$PATCH" >/dev/null
         # the standalone gitdir needs an identity for commits
@@ -73,8 +73,8 @@ exercise() {
         xc config user.name "Test User" >/dev/null
 
         # local divergence (committed: pull -r refuses to run on a dirty tree)
-        printf 'line one\nlocal change\n' > docs/a.md
-        xc add docs/a.md >/dev/null 2>&1 || fail "$who: git cross add failed"
+        printf 'line one\nlocal change\n' > a.md
+        xc add a.md >/dev/null 2>&1 || fail "$who: git cross add failed"
         xc commit -qm "local edit" >/dev/null 2>&1 || fail "$who: git cross commit failed"
     popd >/dev/null
 
@@ -93,15 +93,15 @@ exercise() {
         first_rc=$?
         set -e
         [ "$first_rc" -ne 0 ] || fail "$who: expected a conflict on the first pull -r"
-        grep -q "<<<<<<<" docs/a.md || fail "$who: expected conflict markers in the patch file"
+        grep -q "<<<<<<<" a.md || fail "$who: expected conflict markers in the patch file"
 
         local rr_cache
         rr_cache="$(rr_cache_of "$SANDBOX/$gd")"
         [ -d "$rr_cache" ] || fail "$who: rerere cache not created at $rr_cache"
 
         # Resolve manually: this is the step rerere must remember.
-        printf 'line one\nresolved line\n' > docs/a.md
-        xc add docs/a.md >/dev/null 2>&1 || fail "$who: git cross add (resolve) failed"
+        printf 'line one\nresolved line\n' > a.md
+        xc add a.md >/dev/null 2>&1 || fail "$who: git cross add (resolve) failed"
         GIT_EDITOR=true xc rebase --continue >/dev/null 2>&1 || fail "$who: rebase --continue failed"
         [ -n "$(find "$rr_cache" -type f -name preimage 2>/dev/null | head -1)" ] \
             || fail "$who: rerere preimage was not recorded"
@@ -115,14 +115,14 @@ exercise() {
         # Without rerere.autoUpdate the rebase still stops, but the recorded
         # resolution is applied to the working tree.
         [ "$replay_rc" -ne 0 ] || fail "$who: the replay should still stop for a commit"
-        assert_contains "$replay_out" "Resolved 'docs/a.md' using previous resolution" \
+        assert_contains "$replay_out" "Resolved 'a.md' using previous resolution" \
             "$who: rerere should reuse the recorded resolution on replay"
-        if grep -q '^<<<<<<<' docs/a.md; then
+        if grep -q '^<<<<<<<' a.md; then
             fail "$who: rerere did not reuse the resolution (conflict markers remain)"
         fi
-        grep -qx 'resolved line' docs/a.md || fail "$who: rerere did not reapply the recorded resolution"
+        grep -qx 'resolved line' a.md || fail "$who: rerere did not reapply the recorded resolution"
 
-        xc add docs/a.md >/dev/null 2>&1 || fail "$who: git cross add failed on replay"
+        xc add a.md >/dev/null 2>&1 || fail "$who: git cross add failed on replay"
         GIT_EDITOR=true xc rebase --continue >/dev/null 2>&1 || fail "$who: replay rebase --continue failed"
     popd >/dev/null
 }

@@ -273,7 +273,9 @@ _remote_url remote:
 
 # AICONTEXT: "use" registers remote git repository URL in .cross/metadata.json (remotes
 # section) and Crossfile. The primary repo's git remotes are NOT touched (v2).
-# Add a remote repository
+# Re-pointing (same name, new URL) follows the URL everywhere: the Crossfile line,
+# the metadata remote + per-patch remote_url, and every gitdir origin — update
+# otherwise keeps fetching the retired URL. One `use` line per remote name.
 [no-cd]
 use name url: check-deps
     #!/usr/bin/env fish
@@ -290,11 +292,42 @@ use name url: check-deps
         mkdir -p (dirname {{METADATA}})
         echo '{"remotes": [], "patches": []}' > {{METADATA}}
     end
+    # Re-point: same remote name, different URL — sync every stored copy
+    set old_url (jq -r --arg n "{{name}}" '.remotes[]? | select(.name == $n) | .url' {{METADATA}})
+    if test -n "$old_url"; and test "$old_url" != "{{url}}"
+        just cross _log info "Re-pointing remote {{name}}: $old_url -> {{url}} (metadata, Crossfile and gitdir origins follow)"
+        for gd in (jq -r --arg n "{{name}}" '.patches[]? | select(.remote == $n) | .gitdir' {{METADATA}})
+            test -d "$gd"; and git --git-dir="$gd" remote set-url origin {{url}}
+        end
+        set tmp (mktemp)
+        jq --arg n "{{name}}" --arg u "{{url}}" \
+            '(.patches[]? | select(.remote == $n) | .remote_url) |= $u' \
+            {{METADATA}} > "$tmp"; and mv "$tmp" {{METADATA}}
+    end
     set tmp (mktemp)
     jq --arg n "{{name}}" --arg u "{{url}}" \
         'if .remotes == null then .remotes = [] else . end | .remotes |= (map(select(.name != $n)) + [{name: $n, url: $u}])' \
         {{METADATA}} > "$tmp"; and mv "$tmp" {{METADATA}}
-    just cross update_crossfile "cross use {{name}} {{url}}"
+    # One use line per remote: rewrite the existing declaration in place
+    set tmp (mktemp)
+    set replaced 0
+    if test -f "{{CROSSFILE}}"
+        while read -l line
+            set t (string trim "$line")
+            if test -n "$t"; and not string match -q '#*' "$t"; and string match -qr '^(git |just )?(cross )?use {{name}}( |$)' "$t"
+                if test "$replaced" = 0
+                    echo "cross use {{name}} {{url}}" >> "$tmp"
+                    set replaced 1
+                end
+                continue
+            end
+            echo "$line" >> "$tmp"
+        end < "{{CROSSFILE}}"
+        mv "$tmp" "{{CROSSFILE}}"
+    end
+    if test "$replaced" = 0
+        just cross update_crossfile "cross use {{name}} {{url}}"
+    end
     just cross _log success "Remote {{name}} registered ({{url}})."
 
 # Delete a cross and its crossed directory
@@ -363,6 +396,7 @@ del path: check-deps
 [no-cd]
 wipe remote_name="":
     @echo "NOT IMPLEMENTED in Justfile version: wipe — Go-only, use: git cross wipe" >&2; exit 1
+
 # v2: each patch is a standalone bare gitdir under .cross/worktrees/<remote>/<local_path>;
 # the work tree is local_path itself, inside the primary repo — no rsync, no linked worktrees.
 # AICONTEXT: for implementation, use "fish" keep it simple, shell comamnds shall be readable. User interaction shall be kept minimal. Debug statements are not needed. Document in comments major logical blocks.
@@ -386,6 +420,15 @@ set remote_spec local_path="": check-deps
     # update vars — treat "/" as "." (whole repo root)
     set r_path (string trim -c '/' -- "$remote_path")
     test -n "$r_path"; or set r_path "."
+
+    # v0.6 (ADR-004): subtree-rooted crosses (remote_path != ".") are Go-only.
+    # The reference keeps the whole-repo machinery only ("no more Justfile
+    # extensions"); the Go CLI owns the synthesis/graft machinery, and the
+    # gitdir hooks guard plain git even through this reference's passthrough.
+    if test "$r_path" != "."
+        echo "NOT IMPLEMENTED in Justfile version: subtree crosses (remote_path != '.') — Go-only, use: git cross set <remote>[:<branch>]:<path> <local_path>" >&2
+        exit 1
+    end
 
     set l_path "{{local_path}}"
     if test -z "$l_path" -a "$r_path" = "."
@@ -449,11 +492,6 @@ set remote_spec local_path="": check-deps
             end
             # remember conflict resolutions in this standalone gitdir
             git --git-dir="$gd_abs" config rerere.enabled true
-            if test "$r_path" != "."
-                # sparse filter: trailing "/" matches the directory reliably in --no-cone mode
-                git --git-dir="$gd_abs" config core.sparseCheckout true
-                echo "$r_path/" > "$gd_abs/info/sparse-checkout"
-            end
             git --git-dir="$gd_abs" --work-tree="{{REPO_DIR}}/$l_path" read-tree -mu HEAD
         else if not test -d "{{REPO_DIR}}/$l_path"
             # orphaned gitdir (e.g. metadata was lost): re-materialize only
@@ -601,7 +639,17 @@ ls raw="" no_header="": check-deps
                 # The mirror is BARE: GIT_WORK_TREE must name the crossed dir or git
                 # refuses the diff ("must be run in a work tree") — the v0.5.1 Go
                 # bugfix added the same work tree to its health diff.
-                if not GIT_INDEX_FILE="$idx" GIT_WORK_TREE="$root/$lp" git --git-dir="$root/$gd" -C "$root/$lp" diff --quiet HEAD -- "$rp"
+                # D3(c): a subdir cross's HEAD tree already IS the upstream subtree
+                # (re-rooted), so the diff runs with NO pathspec — with "$rp" the
+                # pathspec matches nothing and a modified cross reads as Clean.
+                # Whole-repo crosses keep the "." pathspec (Go: patchDiffersFromUpstream).
+                if test "$rp" = "." -o "$rp" = "/"
+                    if not GIT_INDEX_FILE="$idx" GIT_WORK_TREE="$root/$lp" git --git-dir="$root/$gd" -C "$root/$lp" diff --quiet HEAD -- "."
+                        echo Modified
+                    else
+                        echo Clean
+                    end
+                else if not GIT_INDEX_FILE="$idx" GIT_WORK_TREE="$root/$lp" git --git-dir="$root/$gd" -C "$root/$lp" diff --quiet HEAD
                     echo Modified
                 else
                     echo Clean

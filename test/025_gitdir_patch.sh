@@ -52,7 +52,7 @@ xc() {
 git config cross.depth 1
 
 # ------------------------------------------------------------- test flow ----
-exercise_patch_creation() {
+exercise_use() {
     log_header "$IMPL: use registers the remote in metadata (primary git untouched)"
     xc use demo "$UP_URL" || fail "use failed"
     assert_grep .cross/metadata.json '"name": "demo"'
@@ -61,6 +61,34 @@ exercise_patch_creation() {
     if git remote | grep -q demo; then
         fail "primary repo must NOT get a git remote for demo (v2: remotes live in .cross)"
     fi
+}
+
+# v0.6: the subdir cross (demo:main:docs) is Go-ONLY. The Go variant keeps the
+# full v0.6 subtree assertions; the Just variant pins the refusal contract and
+# runs the whole-repo equivalent (demo:main:. vendor/root) for the machinery
+# both implementations still share (bare gitdir, shallow, rerere, blobs,
+# passthrough).
+exercise_patch_creation() {
+    if [ "$IMPL" = "just" ] && ! just_ref_subdir; then
+        log_header "$IMPL: set REFUSES subdir crosses (v0.6: subtree crosses are Go-only)"
+        # 025 runs without errexit: save/restore the shell state around the probe
+        case "$-" in *e*) local _er=1 ;; *) local _er=0 ;; esac
+        set +e
+        ref_out=$(xc set demo:main:docs vendor/docs 2>&1)
+        ref_rc=$?
+        [ "$_er" = 1 ] && set -e
+        [ "$ref_rc" -ne 0 ] || fail "just: set with a subdir remote_path must fail"
+        assert_contains "$ref_out" "subtree crosses" \
+            "just: set refusal must explain that subtree crosses are Go-only"
+        assert_contains "$ref_out" "git cross set" \
+            "just: the refusal must point at the Go CLI"
+        log_warn "SKIP (just): subtree crosses are Go-only — running the whole-repo equivalent instead"
+        exercise_use
+        exercise_whole_repo_patch
+        return
+    fi
+
+    exercise_use
 
     log_header "$IMPL: patch creates a standalone bare gitdir and a work tree in the main repo"
     xc set demo:main:docs vendor/docs || fail "patch failed"
@@ -68,18 +96,28 @@ exercise_patch_creation() {
     assert_file_exists .cross/worktrees/demo/vendor_docs/HEAD
     assert_file_exists .cross/worktrees/demo/vendor_docs/config
     assert_dir_exists .cross/worktrees/demo/vendor_docs/objects
-    # sparse + shallow + rerere state inside the gitdir
-    assert_grep .cross/worktrees/demo/vendor_docs/info/sparse-checkout '^docs/$'
+    # v0.6 subtree state + shallow + rerere in the gitdir (no sparse config any
+    # more — HEAD's tree IS the subtree; the refs/cross markers carry the synthesis)
+    [ ! -e .cross/worktrees/demo/vendor_docs/info/sparse-checkout ] \
+        || fail "v0.6 subdir crosses must have NO sparse config"
+    assert_grep .cross/metadata.json '"gitdir": ".cross/worktrees/demo/vendor_docs"'
+    [ -n "$(git --git-dir=.cross/worktrees/demo/vendor_docs for-each-ref refs/cross/synthesized/main)" ] \
+        || fail "refs/cross/synthesized/<b> marker missing"
+    [ -n "$(git --git-dir=.cross/worktrees/demo/vendor_docs for-each-ref refs/cross/upstream/main)" ] \
+        || fail "refs/cross/upstream/<b> marker missing"
+    [ -x .cross/worktrees/demo/vendor_docs/hooks/pre-rebase ] \
+        || fail "pre-rebase guard hook missing"
     assert_file_exists .cross/worktrees/demo/vendor_docs/shallow
     [ "$(git --git-dir=.cross/worktrees/demo/vendor_docs config --get rerere.enabled)" = "true" ] \
         || fail "rerere must be enabled in the standalone gitdir"
-    # work tree: plain files inside the primary repo, no .git pointer
+    # work tree: the subtree CONTENT re-rooted, plain files, no .git pointer
     [ ! -e vendor/docs/.git ] || fail "patch dir must NOT contain a .git file (breaks primary tracking)"
-    assert_file_exists vendor/docs/docs/guide.md
-    [ ! -e vendor/docs/README.md ] || fail "sparse filter failed: README.md must not be checked out"
-    [ ! -e vendor/docs/src/lib.ts ] || fail "sparse filter failed: src/ must not be checked out"
+    assert_file_exists vendor/docs/guide.md
+    assert_file_exists vendor/docs/guides/api.md
+    [ ! -e vendor/docs/README.md ] || fail "subtree filter failed: README.md must not be checked out"
+    [ ! -e vendor/docs/src ] || fail "subtree filter failed: src/ must not be checked out"
+    [ ! -e vendor/docs/docs ] || fail "no upstream path prefix may appear in the crossed dir"
     # metadata v2 entry
-    assert_grep .cross/metadata.json '"gitdir": ".cross/worktrees/demo/vendor_docs"'
     assert_grep .cross/metadata.json '"local_path": "vendor/docs"'
 
     log_header "$IMPL: primary tracks patch files as normal blobs (no submodule gitlink)"
@@ -117,6 +155,35 @@ exercise_patch_creation() {
     else
         log_warn "SKIP (just): cd is Go-only — NOT IMPLEMENTED in the Just reference (v0.5.1)"
     fi
+}
+
+exercise_whole_repo_patch() {
+    log_header "$IMPL: whole-repo patch creates a standalone bare gitdir (reference machinery)"
+    xc set demo:main:. vendor/root || fail "patch failed"
+    assert_file_exists .cross/worktrees/demo/vendor_root/HEAD
+    assert_file_exists .cross/worktrees/demo/vendor_root/config
+    assert_dir_exists .cross/worktrees/demo/vendor_root/objects
+    assert_grep .cross/metadata.json '"gitdir": ".cross/worktrees/demo/vendor_root"'
+    # whole-repo crosses: no refs/cross markers, no guard hooks, no re-rooting
+    [ -z "$(git --git-dir=.cross/worktrees/demo/vendor_root for-each-ref refs/cross)" ] \
+        || fail "whole-repo cross must NOT have refs/cross markers"
+    assert_file_exists .cross/worktrees/demo/vendor_root/shallow
+    [ "$(git --git-dir=.cross/worktrees/demo/vendor_root config --get rerere.enabled)" = "true" ] \
+        || fail "rerere must be enabled in the standalone gitdir"
+    [ ! -e vendor/root/.git ] || fail "patch dir must NOT contain a .git file (breaks primary tracking)"
+    # the whole upstream root is mirrored as-is
+    assert_file_exists vendor/root/README.md
+    assert_file_exists vendor/root/docs/guide.md
+    git add vendor/root
+    mode=$(git ls-files -s vendor/root | head -1 | awk '{print $1}')
+    [ "$mode" = "100644" ] || fail "patch files must be tracked as normal blobs, got mode: $mode"
+
+    log_header "$IMPL: bare git cross <git-cmd> runs git in the patch's upstream context"
+    o=$(cd vendor/root && xc remote -v 2>/dev/null | head -1)
+    assert_contains "$o" "$UP_URL" "bare passthrough remote must point at the upstream"
+    o=$(cd vendor/root && xc log --oneline 2>/dev/null | head -1)
+    assert_contains "$o" "upstream v1" "bare passthrough log must show upstream history"
+    log_success "$IMPL: whole-repo cross verified (reference machinery)"
 }
 
 # --------------------------------------------------------------- Part A -----

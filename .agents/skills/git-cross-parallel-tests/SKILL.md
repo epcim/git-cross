@@ -29,8 +29,8 @@ subagents.
 | **A — chain** | `001 002 003 004 014` | ~7s | must be sequential; sources chain |
 | **B — cli/ux** | `017 020 010` | ~10s | completion, grouped help, cd/wt |
 | **C — paths** | `023 012 018` | ~13s | normalization, sparse, sandbox update |
-| **D — repo shape** | `019 015 016` | ~17s | whole-repo patch, purge, diff context |
-| **E — gitdir core** | `013 009 026 024 025` | ~17s | real-world (network+skippable), Go CLI, update/resolve both impls, rerere, stage-1 gate |
+| **D — repo shape** | `019 015 016` | ~17s | whole-repo patch, wipe, diff context |
+| **E — gitdir core** | `013 009 026 024 025 029 030` | ~17s | real-world (network+skippable), Go CLI, update/resolve both impls, rerere, stage-1 gate, Crossfile records, subtree crosses |
 | **G — go tests** | `go test ./src-go` | ~2s | `src-go/update_resolve_test.go` |
 
 Wall time for A-E in parallel: **~20s**. Rebalance D/E if one lane dominates.
@@ -46,8 +46,8 @@ const groups = {
   A: ["test/001_use.sh","test/002_patch.sh","test/003_diff.sh","test/004_update.sh","test/014_remove.sh"],
   B: ["test/017_cd_shell_integration.sh","test/020_help_groups.sh","test/010_cd_wt_passthrough.sh"],
   C: ["test/023_localpath_normalization.sh","test/012_sparse_checkout.sh","test/018_sbx_sandbox.sh"],
-  D: ["test/019_whole_repo_patch_and_listing.sh","test/015_purge.sh","test/016_diff_context.sh"],
-  E: ["test/013_real_world.sh","test/009_go_cli.sh","test/026_update_resolve.sh","test/024_rerere.sh","test/025_gitdir_patch.sh"],
+  D: ["test/019_whole_repo_patch_and_listing.sh","test/015_wipe.sh","test/016_diff_context.sh"],
+  E: ["test/013_real_world.sh","test/009_go_cli.sh","test/026_update_resolve.sh","test/024_rerere.sh","test/025_gitdir_patch.sh","test/029_crossfile_records.sh","test/030_subtree_crosses.sh"],
 };
 const tasks = Object.entries(groups).map(([g, files]) => ({
   agent: "scout",

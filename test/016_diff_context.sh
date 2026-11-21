@@ -23,13 +23,33 @@ git commit -m "Add alpha and beta" -q
 popd >/dev/null
 upstream_url="file://$upstream_path"
 
-just cross use upstream "$upstream_url" >/dev/null
-just cross set upstream:src/alpha vendor/alpha >/dev/null
-just cross set upstream:src/beta  vendor/beta  >/dev/null
+# v0.6: subdir crosses (remote_path != '.') are Go-ONLY — the Just reference
+# refuses them. The crossed dirs are therefore created with the Go CLI; the
+# Just-side passthrough assertions below still exercise the reference's CORE
+# git passthrough on those crosses (read-only git ops are unaffected by the
+# gitdir guard hooks).
+GO_BIN=$(ensure_go_bin "$REPO_ROOT" || true)
+if [ -n "$GO_BIN" ]; then
+    "$GO_BIN" use upstream "$upstream_url" >/dev/null
+    "$GO_BIN" set upstream:src/alpha vendor/alpha >/dev/null
+    "$GO_BIN" set upstream:src/beta  vendor/beta  >/dev/null
+    # pin the reference's refusal while we are here (the new just contract)
+    set +e
+    ref_out=$(just cross set upstream:src/alpha vendor/alpha2 2>&1)
+    ref_rc=$?
+    set -e
+    [ "$ref_rc" -ne 0 ] || fail "just: set with a subdir remote_path must fail (subtree crosses are Go-only)"
+    assert_contains "$ref_out" "subtree crosses" \
+        "just: set refusal must explain that subtree crosses are Go-only"
+else
+    echo "SKIP (just): Go CLI unavailable — subdir crosses cannot be created (they are Go-only in v0.6)"
+    echo "Test 016 passed!"
+    exit 0
+fi
 
-# Locally modify both patches (D3 nesting: tracked files live under src/<name>/)
-echo "local alpha change" >> vendor/alpha/src/alpha/alpha.txt
-echo "local beta change"  >> vendor/beta/src/beta/beta.txt
+# Locally modify both patches (v0.6 subtree-rooted: files live at the crossed-dir root)
+echo "local alpha change" >> vendor/alpha/alpha.txt
+echo "local beta change"  >> vendor/beta/beta.txt
 
 # --- Test 1: diff from inside patch dir shows only that patch's upstream diff ---
 log_header "Test 1: diff inside a patch dir shows only that patch..."
@@ -47,8 +67,8 @@ log_success "Test 1 passed: patch-context diff is scoped to the patch"
 
 # --- Test 2: diff from a subdirectory of a patch still resolves that patch ---
 log_header "Test 2: diff from a subdirectory resolves the parent patch..."
-mkdir -p vendor/beta/src/beta/subdir
-pushd vendor/beta/src/beta/subdir >/dev/null
+mkdir -p vendor/beta/subdir
+pushd vendor/beta/subdir >/dev/null
 output=$(just cross diff 2>&1 || true)
 echo "$output"
 if ! echo "$output" | grep -q "local beta change"; then
@@ -100,8 +120,7 @@ if ! echo "$output" | grep -q "crossed directory"; then
 fi
 log_success "Test 5 passed: git pathspecs do not create a patch context"
 
-# --- Go implementation: same contract ---
-GO_BIN=$(ensure_go_bin "$REPO_ROOT" || true)
+# --- Go implementation: same contract (GO_BIN computed above) ---
 if [ -z "${GO_BIN:-}" ]; then
     log_warn "Go toolchain unavailable or build failed - skipping Go part"
 else
@@ -126,7 +145,7 @@ else
     log_success "Test 7 passed: Go root-level diff fails early"
 
     log_header "Test 8 (Go): diff from a patch subdirectory..."
-    pushd vendor/beta/src/beta/subdir >/dev/null
+    pushd vendor/beta/subdir >/dev/null
     output=$("$GO_BIN" diff 2>&1 || true)
     echo "$output"
     echo "$output" | grep -q "local beta change" \

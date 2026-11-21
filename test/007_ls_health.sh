@@ -21,13 +21,19 @@ git add docs/README.md
 git commit -m "Add docs"
 popd >/dev/null
 
-# Use and Patch
+# Use and Patch (v0.6: subdir crosses are GO-ONLY — the reference refuses
+# them; assert the refusal, then create the cross with the Go CLI)
 just cross use upstream "$upstream_url"
-just cross set upstream:docs vendor/docs
+set_out=$(just cross set upstream:docs vendor/docs 2>&1 || true)
+echo "$set_out" | grep -q "subtree crosses" \
+    || fail "the reference must refuse subdir crosses (Go-only), got: $set_out"
+GO_BIN_007=$(ensure_go_bin "$(cd "$(dirname "$0")/.." && pwd)" || true)
+[ -n "$GO_BIN_007" ] || fail "Go CLI required for subtree crosses (v0.6)"
+"$GO_BIN_007" set upstream:docs vendor/docs >/dev/null 2>&1 || fail "Go set failed"
 
-# v2 D3 nesting: the patch dir mirrors the upstream ROOT, so the tracked file is
-# vendor/docs/docs/README.md (remote_path is a sparse filter only).
-PATCH_FILE="vendor/docs/docs/README.md"
+# v0.6 D3(c) subtree-rooted: the patch dir mirrors the remote SUBTREE root, so
+# the tracked file is vendor/docs/README.md (no docs/ prefix inside the cross).
+PATCH_FILE="vendor/docs/README.md"
 
 # Helper to check ls output
 check_health() {
@@ -109,7 +115,7 @@ if [ -n "$GO_BIN_007" ]; then
 
     # content restored from the mirror HEAD: Clean again (and no unstaged edit
     # left behind — the next test's update must not refuse on a dirty tree).
-    git --git-dir="$gd" --work-tree="$PWD/vendor/docs" checkout -q HEAD -- docs/README.md
+    git --git-dir="$gd" --work-tree="$PWD/vendor/docs" checkout -q HEAD -- README.md
     git add "$PATCH_FILE" >/dev/null
     git -c user.email=t@t -c user.name=t commit -qm "vendor: restore upstream content" >/dev/null
     go_row=$("$GO_BIN_007" ls --raw --no-header 2>/dev/null | awk -F'\t' '$3 == "vendor/docs"')
@@ -143,8 +149,8 @@ check_health "vendor/docs" "Clean.*[0-9a-f]\{7,10\}"
 pushd vendor/docs >/dev/null
     just cross config user.email test@example.com >/dev/null
     just cross config user.name "Test User" >/dev/null
-    echo "Patch change" >> docs/README.md
-    just cross add docs/README.md >/dev/null 2>&1 || fail "git cross add failed in patch context"
+    echo "Patch change" >> README.md
+    just cross add README.md >/dev/null 2>&1 || fail "git cross add failed in patch context"
     just cross commit -qm "Patch changes" >/dev/null 2>&1 || fail "git cross commit failed in patch context"
 popd >/dev/null
 

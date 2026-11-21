@@ -31,7 +31,7 @@ git -C "$upstream_path" commit -m "Add app" -q
 "$GO_BIN" set ai-project:src vendor/ai-src
 
 # v2 D3 nesting: tracked files live under <patch>/src/
-PATCH_FILE="vendor/ai-src/src/app.js"
+PATCH_FILE="vendor/ai-src/app.js"
 
 # Simulate local/sandbox edits and a concurrent upstream update on the SAME file.
 echo "local AI change" > "$PATCH_FILE"
@@ -70,7 +70,7 @@ fi
 if ! git --git-dir="$gd" cat-file -e "refs/remotes/origin/$br:src/new.js" 2>/dev/null; then
     fail "The new upstream file must be present in the fetched tree"
 fi
-if [ -e "vendor/ai-src/src/new.js" ]; then
+if [ -e "vendor/ai-src/new.js" ]; then
     fail "A refused (uncommitted) patch must not receive new upstream files"
 fi
 
@@ -91,7 +91,7 @@ fi
 if ! grep -q "<<<<<<<" "$PATCH_FILE"; then
     fail "conflict markers must be present in the patch dir"
 fi
-if [ ! -e "vendor/ai-src/src/new.js" ]; then
+if [ ! -e "vendor/ai-src/new.js" ]; then
     fail "the new upstream file must land even when another file conflicts"
 fi
 # Resolve like a user would, then let the mirror follow.
@@ -101,7 +101,9 @@ cont=$("$GO_BIN" resolve --continue vendor/ai-src 2>&1); echo "$cont"
 if ! echo "$cont" | grep -q "is clean"; then
     fail "resolve --continue should confirm the patch is clean"
 fi
-if [ "$(git --git-dir="$gd" rev-parse HEAD)" != "$(git --git-dir="$gd" rev-parse "refs/remotes/origin/$br")" ]; then
+# v0.6: refs/heads/<branch> is SYNTHESIZED (a subtree-rooted history), so compare
+# TREES, not raw commit hashes: the local HEAD tree must equal the upstream subtree.
+if [ "$(git --git-dir="$gd" rev-parse "refs/heads/$br^{tree}")" != "$(git --git-dir="$gd" rev-parse "refs/remotes/origin/$br:src")" ]; then
     fail "resolve --continue must let the mirror follow the landed upstream"
 fi
 git commit -qm "resolved"

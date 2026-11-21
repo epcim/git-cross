@@ -5,21 +5,21 @@ CLEANUP={$CLEANUP:-true} source test/002_patch.sh
 
 # v0.5.0: `diff` is the git passthrough — it only works INSIDE a crossed directory
 # (GIT_DIR/GIT_WORK_TREE = the patch's upstream context). At the repo root it
-# fails early (ADR-002). Local changes are tracked files under the nested
-# upstream path (D3: vendor/lib/src/lib/lib.txt).
+# fails early (ADR-002). Local changes are tracked files at the crossed-dir
+# root (v0.6 subtree-rooted: vendor/lib/lib.txt).
 
 log_header "Testing 'just cross diff' inside the patch dir (003)..."
 
 # Add/Modify local (v2 D3 nesting: tracked files live under vendor/lib/src/lib/)
-echo "added" >> "vendor/lib/src/lib/lib.txt"
-git add vendor/lib/src/lib/lib.txt
+echo "added" >> "vendor/lib/lib.txt"
+git add vendor/lib/lib.txt
 git commit -m "add file" -q
-echo "modified" >> "vendor/lib/src/lib/lib.txt"
+echo "modified" >> "vendor/lib/lib.txt"
 
 pushd vendor/lib >/dev/null
     output=$(just cross diff || true)
     echo "$output"
-    if [[ "$output" != *"src/lib/lib.txt"* ]]; then
+    if [[ "$output" != *"lib.txt"* ]]; then
         echo "Failed: Diff of the tracked nested file missing."
         exit 1
     fi
@@ -56,11 +56,11 @@ fi
 #####################################################
 log_header "Testing diff auto-detect from a patch subdirectory"
 
-mkdir -p vendor/lib/src/lib/nested
-pushd vendor/lib/src/lib/nested >/dev/null
+mkdir -p vendor/lib/nested
+pushd vendor/lib/nested >/dev/null
     output=$(just cross diff || true)
     echo "$output"
-    if [[ "$output" != *"src/lib/lib.txt"* ]]; then
+    if [[ "$output" != *"lib.txt"* ]]; then
         echo "Failed: diff from a patch subdirectory should still show the patch diff."
         exit 1
     fi
@@ -70,7 +70,7 @@ popd
 log_header "Testing diff with an explicit git pathspec inside the patch"
 
 pushd vendor/lib >/dev/null
-    output=$(just cross diff src/lib/lib.txt || true)
+    output=$(just cross diff lib.txt || true)
     echo "$output"
     if [[ "$output" != *"modified"* ]]; then
         echo "Failed: diff with a pathspec should show the modification."
