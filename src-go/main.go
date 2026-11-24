@@ -2847,7 +2847,24 @@ shell and 'gxenv -u' unloads it.`,
 				}
 				localPath = filepath.ToSlash(filepath.Clean(localPath))
 				if localPath == "." {
-					return fmt.Errorf("updating a repository-root cross is not supported safely yet")
+					// Repo-root cross: the update machinery is scoped to a subdir
+					// (pathspec guards, prefixed delta trees, re-adoption wipes) and
+					// cannot tell the cross's files from the repo's own state
+					// (Crossfile, .cross/, local-only files). A whole-repo
+					// relationship is an ordinary fork — point at plain git.
+					upstreamURL := "<url>"
+					for _, uf := range commands {
+						if len(uf) == 3 && uf[0] == "use" && uf[1] == spec.Remote {
+							upstreamURL = uf[2]
+							break
+						}
+					}
+					branch := spec.Branch
+					if branch == "" {
+						branch = "main" // same fallback as the set flow
+					}
+					return fmt.Errorf("updating a repository-root cross is not an expected use case — the whole-repo fork flow is plain git: git fetch %s && git rebase %s/%s (git merge, cherry-pick, etc. work too; git remote add %s %s first if you have no such git remote), or vendor the upstream into a subdir: git cross set %s:%s:. <subdir>",
+						spec.Remote, spec.Remote, branch, spec.Remote, upstreamURL, spec.Remote, branch)
 				}
 				if localPath == ".." || strings.HasPrefix(localPath, "../") || filepath.IsAbs(filepath.FromSlash(localPath)) {
 					return fmt.Errorf("Unsafe local path, refusing to touch it: %s", localPath)
